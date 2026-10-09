@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Version>0.1.0</Version>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Description>Windows handheld hardware, physical input and device controls.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="10.0.12"/>
+    <InternalsVisibleTo Include="LibHandheld.Tests"/>
+    <None Include="../../LICENSE" Link="LibHandheld-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <None Include="../../PROVENANCE.md" Link="LibHandheld-PROVENANCE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <EmbeddedResource Include="Families/**/glyphs/**"/>
+    <EmbeddedResource Include="Families/**/THIRD_PARTY_NOTICES.md"/>
+  </ItemGroup>
+</Project>

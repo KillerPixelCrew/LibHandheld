@@ -47,8 +47,8 @@ machine-readable `entryKind` identifies HHD scope and HC fallback rows.
 | [sources/opengamepadui.md](sources/opengamepadui.md), [sources/opengamepadui.json](sources/opengamepadui.json) | Direct OpenGamepadUI facts and separately attributed service evidence           |
 | [reconcile.py](reconcile.py)                                                                                   | Rebuild the combined JSON/CSV view from the checked-in source inventories       |
 
-The full source inventories retain numerical limits, firmware predicates, controller selectors,
-axis matrices, configuration fields and source uncertainties. Follow `sourceRecordId` to the
+The full source inventories retain numerical limits, firmware predicates, controller selectors, axis
+matrices, configuration fields and source uncertainties. Follow `sourceRecordId` to the
 corresponding source JSON record for those details.
 
 ## Evidence and reconciliation
@@ -58,22 +58,25 @@ corresponding source JSON record for those details.
 - **unsupported** means the source explicitly removes or refuses that feature.
 - **unknown** means the evidence is insufficient.
 
-These statuses describe upstream source evidence. LibHandheld implementation status is currently
-`planned`; source support is separate from hardware validation.
+These statuses describe upstream source evidence. The saved JSON/CSV research snapshot retains its
+original `planned` migration status; it is not a live implementation registry. LibHandheld now
+implements nine seed definitions (five Claw, four Ally), documented in the [plan](../PLAN.md) and
+`HandheldDevice.Definitions`. The remaining HC/HHD target still requires implementation. Source
+support, applied library code and hardware validation are separate evidence.
 
 Related records are linked by name or selector-text overlap. That is a research association, not
 proof that WMI baseboard, DMI product, firmware and CPU selectors are interchangeable. Multiple
-possible primary variants stay `needs-variant-resolution`. The combined view applies source
-priority to available fact candidates, retaining all lower-priority observations. Unknown HC facts
-may use HHD and then tertiary evidence.
+possible primary variants stay `needs-variant-resolution`. The combined view applies source priority
+to available fact candidates, retaining all lower-priority observations. Unknown HC facts may use
+HHD and then tertiary evidence.
 
 The differences file contains reconciliation candidates. A Linux implementation versus Windows
-metadata, or two different selector scopes, is not automatically a contradictory hardware fact.
-For an established conflict on the same fact and variant, use HC, then HHD, then OpenGamepadUI.
+metadata, or two different selector scopes, is not automatically a contradictory hardware fact. For
+an established conflict on the same fact and variant, use HC, then HHD, then OpenGamepadUI.
 
 Linux sysfs, evdev, IIO, hidraw, D-Bus and kernel-module dependencies require Windows equivalents.
-Record the actual Windows transport and dependencies during implementation; Linux support alone
-does not establish that path.
+Record the actual Windows transport and dependencies during implementation; Linux support alone does
+not establish that path.
 
 ## Rebuild
 

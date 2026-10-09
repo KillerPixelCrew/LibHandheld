@@ -1,0 +1,647 @@
+{
+  "schemaVersion": 1,
+  "profileId": "msi-claw",
+  "displayName": "MSI Claw",
+  "revision": 2,
+  "exactDeviceIds": ["ms-1t41", "ms-1t42", "ms-1t52", "ms-1t8k", "ms-1t91"],
+  "sourceRevision": "promptfont-ca3d628fd182",
+  "noticePath": "THIRD_PARTY_NOTICES.md",
+  "assets": [
+    {
+      "assetId": "face-south",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "face-east",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "face-west",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "face-north",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad-up",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad-down",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad-left",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad-right",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-stick",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-stick",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-shoulder",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-shoulder",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-trigger",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-trigger",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "guide",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "view",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "menu",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "quick-access",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "rear-m1",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "rear-m2",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "controller-full",
+      "format": "Svg",
+      "role": "FullController",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "controller-left",
+      "format": "Png",
+      "role": "LeftController",
+      "pixelWidth": 643,
+      "pixelHeight": 464
+    },
+    {
+      "assetId": "controller-right",
+      "format": "Png",
+      "role": "RightController",
+      "pixelWidth": 643,
+      "pixelHeight": 464
+    },
+    {
+      "assetId": "face-south-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "face-east-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "face-west-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "face-north-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "dpad-up-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "dpad-down-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "dpad-left-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "dpad-right-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "left-shoulder-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "right-shoulder-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "left-trigger-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "right-trigger-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "guide-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "view-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "menu-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "quick-access-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "rear-m1-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "rear-m2-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "left-stick-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "right-stick-highlight",
+      "format": "Svg",
+      "role": "ControlHighlight",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 61.175,
+        "height": 26.491
+      }
+    },
+    {
+      "assetId": "left-trigger-soft",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-trigger-soft",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    }
+  ],
+  "controllerImages": {
+    "fullAssetId": "controller-full",
+    "leftAssetId": "controller-left",
+    "rightAssetId": "controller-right"
+  },
+  "controls": [
+    {
+      "control": "FaceSouth",
+      "presence": "Present",
+      "physicalLabel": "A",
+      "assetId": "face-south",
+      "highlightAssetId": "face-south-highlight"
+    },
+    {
+      "control": "FaceEast",
+      "presence": "Present",
+      "physicalLabel": "B",
+      "assetId": "face-east",
+      "highlightAssetId": "face-east-highlight"
+    },
+    {
+      "control": "FaceWest",
+      "presence": "Present",
+      "physicalLabel": "X",
+      "assetId": "face-west",
+      "highlightAssetId": "face-west-highlight"
+    },
+    {
+      "control": "FaceNorth",
+      "presence": "Present",
+      "physicalLabel": "Y",
+      "assetId": "face-north",
+      "highlightAssetId": "face-north-highlight"
+    },
+    {
+      "control": "DpadUp",
+      "presence": "Present",
+      "assetId": "dpad-up",
+      "highlightAssetId": "dpad-up-highlight"
+    },
+    {
+      "control": "DpadDown",
+      "presence": "Present",
+      "assetId": "dpad-down",
+      "highlightAssetId": "dpad-down-highlight"
+    },
+    {
+      "control": "DpadLeft",
+      "presence": "Present",
+      "assetId": "dpad-left",
+      "highlightAssetId": "dpad-left-highlight"
+    },
+    {
+      "control": "DpadRight",
+      "presence": "Present",
+      "assetId": "dpad-right",
+      "highlightAssetId": "dpad-right-highlight"
+    },
+    {
+      "control": "LeftStick",
+      "presence": "Present",
+      "side": "Left",
+      "assetId": "left-stick",
+      "highlightAssetId": "left-stick-highlight"
+    },
+    {
+      "control": "RightStick",
+      "presence": "Present",
+      "side": "Right",
+      "assetId": "right-stick",
+      "highlightAssetId": "right-stick-highlight"
+    },
+    {
+      "control": "LeftShoulder",
+      "presence": "Present",
+      "side": "Left",
+      "physicalLabel": "LB",
+      "assetId": "left-shoulder",
+      "highlightAssetId": "left-shoulder-highlight"
+    },
+    {
+      "control": "RightShoulder",
+      "presence": "Present",
+      "side": "Right",
+      "physicalLabel": "RB",
+      "assetId": "right-shoulder",
+      "highlightAssetId": "right-shoulder-highlight"
+    },
+    {
+      "control": "LeftTrigger",
+      "presence": "Present",
+      "side": "Left",
+      "physicalLabel": "LT",
+      "assetId": "left-trigger",
+      "softPullAssetId": "left-trigger-soft",
+      "highlightAssetId": "left-trigger-highlight"
+    },
+    {
+      "control": "RightTrigger",
+      "presence": "Present",
+      "side": "Right",
+      "physicalLabel": "RT",
+      "assetId": "right-trigger",
+      "softPullAssetId": "right-trigger-soft",
+      "highlightAssetId": "right-trigger-highlight"
+    },
+    {
+      "control": "Guide",
+      "presence": "Present",
+      "physicalLabel": "MSI",
+      "assetId": "guide",
+      "highlightAssetId": "guide-highlight"
+    },
+    {
+      "control": "View",
+      "presence": "Present",
+      "assetId": "view",
+      "highlightAssetId": "view-highlight"
+    },
+    {
+      "control": "Menu",
+      "presence": "Present",
+      "assetId": "menu",
+      "highlightAssetId": "menu-highlight"
+    },
+    {
+      "control": "QuickAccess",
+      "presence": "Present",
+      "assetId": "quick-access",
+      "highlightAssetId": "quick-access-highlight"
+    },
+    {
+      "control": "RearM1",
+      "presence": "Present",
+      "side": "Left",
+      "physicalLabel": "M1",
+      "assetId": "rear-m1",
+      "highlightAssetId": "rear-m1-highlight"
+    },
+    {
+      "control": "RearM2",
+      "presence": "Present",
+      "side": "Right",
+      "physicalLabel": "M2",
+      "assetId": "rear-m2",
+      "highlightAssetId": "rear-m2-highlight"
+    }
+  ],
+  "aliases": []
+}

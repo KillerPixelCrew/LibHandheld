@@ -1,62 +1,51 @@
 # LibHandheld
 
-A planned Windows-first .NET library for handheld hardware support. The goal is to support every
-device supported by Handheld Companion (HC) and Handheld Daemon (HHD), with device additions and
-corrections contributed through pull requests.
+Windows-first .NET hardware library, directly consumed by WSGM. The initial implementation contains
+five MSI Claw and four ASUS ROG Ally definitions, migrated from the existing MIT WSGM engines. It
+provides native identification, power, fans, charging, lighting, controller input, motion, haptics,
+OEM controls, glyphs and recovery without a WSGM SDK or device-package loader.
 
-The repository currently contains the device inventory and migration plan. Hardware backends have
-not been migrated into this library yet.
+The complete target remains every device supported by Handheld Companion (HC) or Handheld Daemon
+(HHD). The [inventory](inventory/README.md) contains 201 HC/HHD source records, not 201 unique
+physical devices. Nine seed definitions are implemented; the remaining families and Windows
+transports still require implementation. An inventory row or contribution scaffold is not support.
 
-## Source priority
+## Use and ownership
 
-1. **Handheld Companion** is the primary source for device facts because it implements Windows
-   hardware access.
-2. **Handheld Daemon** supplies additional device coverage and secondary protocol facts.
-3. **OpenGamepadUI**, including its actual hardware-service dependencies, supplies tertiary facts.
+The public [API](API.md) is `HandheldDevice` and typed `LibHandheld.Contracts`, with a borrowed
+`IHandheldObserver`. Detection matches supplied identity and does not open hardware. Start acquires
+native services; the caller owns lifecycle sequencing, generation, state-directory selection and
+terminal restoration. Cancellation does not establish that a native operation stopped.
 
-When facts disagree, HC takes priority over HHD, and HHD over OpenGamepadUI. The inventory keeps the
-conflicting observations and their source versions. A Linux-only path is recorded as requiring a
-Windows implementation. Missing facts remain unknown.
+The project targets `net10.0-windows10.0.19041.0`, x64, and uses System.Management for Windows
+hardware access. Internal helpers and family engines remain private; the consuming application owns
+profiles, AutoTDP policy, virtual-controller routing, HidHide, Steam integration and UI. Vendor GPU
+mechanics belong to [LibGPUDriverInteract](https://github.com/KillerPixelCrew/LibGPUDriverInteract).
+Generic Windows controls remain in
+[WindowsDeviceControl](https://github.com/KillerPixelCrew/windows-device-control).
 
-LibHandheld will independently implement device behavior and protocols. Upstream reference code is
-used for research and is excluded from this repository's tracked files.
+## Evidence and contributions
 
-## Inventory
+HC is the primary Windows source, HHD secondary and OpenGamepadUI tertiary. Conflicting observations
+and pinned versions remain visible in the inventory. Linux-only mechanisms require concrete Windows
+implementations. Original migrated family behavior, glyph bytes and notices are preserved; source
+migration and compilation do not constitute a new hardware pass.
 
-- [Inventory guide](inventory/README.md): scope, evidence rules, source snapshots and coverage.
-- [Combined device inventory](inventory/devices.json): the HC/HHD target set with tertiary evidence.
-- [Device table](inventory/devices.csv): a spreadsheet-friendly view of the same target set.
-- [Source inventories](inventory/sources/): complete source-specific records and readable notes.
-- [Migration plan](PLAN.md): the path from the current WSGM device packages to this library.
+For a contribution, identify the exact model, board, controller interfaces and firmware version.
+Document protocol provenance and variant predicates, implement native services, and add parser or
+encoder fixtures. Record source support separately from attended hardware observations. Unknown
+input decoders remain explicitly unimplemented research. Shared helpers should serve concrete
+protocols rather than create another plugin framework.
 
-Concrete model identifiers, aliases, board/CPU variants and generic matching ranges are kept
-distinct. A source-supported model is a migration target, not a claim that LibHandheld already
-implements or has tested it.
+- [API](API.md): contracts, operation results and native lifetimes.
+- [Plan](PLAN.md): applied extraction and remaining full-device target.
+- [Inventory guide](inventory/README.md): snapshots, evidence and source counts.
+- [Combined records](inventory/devices.json) and [device table](inventory/devices.csv): research
+  target.
+- `src/LibHandheld/Families`: native implementations and preserved provenance.
+- `tests`: migrated Claw/Ally regression sources and fixtures.
 
-## Boundary
-
-LibHandheld will own device identification, hardware transports, device-specific power controls,
-fans, charging, lighting, OEM buttons, physical controller input, motion, haptics and restoration of
-temporary hardware changes.
-
-The consuming application owns profiles, AutoTDP policy, virtual-controller routing, HidHide,
-Steam integration, user preferences and UI. Vendor GPU driver controls belong in the separate
-[LibGPUDriverInteract](https://github.com/KillerPixelCrew/LibGPUDriverInteract) library. Generic
-Windows controls remain in [WindowsDeviceControl](https://github.com/KillerPixelCrew/windows-device-control).
-
-WSGM will consume this library directly. Its Device SDK and device-package loading are to be
-retired after the migration; the common Plugin SDK remains for independent integrations such as IR.
-
-## Contributions
-
-For a device contribution, identify the exact model, board, controller identifiers and relevant
-firmware version. Document the source of protocol facts, add fixtures or tests for parsing and
-encoding, and record hardware observations separately from source-derived support. Shared helpers
-should serve concrete devices rather than introduce a general plugin framework.
-
-Correct the inventory before implementing a device whose identity or protocol is ambiguous.
-
-## WSGM checkout
-
-WSGM tracks this repository as `external/libhandheld`. Work in that submodule, commit and push its
-changes here, then commit the updated gitlink in WSGM.
+WSGM tracks this repository as `external/libhandheld`. Commit and push library changes before
+recording its gitlink in WSGM. Both repositories remain private during testing; automatic CI is off
+for `chore/device-integration-rework`. New automated tests and hardware acceptance must be reported
+from actual runs, separately from compilation and source evidence.

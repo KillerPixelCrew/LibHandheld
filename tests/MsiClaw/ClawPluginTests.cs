@@ -1,0 +1,1125 @@
+using System.Buffers.Binary;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using LibHandheld.Families.MsiClaw.Tests.Fakes;
+using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Identity;
+using LibHandheld.Internal.Input;
+using LibHandheld.Internal.Lifecycle;
+using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Testing;
+using LibHandheld.Testing;
+using static LibHandheld.Families.MsiClaw.Tests.Builders.ClawCommands;
+
+namespace LibHandheld.Families.MsiClaw.Tests;
+
+// DeviceTrace is a process-wide static and the plugin installs its own sink in StartAsync, so any
+// class that drives the lifecycle has to be serialized against one that asserts on traces.
+[Collection("plugin-trace")]
+public sealed class ClawDeviceEngineTests
+{
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CanceledStartupRestoreRecordsItsOutcomeAndIsNotReplayed(bool complete)
+    {
+        using TemporaryDirectory state = new();
+        var journal = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+        _ = await journal.BeginAsync(ServiceIds.Power, "bios:E1T52IMS.114",
+            ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)), CancellationToken.None);
+        using CancellationTokenSource cancellation = new();
+        FakeWmiTransport wmi = new();
+        wmi.AfterSetter = (_, package) =>
+        {
+            if (package[0] == (complete ? ClawHardwareFacts.PowerBoostAddress : ClawHardwareFacts.ScenarioAddress))
+            {
+                cancellation.Cancel();
+            }
+        };
+        await using (ClawDeviceEngine first = new(CreateServices(wmi)))
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+                await first.StartAsync(StartContext(new TestPluginHostAdapter(CycleGeneration), state.Root),
+                    cancellation.Token));
+        }
+
+        var recovered = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+        if (complete)
+        {
+            Assert.Empty(recovered.OutstandingEntries);
+        }
+        else
+        {
+            Assert.Equal(DeviceRecoveryStatus.RestoreFailed, Assert.Single(recovered.OutstandingEntries).Status);
+        }
+
+        wmi.AfterSetter = null;
+        wmi.Writes.Clear();
+        await using ClawDeviceEngine next = new(CreateServices(wmi));
+        _ = await next.StartAsync(StartContext(new TestPluginHostAdapter(CycleGeneration), state.Root),
+            CancellationToken.None);
+        Assert.Empty(wmi.Writes);
+        var diagnostics = await next.GetDiagnosticsAsync(CancellationToken.None);
+        Assert.Equal(nameof(DeviceServiceState.Owned), diagnostics.Values[ServiceIds.Power]);
+    }
+
+    [Fact]
+    public async Task CancellationAfterTheLastReleaseWriteStillClearsThePowerRecoveryEntry()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        _ = await plugin.StartAsync(StartContext(new TestPluginHostAdapter(CycleGeneration), state.Root),
+            CancellationToken.None);
+        _ = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+            {
+                PairedPowerLimitWatts = 20
+            }, CancellationToken.None);
+        using CancellationTokenSource cancellation = new();
+        wmi.AfterSetter = (_, package) =>
+        {
+            if (package[0] == ClawHardwareFacts.PowerBoostAddress)
+            {
+                cancellation.Cancel();
+            }
+        };
+
+        _ = await plugin.StopAsync(new PluginStopContext(PluginStopReason.WsgmExiting,
+            Deadline.After(TimeSpan.FromSeconds(10))), cancellation.Token);
+
+        var journal = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+        Assert.Empty(journal.OutstandingEntries);
+        Assert.Equal(30, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
+        Assert.Equal(37, wmi.ReadData(ClawHardwareFacts.PowerBoostAddress));
+    }
+
+    [Fact]
+    public async Task InitialWmiTimeoutLeavesServicesOwnedAndChargeWriteAvailable()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new() { GetterTimeout = true };
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var charge = host.CapabilityStates.Last(value => value.CapabilityId == CapabilityIds.ChargeLimit);
+        Assert.Null(charge.ObservedValue);
+        var result = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(60)), CancellationToken.None);
+        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Null(result.Reason);
+        Assert.Single(wmi.Writes);
+    }
+
+    [Fact]
+    public async Task JournalRefusalRejectsBeforeHardwareWrite()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var journalPath = Path.Combine(state.Root, "temporary-state.v1.json");
+        File.Delete(journalPath);
+        Directory.CreateDirectory(journalPath);
+        try
+        {
+            var result = await plugin.ExecuteCommandAsync(
+                Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+                {
+                    PairedPowerLimitWatts = 20
+                }, CancellationToken.None);
+            Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+            Assert.Equal(CapabilityReasonCode.TransportFaulted, result.Reason?.Code);
+            Assert.Equal(RollbackResult.NotRequired, result.Rollback);
+            Assert.Empty(wmi.Writes);
+        }
+        finally
+        {
+            Directory.Delete(journalPath);
+        }
+    }
+
+    [Fact]
+    public async Task CommandRefreshDoesNotReassertThePreviousPowerTarget()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        _ = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+            {
+                PairedPowerLimitWatts = 20
+            }, CancellationToken.None);
+        Assert.Equal(2, wmi.Writes.Count);
+        wmi.SetData(ClawHardwareFacts.PowerSustainedAddress, 30);
+        wmi.Writes.Clear();
+        var result = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.Scenario, null, CapabilityValue.Choice("sport")), CancellationToken.None);
+        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Single(wmi.Writes);
+        Assert.Equal(ClawHardwareFacts.ScenarioAddress, wmi.Writes[0].Package[0]);
+    }
+
+    [Fact]
+    public async Task OptionalFirmwareReadTimeoutKeepsTheWmiProviderAvailable()
+    {
+        FakeWmiTransport wmi = new() { GetterTimeout = true };
+        WindowsClawIdentityReader reader = new(wmi, ExactIdentity, () => [], () => true, () => null);
+        var identity = await reader.ReadAsync(CancellationToken.None);
+        Assert.True(identity.WmiAvailable);
+        Assert.Equal("ec:unknown;msi-acpi:unknown", identity.LegacyRecoveryBinding);
+    }
+
+    [Fact]
+    public async Task InsufficientWriteBudgetRejectsBeforeAnySetter()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var result = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+            {
+                PairedPowerLimitWatts = 20, Deadline = Deadline.After(TimeSpan.FromSeconds(1))
+            },
+            CancellationToken.None);
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        Assert.Equal(CapabilityReasonCode.Quiescing, result.Reason?.Code);
+        Assert.Equal(RollbackResult.NotRequired, result.Rollback);
+        Assert.Empty(wmi.Writes);
+        var journal = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+        Assert.Empty(journal.OutstandingEntries);
+        _ = await plugin.StopAsync(new PluginStopContext(PluginStopReason.IntegrationDisabled,
+            Deadline.After(TimeSpan.FromSeconds(10))), CancellationToken.None);
+        Assert.Empty(wmi.Writes);
+    }
+
+    [Fact]
+    public async Task DetectAsync_ExactBaseboardAndSku_MatchesWithoutMarketingName()
+    {
+        await using ClawDeviceEngine plugin = new(CreateServices());
+
+        var result = await plugin.DetectAsync(
+            new PluginDetectionContext
+            {
+                Identity = ExactIdentity() with { SystemProduct = "localized marketing name" }
+            },
+            CancellationToken.None);
+
+        Assert.True(result.Matched);
+        Assert.Equal(ClawModels.Claw8A2Vm.DefinitionId, result.DeviceDefinitionId);
+    }
+
+    [Theory]
+    [InlineData("manufacturer")]
+    [InlineData("baseboard")]
+    public async Task DetectAsync_AnyIdentitySignalDiffers_FailsClosed(string changedSignal)
+    {
+        var identity = changedSignal switch
+        {
+            "manufacturer" => ExactIdentity() with { BaseboardManufacturer = "Other vendor" },
+            "baseboard" => ExactIdentity() with { BaseboardProduct = "MS-1T53" },
+            _ => throw new ArgumentOutOfRangeException(nameof(changedSignal))
+        };
+        await using ClawDeviceEngine plugin = new(CreateServices());
+
+        var result = await plugin.DetectAsync(
+            new PluginDetectionContext { Identity = identity },
+            CancellationToken.None);
+
+        Assert.False(result.Matched);
+        Assert.Null(result.DeviceDefinitionId);
+        Assert.Equal(CapabilityReasonCode.Unsupported, result.Reason?.Code);
+    }
+
+    [Theory]
+    [InlineData("MS-1T42", "1T42.1", "ms-1t42")]
+    [InlineData("MS-1T52", "unknown", "ms-1t52")]
+    public async Task DetectAsync_MatchesTheBoardAndIgnoresTheSku(string board, string sku, string definition)
+    {
+        await using ClawDeviceEngine plugin = new(CreateServices());
+
+        var result = await plugin.DetectAsync(
+            new PluginDetectionContext
+            {
+                Identity = ExactIdentity() with { BaseboardProduct = board, SystemSku = sku }
+            },
+            CancellationToken.None);
+
+        Assert.True(result.Matched);
+        Assert.Equal(definition, result.DeviceDefinitionId);
+    }
+
+    [Fact]
+    public async Task DetectAsync_SystemManufacturerDoesNotDecide()
+    {
+        await using ClawDeviceEngine plugin = new(CreateServices());
+
+        var result = await plugin.DetectAsync(
+            new PluginDetectionContext { Identity = ExactIdentity() with { SystemManufacturer = "MSI" } },
+            CancellationToken.None);
+
+        Assert.True(result.Matched);
+    }
+
+    [Fact]
+    public async Task WindowsIdentityReader_NonClawStopsBeforeEveryEcAndControllerProbe()
+    {
+        FakeWmiTransport wmi = new();
+        var controllerInventoryCalled = false;
+        var acPowerCalled = false;
+        WindowsClawIdentityReader reader = new(
+            wmi,
+            () => ExactIdentity() with { BaseboardProduct = "not-a-claw" },
+            () =>
+            {
+                controllerInventoryCalled = true;
+                throw new InvalidOperationException("The controller inventory must remain unreachable.");
+            },
+            () =>
+            {
+                acPowerCalled = true;
+                throw new InvalidOperationException("The AC-power query must remain unreachable.");
+            },
+            () => throw new InvalidOperationException("The MCU collection must remain unreachable."));
+
+        var result = await reader.ReadAsync(CancellationToken.None);
+
+        Assert.False(result.ExactMachineMatch);
+        Assert.False(result.WmiAvailable);
+        Assert.False(result.OnAcPower);
+        Assert.Equal(0, wmi.ProviderAvailabilityChecks);
+        Assert.False(controllerInventoryCalled);
+        Assert.False(acPowerCalled);
+    }
+
+    [Fact]
+    public async Task StartAsync_ControllerManagementOffIsAnIntentionalActiveState()
+    {
+        using TemporaryDirectory state = new();
+        await using ClawDeviceEngine plugin = new(CreateServices());
+        TestPluginHostAdapter host = new(CycleGeneration);
+
+        var result = await plugin.StartAsync(
+            StartContext(host, state.Root),
+            CancellationToken.None);
+
+        Assert.Equal(PluginOperationalState.Active, result.State);
+        Assert.Contains(host.CapabilityStates, capability =>
+            capability is
+            {
+                CapabilityId: CapabilityIds.Controller,
+                Available: false,
+                Reason.Code: CapabilityReasonCode.ResourceReleased
+            });
+    }
+
+    [Fact]
+    public async Task StartAsync_StreamsMotionForTheWholeCycle()
+    {
+        using TemporaryDirectory state = new();
+        FakeMotionSource motion = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(motion: motion));
+        TestPluginHostAdapter host = new(CycleGeneration);
+
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+
+        Assert.True(motion.Started);
+        Assert.Equal(1, motion.StartCount);
+    }
+
+    [Fact]
+    public async Task StartAsync_ReadsIdentityOnceForEveryServiceInTheCycle()
+    {
+        using TemporaryDirectory state = new();
+        FakeIdentityReader identity = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(identity: identity));
+        TestPluginHostAdapter host = new(CycleGeneration);
+
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+
+        Assert.Equal(1, identity.ReadCount);
+    }
+
+    // The lifecycle order is safety-relevant: stop releases the controller and motion before the
+    // power, fan and charge state is restored, and chord suppression needs the OEM source first.
+    // Reordering either array must be a deliberate change to this test.
+    [Fact]
+    public async Task StartAsync_OrdersServicesForAcquisitionAndSuspension()
+    {
+        using TemporaryDirectory state = new();
+        await using ClawDeviceEngine plugin = new(CreateServices());
+        TestPluginHostAdapter host = new(CycleGeneration);
+
+        await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+
+        Assert.Equal(
+            [
+                "msi-oem-events",
+                "msi-power",
+                "msi-charge-limit",
+                "msi-fans",
+                "msi-telemetry",
+                "claw-lighting",
+                "claw-motion",
+                "physical-controller",
+                "firmware-chord-suppressor"
+            ],
+            plugin.Services.Select(service => service.ServiceId));
+        Assert.Equal(
+            ["msi-oem-events", "claw-motion", "physical-controller", "firmware-chord-suppressor"],
+            plugin.Services.Where(service => service.Suspendable).Select(service => service.ServiceId));
+    }
+
+    [Fact]
+    public async Task StartAsync_FakeHardware_PublishesDirectCapabilityAndOemSurfaces()
+    {
+        using TemporaryDirectory state = new();
+        FakeOemEventSource oem = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(oemEvents: oem));
+        TestPluginHostAdapter host = new(CycleGeneration);
+
+        var result = await plugin.StartAsync(
+            StartContext(host, state.Root),
+            CancellationToken.None);
+        await oem.EmitAsync(0x58, DateTimeOffset.UnixEpoch);
+
+        Assert.Equal(PluginOperationalState.Active, result.State);
+        var descriptors = Assert.Single(host.DescriptorSets);
+
+        // Offline publication for the host's full Device-page visual fixture. No live hardware is used.
+        await File.WriteAllTextAsync(Path.Combine(AppContext.BaseDirectory, "claw-ui-publication.json"),
+            JsonSerializer.Serialize(new { Descriptors = descriptors, States = host.CapabilityStates }, IndentedJson));
+
+        // The overlay layout ships with the set, and a dangling reference would silently strand a
+        // row in a WSGM fallback group. Cooling was folded into Power and the three ownership rows
+        // became Info (maintainer-directed), so the Device overlay is three sections.
+        Assert.Equal(3, descriptors.Sections.Count);
+        Assert.All(descriptors.Sections,
+            section => { Assert.True(section.TryValidate(out var sectionError), sectionError); });
+        Assert.All(
+            descriptors.Descriptors,
+            descriptor =>
+            {
+                Assert.NotNull(descriptor.SectionId);
+                var home = Assert.Single(
+                    descriptors.Sections,
+                    section => section.SectionId == descriptor.SectionId);
+                if (descriptor.CategoryId is { } categoryId)
+                {
+                    Assert.Single(home.Categories, category => category.CategoryId == categoryId);
+                }
+            });
+        Assert.Equal(CycleGeneration, descriptors.CycleGeneration);
+        Assert.Contains(descriptors.Descriptors, descriptor =>
+            descriptor.CapabilityId == CapabilityIds.PowerSustained);
+        var sustained = Assert.Single(descriptors.Descriptors,
+            descriptor => descriptor.CapabilityId == CapabilityIds.PowerSustained);
+        Assert.True(CapabilityLayout.TryValidate(descriptors.Descriptors, out var layoutError), layoutError);
+        Assert.Equal(CapabilityProminence.Primary, sustained.Prominence);
+        Assert.Equal(new CapabilityLayoutPair(CapabilityIds.PowerBoost), sustained.LayoutPair);
+        Assert.All(descriptors.Descriptors.Where(descriptor => descriptor.ValueKind == CapabilityValueKind.Integer
+                                                               && !descriptor.SupportsWrite),
+            descriptor => Assert.Equal(CapabilityProminence.Compact, descriptor.Prominence));
+        Assert.True(DevicePowerPreset.TryValidate(descriptors.Descriptors, out var presetError), presetError);
+        Assert.Equal([
+            new DevicePowerPreset("super-battery", "Super Battery", 8, 9, DevicePowerMode.BetterBattery)
+                { ScenarioOnAc = "eco", ScenarioOnDc = "comfort" },
+            new DevicePowerPreset("balanced", "Balanced", 17, 18, DevicePowerMode.Balanced)
+                { ScenarioOnAc = "green", ScenarioOnDc = "comfort" },
+            new DevicePowerPreset("extreme-performance", "Extreme Performance", 30, 31, DevicePowerMode.BestPerformance)
+                { ScenarioOnAc = "sport", ScenarioOnDc = "comfort" },
+            new DevicePowerPreset("full-power", "Full Power", 37, 37, DevicePowerMode.BestPerformance)
+                { ScenarioOnAc = "sport", ScenarioOnDc = "comfort" }
+        ], sustained.PowerPresets);
+        Assert.Contains(descriptors.Descriptors, descriptor =>
+            descriptor is
+            {
+                CapabilityId: CapabilityIds.ChargeLimit,
+                Role: CapabilityRole.ChargeLimit,
+                Persistence: CapabilityPersistence.DevicePersistent
+            });
+        Assert.Contains(descriptors.Descriptors, descriptor =>
+            descriptor is { CapabilityId: CapabilityIds.LightingColor, InstanceId: CapabilityInstances.Buttons });
+        Assert.Equal(descriptors.Descriptors.Count, host.CapabilityStates.Count);
+        Assert.Contains(host.CapabilityStates, capability =>
+            capability is
+                { CapabilityId: CapabilityIds.PowerSustained, Available: true, ObservedValue.IntegerValue: 30 });
+        Assert.Contains(host.CapabilityStates, capability =>
+            capability is { CapabilityId: CapabilityIds.ChargeLimit, Available: true, ObservedValue.IntegerValue: 80 });
+        Assert.Contains(host.CapabilityStates, capability =>
+            capability is { CapabilityId: CapabilityIds.Controller, Available: false });
+        Assert.Equal(4, Assert.Single(host.OemControlSets).Count);
+        var controlEvent = Assert.Single(host.OemEvents);
+        Assert.Equal("oem2", controlEvent.ControlId);
+        Assert.Equal(OemPressKind.Short, controlEvent.Press);
+    }
+
+    [Fact]
+    public async Task StartAsync_PublicationFailure_RetractsEveryAcceptedSurface()
+    {
+        using TemporaryDirectory state = new();
+        await using ClawDeviceEngine plugin = new(CreateServices());
+        ControllablePluginHostAdapter host = new(CycleGeneration)
+        {
+            FailNextNonEmptyOemPublication = true
+        };
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None));
+
+        Assert.Equal(2, host.DescriptorSets.Count);
+        Assert.NotEmpty(host.DescriptorSets[0].Descriptors);
+        Assert.Empty(host.DescriptorSets[1].Descriptors);
+        Assert.True(host.DescriptorSets[1].Generation > host.DescriptorSets[0].Generation);
+        Assert.Equal(2, host.OemControlSets.Count);
+        Assert.NotEmpty(host.OemControlSets[0]);
+        Assert.Empty(host.OemControlSets[1]);
+        Assert.Empty(Assert.Single(host.PhysicalDeviceSets));
+
+        var diagnostics = await plugin.GetDiagnosticsAsync(CancellationToken.None);
+        Assert.Equal("stopped", diagnostics.Values["cycle"]);
+        Assert.Equal("unavailable", diagnostics.Values["recovery"]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ControllerStop_CancelsAndUnblocksAnInFlightHostPublication(bool rearOemEvent)
+    {
+        using TemporaryDirectory state = new();
+        FakeControllerSource source = new() { Topology = DirectInputTopology() };
+        ControllablePluginHostAdapter host = new(CycleGeneration)
+        {
+            BlockControllerSamples = !rearOemEvent,
+            BlockOemEvents = rearOemEvent
+        };
+        var journal = await ClawRecoveryJournal.OpenAsync(
+            state.Root,
+            CancellationToken.None);
+        ControllerService controller = new(
+            new FakeMcuTransport(),
+            source,
+            new MotionService(new FakeMotionSource(), ClawModels.Claw8A2Vm),
+            host,
+            journal,
+            ClawModels.Claw8A2Vm,
+            TestTiming.NoDelay)
+        {
+            Enabled = true
+        };
+        _ = await controller.AcquireAsync(
+            new DeviceCycleContext<ClawIdentityState>(
+                CycleGeneration,
+                Deadline.After(TimeSpan.FromSeconds(10)),
+                FakeIdentityReader.CreateState()),
+            CancellationToken.None);
+        var publication = source.EmitAsync(new CanonicalControllerSample
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            Buttons = rearOemEvent ? CanonicalButtons.RearPaddle1 : CanonicalButtons.None
+        }).AsTask();
+        var blockedPublication = rearOemEvent ? host.OemEventEntered : host.ControllerSampleEntered;
+        await blockedPublication.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await controller.ReleaseControllerAsync(
+            Deadline.After(TimeSpan.FromSeconds(10)),
+            CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(DeviceServiceState.Idle, controller.State);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await publication);
+    }
+
+    [Fact]
+    public async Task ChordSuppressor_BackgroundFaultDegradesOnlyThatService()
+    {
+        FakeOemEventSource oemSource = new();
+        ControllablePluginHostAdapter host = new(CycleGeneration);
+        OemEventService oem = new(oemSource, host, new OemButtonLatch());
+        _ = await oem.AcquireAsync(
+            new DeviceCycleContext<ClawIdentityState>(
+                CycleGeneration,
+                Deadline.After(TimeSpan.FromSeconds(10)),
+                FakeIdentityReader.CreateState()),
+            CancellationToken.None);
+        FakeChordSuppressor hook = new();
+        ChordSuppressorService suppressor = new(hook, oem, host);
+        _ = await suppressor.AcquireAsync(
+            new DeviceCycleContext<ClawIdentityState>(
+                CycleGeneration,
+                Deadline.After(TimeSpan.FromSeconds(10)),
+                FakeIdentityReader.CreateState()),
+            CancellationToken.None);
+
+        hook.TriggerFault(new IOException(new string('x', 1500) + "\nsecond line"));
+
+        // A lost keyboard hook costs the chord, never the rest of the device.
+        Assert.Equal(DeviceServiceState.Degraded, suppressor.State);
+        Assert.Empty(host.Faults);
+        Assert.DoesNotContain('\n', suppressor.Reason?.Detail ?? string.Empty);
+    }
+
+    [Fact]
+    public async Task ExecuteCommandAsync_PowerWrite_ReadsBackAndStopRestoresCompactJournal()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var command = Command(
+                CapabilityIds.PowerSustained,
+                null,
+                CapabilityValue.Integer(25)) with
+            {
+                PairedPowerLimitWatts = 37
+            };
+
+        var result = await plugin.ExecuteCommandAsync(command, CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(25, result.ReadbackValue?.IntegerValue);
+        Assert.Equal(25, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
+        {
+            var pending = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+            var entry = Assert.Single(pending.OutstandingEntries);
+            Assert.Equal(ServiceIds.Power, entry.ServiceId);
+            Assert.Equal(DeviceRecoveryStatus.Pending, entry.Status);
+            Assert.True(ClawRecoveryValues.TryPower(entry.OriginalState, out var original));
+            Assert.Equal(new PowerPair(30, 37, 0xC1), original);
+        }
+
+        var stop = await plugin.StopAsync(
+            new PluginStopContext(
+                PluginStopReason.IntegrationDisabled,
+                Deadline.After(TimeSpan.FromSeconds(10))),
+            CancellationToken.None);
+
+        Assert.Equal(PluginStopStatus.Clean, stop.Status);
+        Assert.Equal(30, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
+        Assert.Equal(
+            [25, 30],
+            wmi.Writes
+                .Where(write => write.Method == "Set_Data"
+                                && write.Package[0] == ClawHardwareFacts.PowerSustainedAddress)
+                .Select(write => BinaryPrimitives.ReadInt32LittleEndian(write.Package.AsSpan(1, sizeof(int)))));
+        var completed = await ClawRecoveryJournal.OpenAsync(
+            state.Root,
+            CancellationToken.None);
+        Assert.Empty(completed.OutstandingEntries);
+    }
+
+    [Theory]
+    [InlineData("comfort", 0xC0)]
+    [InlineData("green", 0xC1)]
+    [InlineData("eco", 0xC2)]
+    [InlineData("user", 0xC3)]
+    [InlineData("sport", 0xC4)]
+    public async Task ScenarioSelectionVerifiesAndStopRestoresFirstOriginal(string scenario, int expected)
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        wmi.SetData(ClawHardwareFacts.ScenarioAddress, 0x81);
+        wmi.AfterSetter = (method, package) =>
+        {
+            if (method != "Set_Data" || package[0] != ClawHardwareFacts.ScenarioAddress)
+            {
+                return;
+            }
+
+            wmi.SetData(ClawHardwareFacts.PowerSustainedAddress, 8);
+            wmi.SetData(ClawHardwareFacts.PowerBoostAddress, 9);
+        };
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+        await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        Assert.Equal("inactive",
+            host.CapabilityStates.Last(s => s.CapabilityId == CapabilityIds.Scenario).ObservedValue?.ChoiceValue);
+        var result = await plugin.ExecuteCommandAsync(Command(CapabilityIds.Scenario, null,
+            CapabilityValue.Choice(scenario)), CancellationToken.None);
+        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(expected, wmi.ReadData(ClawHardwareFacts.ScenarioAddress));
+        Assert.Equal(scenario, result.ReadbackValue?.ChoiceValue);
+        Assert.Equal(8,
+            host.CapabilityStates.Last(s => s.CapabilityId == CapabilityIds.PowerSustained).ObservedValue
+                ?.IntegerValue);
+        var stop = await plugin.StopAsync(new PluginStopContext(PluginStopReason.IntegrationDisabled,
+            Deadline.After(TimeSpan.FromSeconds(10))), CancellationToken.None);
+        Assert.Equal(PluginStopStatus.Clean, stop.Status);
+        Assert.Equal(0x81, wmi.ReadData(ClawHardwareFacts.ScenarioAddress));
+        Assert.Equal(30, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
+        Assert.Equal(37, wmi.ReadData(ClawHardwareFacts.PowerBoostAddress));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BlockedPostCommandPublicationHonorsTimeoutOrStopWithoutInventingRollback(bool stop)
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        ControllablePluginHostAdapter host = new(CycleGeneration);
+        await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        TaskCompletionSource blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        wmi.AfterSetter = (method, package) =>
+        {
+            if (method == "Set_Data" && package[0] == ClawHardwareFacts.ScenarioAddress && package[1] == 0xC4)
+            {
+                host.CapabilityPublicationBlock = blocked;
+            }
+        };
+        var command = Command(CapabilityIds.Scenario, null,
+                CapabilityValue.Choice("sport")) with
+            {
+                Deadline = Deadline.After(TimeSpan.FromSeconds(10))
+            };
+        var applying = plugin.ExecuteCommandAsync(command, CancellationToken.None).AsTask();
+        try
+        {
+            await host.CapabilityPublicationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            host.CapabilityPublicationBlock = null;
+            var stopping = stop
+                ? plugin.StopAsync(new PluginStopContext(
+                            PluginStopReason.IntegrationDisabled, Deadline.After(TimeSpan.FromSeconds(5))),
+                        CancellationToken.None)
+                    .AsTask()
+                : null;
+            var result = await applying.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
+            Assert.Null(result.ReadbackValue);
+            Assert.Equal(RollbackResult.NotRequired, result.Rollback);
+            if (stopping is not null)
+            {
+                Assert.Equal(PluginStopStatus.Clean, (await stopping).Status);
+            }
+        }
+        finally
+        {
+            blocked.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteCommandAsync_ChargeLimitPersistsAcrossPluginStop()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var command = Command(
+            CapabilityIds.ChargeLimit,
+            null,
+            CapabilityValue.Integer(60));
+
+        var result = await plugin.ExecuteCommandAsync(command, CancellationToken.None);
+        var stop = await plugin.StopAsync(
+            new PluginStopContext(
+                PluginStopReason.IntegrationDisabled,
+                Deadline.After(TimeSpan.FromSeconds(10))),
+            CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(PluginStopStatus.Clean, stop.Status);
+        // Bit 7 is Battery Master, which the limit needs to be enforced.
+        Assert.Equal(0x80 | 60, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
+    }
+
+    // After BIOS E1T52IMS.114 the reference unit's charge-limit register read 0x80: Battery Master
+    // flag set, percentage zero. That is a reset, not a fault: the capability must stay available
+    // with an unknown observed value so the configured limit can be written back over it.
+    [Fact]
+    public async Task StartAsync_ChargeLimitResetByFirmware_StaysWritable()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        wmi.SetData(ClawHardwareFacts.ChargeLimitAddress, 0x80);
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+
+        var start = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var result = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(80)),
+            CancellationToken.None);
+
+        Assert.Equal(PluginOperationalState.Active, start.State);
+        Assert.Contains(host.CapabilityStates, capability =>
+            capability is { CapabilityId: CapabilityIds.ChargeLimit, Available: true, ObservedValue: null });
+        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(0x80 | 80, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
+    }
+
+    [Fact]
+    public async Task StopAsync_RestoresStateCapturedImmediatelyBeforeFirstMutation()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+
+        // Another manager may legitimately change the resource after plugin acquisition but before
+        // WSGM's first write. The command journal, not the stale acquisition observation, owns the
+        // value that handoff must restore.
+        wmi.SetData(ClawHardwareFacts.PowerSustainedAddress, 28);
+        var command = Command(
+                CapabilityIds.PowerSustained,
+                null,
+                CapabilityValue.Integer(25)) with
+            {
+                PairedPowerLimitWatts = 37
+            };
+
+        var result = await plugin.ExecuteCommandAsync(command, CancellationToken.None);
+        var stop = await plugin.StopAsync(
+            new PluginStopContext(
+                PluginStopReason.IntegrationDisabled,
+                Deadline.After(TimeSpan.FromSeconds(10))),
+            CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(PluginStopStatus.Clean, stop.Status);
+        Assert.Equal(28, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
+    }
+
+    [Fact]
+    public async Task ApplyHaptics_FailedWriteDoesNotSuppressIdenticalRetry()
+    {
+        using TemporaryDirectory state = new();
+        FakeControllerSource source = new() { Topology = DirectInputTopology(), FailNextRumble = true };
+        TestPluginHostAdapter host = new(CycleGeneration);
+        var journal = await ClawRecoveryJournal.OpenAsync(
+            state.Root,
+            CancellationToken.None);
+        ControllerService controller = new(
+            new FakeMcuTransport(),
+            source,
+            new MotionService(new FakeMotionSource(), ClawModels.Claw8A2Vm),
+            host,
+            journal,
+            ClawModels.Claw8A2Vm,
+            TestTiming.NoDelay)
+        {
+            Enabled = true
+        };
+        _ = await controller.AcquireAsync(
+            new DeviceCycleContext<ClawIdentityState>(
+                CycleGeneration,
+                Deadline.After(TimeSpan.FromSeconds(10)),
+                FakeIdentityReader.CreateState()),
+            CancellationToken.None);
+        HapticOutputFrame frame = new()
+        {
+            LowFrequency = 0.5f,
+            HighFrequency = 0.25f,
+            Timestamp = DateTimeOffset.UtcNow
+        };
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await controller.ApplyHapticsAsync(frame, CancellationToken.None));
+        await controller.ApplyHapticsAsync(frame, CancellationToken.None);
+
+        Assert.Equal(2, source.RumbleWriteAttempts);
+    }
+
+    [Fact]
+    public async Task ReleaseController_SourceStopFailureStillEndsIdle()
+    {
+        using TemporaryDirectory state = new();
+        FakeControllerSource source = new() { Topology = DirectInputTopology(), FailStop = true };
+        TestPluginHostAdapter host = new(CycleGeneration);
+        var journal = await ClawRecoveryJournal.OpenAsync(
+            state.Root,
+            CancellationToken.None);
+        ControllerService controller = new(
+            new FakeMcuTransport(),
+            source,
+            new MotionService(new FakeMotionSource(), ClawModels.Claw8A2Vm),
+            host,
+            journal,
+            ClawModels.Claw8A2Vm,
+            TestTiming.NoDelay)
+        {
+            Enabled = true
+        };
+        _ = await controller.AcquireAsync(
+            new DeviceCycleContext<ClawIdentityState>(
+                CycleGeneration,
+                Deadline.After(TimeSpan.FromSeconds(10)),
+                FakeIdentityReader.CreateState()),
+            CancellationToken.None);
+
+        await controller.ReleaseControllerAsync(
+            Deadline.After(TimeSpan.FromSeconds(10)),
+            CancellationToken.None);
+
+        // Best effort, as HC's Close: a source that fails to stop does not keep the service down.
+        Assert.Equal(DeviceServiceState.Idle, controller.State);
+    }
+
+    [Fact]
+    public async Task BeginAsync_UnfinishedWrite_RetainsFirstOriginalAcrossReopen()
+    {
+        using TemporaryDirectory state = new();
+        {
+            var journal = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+            var operation = await journal.BeginAsync(
+                ServiceIds.Power,
+                "ec:1T52EMS1.109;msi-acpi:8.0",
+                ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)),
+                CancellationToken.None);
+
+            Assert.True(operation.Opened);
+            Assert.Single(journal.OutstandingEntries);
+        }
+
+        var reopened = await ClawRecoveryJournal.OpenAsync(
+            state.Root,
+            CancellationToken.None);
+        var entry = Assert.Single(reopened.OutstandingEntries);
+        Assert.True(ClawRecoveryValues.TryPower(entry.OriginalState, out var original));
+        Assert.Equal(new PowerPair(30, 37, 0xC1), original);
+
+        var existing = await reopened.BeginAsync(
+            ServiceIds.Power,
+            "ec:1T52EMS1.109;msi-acpi:8.0",
+            ClawRecoveryValues.Power(new PowerPair(25, 37, 0xC1)),
+            CancellationToken.None);
+        Assert.False(existing.Opened);
+        Assert.True(ClawRecoveryValues.TryPower(existing.Entry.OriginalState, out var retained));
+        Assert.Equal(new PowerPair(30, 37, 0xC1), retained);
+    }
+
+    [Fact]
+    public async Task StartAsync_OutstandingCompactPowerEntry_RestoresBeforeNewOwnership()
+    {
+        using TemporaryDirectory state = new();
+        {
+            var journal = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+            _ = await journal.BeginAsync(
+                ServiceIds.Power,
+                "ec:1T52EMS1.109;msi-acpi:8.0",
+                ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)),
+                CancellationToken.None);
+        }
+
+        FakeWmiTransport wmi = new();
+        wmi.SetData(ClawHardwareFacts.PowerSustainedAddress, 25);
+        await using ClawDeviceEngine plugin = new(CreateServices(wmi));
+        TestPluginHostAdapter host = new(CycleGeneration);
+
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+
+        Assert.Equal(30, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
+        Assert.Contains(host.CapabilityStates, capability =>
+            capability is
+                { CapabilityId: CapabilityIds.PowerSustained, Available: true, ObservedValue.IntegerValue: 30 });
+        var reconciled = await ClawRecoveryJournal.OpenAsync(
+            state.Root,
+            CancellationToken.None);
+        Assert.Empty(reconciled.OutstandingEntries);
+    }
+
+    [Fact]
+    public async Task StartAsync_AFailedRestoreIsNotRewrittenUntilACommandRearmsIt()
+    {
+        using TemporaryDirectory state = new();
+        {
+            var journal = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+            _ = await journal.BeginAsync(
+                ServiceIds.Power,
+                "bios:E1T52IMS.114",
+                ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)),
+                CancellationToken.None);
+        }
+
+        FakeWmiTransport wmi = new() { FailNextSetter = true };
+        wmi.SetData(ClawHardwareFacts.PowerSustainedAddress, 25);
+        await using (ClawDeviceEngine firstCycle = new(CreateServices(wmi)))
+        {
+            TestPluginHostAdapter firstHost = new(CycleGeneration);
+            _ = await firstCycle.StartAsync(
+                StartContext(firstHost, state.Root),
+                CancellationToken.None);
+            var diagnostics = await firstCycle.GetDiagnosticsAsync(CancellationToken.None);
+
+            Assert.Equal("pending", diagnostics.Values["recovery"]);
+            Assert.Equal(nameof(DeviceServiceState.Owned), diagnostics.Values[ServiceIds.Power]);
+            _ = await firstCycle.StopAsync(
+                new PluginStopContext(
+                    PluginStopReason.IntegrationDisabled,
+                    Deadline.After(TimeSpan.FromSeconds(10))),
+                CancellationToken.None);
+        }
+
+        var failed = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+        Assert.Equal(DeviceRecoveryStatus.RestoreFailed, failed.EntryFor(ServiceIds.Power)?.Status);
+        wmi.Writes.Clear();
+        await using (ClawDeviceEngine secondCycle = new(CreateServices(wmi)))
+        {
+            TestPluginHostAdapter secondHost = new(CycleGeneration + 1);
+            _ = await secondCycle.StartAsync(
+                StartContext(secondHost, state.Root),
+                CancellationToken.None);
+            var diagnostics = await secondCycle.GetDiagnosticsAsync(CancellationToken.None);
+
+            // Not written again automatically, and the service stays usable.
+            Assert.Empty(wmi.Writes);
+            Assert.Equal(nameof(DeviceServiceState.Owned), diagnostics.Values[ServiceIds.Power]);
+            var result = await secondCycle.ExecuteCommandAsync(
+                Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+                {
+                    PairedPowerLimitWatts = 20,
+                    ExpectedCycleGeneration = CycleGeneration + 1
+                }, CancellationToken.None);
+            Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+
+            // The command re-armed the entry, so stop writes its first original.
+            _ = await secondCycle.StopAsync(
+                new PluginStopContext(
+                    PluginStopReason.IntegrationDisabled,
+                    Deadline.After(TimeSpan.FromSeconds(10))),
+                CancellationToken.None);
+            Assert.Equal(30, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
+            var reconciled = await ClawRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+            Assert.Empty(reconciled.OutstandingEntries);
+        }
+    }
+
+    private static PluginStartContext StartContext(IDeviceSink host, string stateDirectory)
+    {
+        return new PluginStartContext
+        {
+            Host = host,
+            CycleGeneration = host.CycleGeneration,
+            DeviceDefinitionId = ClawModels.Claw8A2Vm.DefinitionId,
+            StateDirectory = stateDirectory,
+            ControllerManagementEnabled = false
+        };
+    }
+
+    private static ClawHardwareServices CreateServices(
+        FakeWmiTransport? wmi = null,
+        FakeOemEventSource? oemEvents = null,
+        FakeMcuTransport? mcu = null,
+        FakeControllerSource? controller = null,
+        FakeMotionSource? motion = null,
+        FakeChordSuppressor? chordSuppressor = null,
+        FakeIdentityReader? identity = null)
+    {
+        return new ClawHardwareServices(
+            identity ?? new FakeIdentityReader(),
+            wmi ?? new FakeWmiTransport(),
+            oemEvents ?? new FakeOemEventSource(),
+            mcu ?? new FakeMcuTransport(),
+            controller ?? new FakeControllerSource(),
+            motion ?? new FakeMotionSource(),
+            chordSuppressor ?? new FakeChordSuppressor(),
+            new OemButtonLatch(),
+            TestTiming.NoDelay);
+    }
+
+    private static DeviceIdentitySnapshot ExactIdentity()
+    {
+        return new DeviceIdentitySnapshot
+        {
+            SystemManufacturer = ClawHardwareFacts.Manufacturer,
+            BaseboardManufacturer = ClawHardwareFacts.Manufacturer,
+            BaseboardProduct = ClawModels.Claw8A2Vm.BoardProduct,
+            SystemSku = "1T52.1",
+            UsbEndpoints =
+            [
+                new UsbEndpointObservation
+                {
+                    VendorId = ClawHardwareFacts.Hex(ClawHardwareFacts.UsbVendorId),
+                    ProductId = ClawHardwareFacts.Hex(ClawHardwareFacts.XInputProductId),
+                    DeviceRelease = "0229"
+                }
+            ]
+        };
+    }
+
+    private static ControllerTopology DirectInputTopology()
+    {
+        return new ControllerTopology(
+            ClawControllerMode.DirectInput,
+            ClawHardwareFacts.DirectInputProductId,
+            "PCIROOT(0)#USBROOT(0)#USB(2)",
+            [
+                new PhysicalDeviceIdentity
+                {
+                    InstancePath = @"HID\VID_0DB0&PID_1902\TEST",
+                    LocationPath = "PCIROOT(0)#USBROOT(0)#USB(2)",
+                    VendorId = ClawHardwareFacts.Hex(ClawHardwareFacts.UsbVendorId),
+                    ProductId = ClawHardwareFacts.Hex(ClawHardwareFacts.DirectInputProductId),
+                    RequiresHiding = true
+                }
+            ]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcPowerFailureKeepsTheDeviceAvailableWithAConservativePowerSource(bool comFailure)
+    {
+        var reader = Reader(() => throw (comFailure
+            ? new COMException("test failure")
+            : new UnauthorizedAccessException("test refusal")));
+
+        var identity = await reader.ReadAsync(CancellationToken.None);
+
+        Assert.True(identity.ExactMachineMatch);
+        Assert.False(identity.OnAcPower);
+    }
+
+    [Fact]
+    public async Task CancellationDoesNotWaitForABlockedAcPowerQuery()
+    {
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reader = Reader(() =>
+        {
+            entered.SetResult();
+            release.Task.Wait();
+            exited.SetResult();
+            return true;
+        });
+        using CancellationTokenSource cancellation = new();
+        try
+        {
+            var read = reader.ReadAsync(cancellation.Token).AsTask();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None);
+            await cancellation.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                read.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        }
+        finally
+        {
+            release.TrySetResult();
+            await exited.Task.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None);
+        }
+    }
+
+    private static WindowsClawIdentityReader Reader(Func<bool> readPower)
+    {
+        FakeWmiTransport wmi = new();
+        wmi.SetResponse("Get_WMI", 1, new byte[32]);
+        wmi.SetResponse("Get_EC", 0, new byte[32]);
+        return new WindowsClawIdentityReader(wmi, () => new DeviceIdentitySnapshot
+        {
+            SystemManufacturer = ClawHardwareFacts.Manufacturer,
+            BaseboardManufacturer = ClawHardwareFacts.Manufacturer,
+            BaseboardProduct = ClawModels.Claw8A2Vm.BoardProduct,
+            SystemSku = "1T52.1"
+        }, () => [], readPower, () => null);
+    }
+}

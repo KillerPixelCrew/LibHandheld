@@ -1,0 +1,630 @@
+{
+  "schemaVersion": 1,
+  "profileId": "rog-ally",
+  "displayName": "ASUS ROG Ally and ROG Ally X",
+  "revision": 2,
+  "exactDeviceIds": ["rc71l", "rc72la"],
+  "sourceRevision": "handheld-controller-glyphs-46792aadf3b1",
+  "noticePath": "THIRD_PARTY_NOTICES.md",
+  "assets": [
+    {
+      "assetId": "face-south",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "face-east",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "face-west",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "face-north",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "mono-a",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "mono-b",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "mono-x",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "mono-y",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "command-center",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "armoury-crate",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "library",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad-up",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad-down",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad-left",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "dpad-right",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-stick",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-stick",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-stick-neutral",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-stick-neutral",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-stick-up",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-stick-down",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-stick-left",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-stick-right",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-stick-up",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-stick-down",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-stick-left",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-stick-right",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-shoulder",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-shoulder",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-trigger",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-trigger",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "left-trigger-soft",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "right-trigger-soft",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "view",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "menu",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "rear-m1",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "rear-m2",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "rear-m1-right",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "rear-m2-left",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "controller-full-rog-ally",
+      "format": "Svg",
+      "role": "FullController",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 66.521,
+        "height": 27.675
+      }
+    },
+    {
+      "assetId": "controller-left-rog-ally",
+      "format": "Png",
+      "role": "LeftController",
+      "pixelWidth": 643,
+      "pixelHeight": 464
+    },
+    {
+      "assetId": "controller-right-rog-ally",
+      "format": "Png",
+      "role": "RightController",
+      "pixelWidth": 643,
+      "pixelHeight": 464
+    }
+  ],
+  "controllerImages": {
+    "fullAssetId": "controller-full-rog-ally",
+    "leftAssetId": "controller-left-rog-ally",
+    "rightAssetId": "controller-right-rog-ally"
+  },
+  "controls": [
+    {
+      "control": "FaceSouth",
+      "presence": "Present",
+      "physicalLabel": "A",
+      "assetId": "mono-a"
+    },
+    {
+      "control": "FaceEast",
+      "presence": "Present",
+      "physicalLabel": "B",
+      "assetId": "mono-b"
+    },
+    {
+      "control": "FaceWest",
+      "presence": "Present",
+      "physicalLabel": "X",
+      "assetId": "mono-x"
+    },
+    {
+      "control": "FaceNorth",
+      "presence": "Present",
+      "physicalLabel": "Y",
+      "assetId": "mono-y"
+    },
+    {
+      "control": "DpadUp",
+      "presence": "Present",
+      "assetId": "dpad-up"
+    },
+    {
+      "control": "DpadDown",
+      "presence": "Present",
+      "assetId": "dpad-down"
+    },
+    {
+      "control": "DpadLeft",
+      "presence": "Present",
+      "assetId": "dpad-left"
+    },
+    {
+      "control": "DpadRight",
+      "presence": "Present",
+      "assetId": "dpad-right"
+    },
+    {
+      "control": "LeftStick",
+      "presence": "Present",
+      "side": "Left",
+      "assetId": "left-stick"
+    },
+    {
+      "control": "RightStick",
+      "presence": "Present",
+      "side": "Right",
+      "assetId": "right-stick"
+    },
+    {
+      "control": "LeftShoulder",
+      "presence": "Present",
+      "side": "Left",
+      "physicalLabel": "LB",
+      "assetId": "left-shoulder"
+    },
+    {
+      "control": "RightShoulder",
+      "presence": "Present",
+      "side": "Right",
+      "physicalLabel": "RB",
+      "assetId": "right-shoulder"
+    },
+    {
+      "control": "LeftTrigger",
+      "presence": "Present",
+      "side": "Left",
+      "physicalLabel": "LT",
+      "assetId": "left-trigger",
+      "softPullAssetId": "left-trigger-soft"
+    },
+    {
+      "control": "RightTrigger",
+      "presence": "Present",
+      "side": "Right",
+      "physicalLabel": "RT",
+      "assetId": "right-trigger",
+      "softPullAssetId": "right-trigger-soft"
+    },
+    {
+      "control": "Guide",
+      "presence": "Present",
+      "physicalLabel": "Command Center",
+      "assetId": "command-center"
+    },
+    {
+      "control": "View",
+      "presence": "Present",
+      "assetId": "view"
+    },
+    {
+      "control": "Menu",
+      "presence": "Present",
+      "assetId": "menu"
+    },
+    {
+      "control": "QuickAccess",
+      "presence": "Present",
+      "physicalLabel": "Armoury Crate",
+      "assetId": "armoury-crate"
+    },
+    {
+      "control": "RearM1",
+      "presence": "Present",
+      "side": "Left",
+      "physicalLabel": "M1",
+      "assetId": "rear-m1"
+    },
+    {
+      "control": "RearM2",
+      "presence": "Present",
+      "side": "Right",
+      "physicalLabel": "M2",
+      "assetId": "rear-m2"
+    },
+    {
+      "control": "LeftTrackpad",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrackpad",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftStickTouch",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightStickTouch",
+      "presence": "Absent"
+    },
+    {
+      "control": "RearLeft2",
+      "presence": "Absent"
+    },
+    {
+      "control": "RearRight2",
+      "presence": "Absent"
+    }
+  ],
+  "aliases": []
+}
