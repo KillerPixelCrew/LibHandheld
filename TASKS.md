@@ -21,7 +21,7 @@ testing.
       serial generations with their firmware predicates and complete supported controls.
 - [x] **Valve and remaining HC/HHD targets.** Implement Steam Deck HID, controls and power access,
       generic physical-controller/sensor paths and Windows equivalents for HHD-only mechanisms.
-- [ ] **Complete delivery and coverage.** Map every source record to its concrete implementation,
+- [x] **Complete delivery and coverage.** Map every source record to its concrete implementation,
       integrate model capabilities/dependencies in WSGM/setup, format/build/deploy and record actual
       testing separately. Audit omissions; detection rows, declarations and stubs do not count as
       support.
@@ -32,3 +32,10 @@ The inventory contains 201 source records, including aliases and overlapping sel
 Implementation coverage is maintained in `inventory/implementation-coverage.json`; hardware
 observations remain separate. New automated tests and test-bearing gates follow the maintainer's
 manual-first policy.
+
+Delivery: WSGM implementation commit f1e212d8 consumes LibHandheld 0499bd0. The full setup and
+development installation are version 2.1.0.1660. Whole-solution Release compilation passed with zero
+warnings/errors; Rider cleanup and Steam asset checks passed. Native libraries, helpers and
+installed assembly hashes match the staged output. Automated tests remain deferred; no new handheld
+hardware acceptance is claimed. Later tracker-only commits do not change this delivered source
+snapshot.
