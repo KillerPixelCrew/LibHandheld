@@ -1,0 +1,613 @@
+using System.Globalization;
+using LibHandheld.Internal.Input;
+using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Windows;
+using Microsoft.Win32.SafeHandles;
+
+namespace LibHandheld.Families.LegionGo;
+
+internal interface ILegionHid : IAsyncDisposable
+{
+    bool Connected { get; }
+    bool Reading { get; }
+    bool Listening { get; }
+    bool RumbleAvailable { get; }
+    string? Binding { get; }
+    bool RightGyro { get; set; }
+    bool NativeTouchpad { get; set; }
+    event Action? Disconnected;
+    ValueTask<bool> OpenAsync(LegionGoModel model, CancellationToken cancellationToken);
+    ValueTask WriteAsync(byte[] report, CancellationToken cancellationToken);
+    ValueTask StartAsync(IDeviceSink sink, CancellationToken cancellationToken);
+    ValueTask ListenAsync(IDeviceSink sink, CancellationToken cancellationToken);
+    ValueTask StopAsync(CancellationToken cancellationToken);
+    ValueTask CloseAsync(CancellationToken cancellationToken);
+    ValueTask RumbleAsync(HapticOutputFrame output, CancellationToken cancellationToken);
+}
+
+/// <summary>Command collection and controller acquisition are independent; releasing input retains lighting.</summary>
+internal sealed class WindowsLegionHid : ILegionHid
+{
+    private readonly Lock _output = new();
+    private readonly long[] _pressIds = new long[14];
+    private readonly SemaphoreSlim _publishing = new(1, 1);
+    private readonly Lock _samples = new();
+    private readonly LegionTouchState _touch = new();
+    private readonly SemaphoreSlim _writes = new(1, 1);
+    private HidCollection? _commandCollection;
+    private SafeFileHandle? _commands;
+    private LegionDInput? _dinput;
+    private volatile bool _forward;
+    private FileStream? _gamepad;
+    private Task? _gamepadReader;
+    private CanonicalControllerSample _gamepadSample;
+    private FileStream? _input;
+    private LegionGoModel? _model;
+    private volatile bool _nativeTouchpad;
+    private ushort _oem;
+    private long _pressSequence;
+    private Task? _reader;
+    private CancellationTokenSource? _readerCancellation;
+    private volatile bool _rightGyro;
+    private IDeviceSink? _sink;
+    private int _slot = -1;
+    public event Action? Disconnected;
+
+    public bool Connected => _commands is not null;
+    public bool Listening => _reader is { IsCompleted: false };
+    public bool Reading => _forward && Listening;
+    public bool RumbleAvailable => _slot >= 0;
+
+    public string? Binding => _commandCollection is { } collection
+        ? $"{collection.PhysicalLocation}|{collection.ProductId:X4}|{collection.ReleaseNumber:X4}"
+        : null;
+
+    public bool RightGyro
+    {
+        get => _rightGyro;
+        set => _rightGyro = value;
+    }
+
+    public bool NativeTouchpad
+    {
+        get => _nativeTouchpad;
+        set => _nativeTouchpad = value;
+    }
+
+    public ValueTask<bool> OpenAsync(LegionGoModel model, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _model = model;
+        if (_commands is not null)
+        {
+            return ValueTask.FromResult(true);
+        }
+
+        var candidates = HidDevices.Enumerate(model.VendorId, model.ProductIds.ToArray());
+        var commands = candidates.Where(c => model.Slim
+            ? c.InputLength == 65 && c.OutputLength == 65
+            : c.UsagePage == 0xFFA0 && c.Usage == 1 && c.OutputLength >= 13).ToArray();
+        _commandCollection = commands.FirstOrDefault();
+        if (_commandCollection is null || string.IsNullOrWhiteSpace(_commandCollection.PhysicalLocation) ||
+            commands.Any(c =>
+                !HidDevices.SamePhysicalLocation(c.PhysicalLocation, _commandCollection.PhysicalLocation)))
+        {
+            return ValueTask.FromResult(false);
+        }
+
+        _commands = HidDevices.Open(_commandCollection, false);
+        _slot = -1;
+        return ValueTask.FromResult(true);
+    }
+
+    public async ValueTask WriteAsync(byte[] report, CancellationToken cancellationToken)
+    {
+        await _writes.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_commands is null || _commandCollection is null)
+            {
+                throw new IOException("The Lenovo command collection is unavailable.");
+            }
+
+            // One dispatch only. A failed write is never repeated by this transport.
+            HidDevices.WriteOutput(_commands, _commandCollection, report);
+        }
+        finally
+        {
+            _writes.Release();
+        }
+    }
+
+    public ValueTask StartAsync(IDeviceSink sink, CancellationToken cancellationToken)
+    {
+        return StartCoreAsync(sink, true, cancellationToken);
+    }
+
+    public ValueTask ListenAsync(IDeviceSink sink, CancellationToken cancellationToken)
+    {
+        return StartCoreAsync(sink, false, cancellationToken);
+    }
+
+    public async ValueTask StopAsync(CancellationToken cancellationToken)
+    {
+        _forward = false;
+        _gamepad?.Dispose();
+        if (_gamepadReader is { } gamepadReader)
+        {
+            await gamepadReader.ConfigureAwait(false);
+        }
+
+        _gamepadReader = null;
+        _gamepad = null;
+        _dinput?.Dispose();
+        _dinput = null;
+        lock (_samples)
+        {
+            _gamepadSample = default;
+        }
+
+        _touch.Reset();
+        lock (_output)
+        {
+            if (_slot >= 0)
+            {
+                try
+                {
+                    if (_model is not null && LegionXInput.Matches(_slot, _model))
+                    {
+                        LegionXInput.Rumble(_slot, HapticOutputFrame.Stop(DateTimeOffset.UtcNow));
+                    }
+                }
+                catch (IOException)
+                {
+                }
+            }
+
+            _slot = -1;
+        }
+
+        await _publishing.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            if (_sink is not null)
+            {
+                await _sink.PublishControllerSampleAsync(CanonicalControllerSample.Neutral(DateTimeOffset.UtcNow),
+                    CancellationToken.None).ConfigureAwait(false);
+                await _sink.PublishPhysicalDevicesAsync([], null, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _publishing.Release();
+        }
+    }
+
+    public async ValueTask CloseAsync(CancellationToken cancellationToken)
+    {
+        await StopAsync(cancellationToken).ConfigureAwait(false);
+        await StopReaderAsync().ConfigureAwait(false);
+        await _writes.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            _commands?.Dispose();
+            _commands = null;
+            _commandCollection = null;
+        }
+        finally
+        {
+            _writes.Release();
+        }
+    }
+
+    public ValueTask RumbleAsync(HapticOutputFrame output, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_output)
+        {
+            if (_readerCancellation?.IsCancellationRequested == false && Reading && _model is not null &&
+                LegionXInput.Matches(_slot, _model))
+            {
+                LegionXInput.Rumble(_slot, output);
+            }
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        _writes.Dispose();
+        _publishing.Dispose();
+    }
+
+    private async ValueTask StartCoreAsync(IDeviceSink sink, bool forward, CancellationToken cancellationToken)
+    {
+        var model = _model ?? throw new InvalidOperationException("No Lenovo model is bound.");
+        if (!Connected)
+        {
+            throw new IOException("The Lenovo command collection is unavailable.");
+        }
+
+        var candidates = HidDevices.Enumerate(model.VendorId, model.ProductIds.ToArray());
+        var source = candidates.FirstOrDefault(c => (model.Slim
+                                                        ? c.InputLength == 33
+                                                        : c.UsagePage == 0xFFA0 && c.Usage == 1 &&
+                                                          c.InputLength >= 60) &&
+                                                    HidDevices.SamePhysicalLocation(c.PhysicalLocation,
+                                                        _commandCollection!.PhysicalLocation));
+        if (source is null)
+        {
+            throw new IOException("The Lenovo controller report collection is unavailable.");
+        }
+
+        _sink = sink;
+        if (Listening && !forward)
+        {
+            return;
+        }
+
+        if (!Listening)
+        {
+            await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            await StopReaderAsync().ConfigureAwait(false);
+            _input = HidDevices.OpenStream(source);
+            _readerCancellation = new CancellationTokenSource();
+        }
+
+        _forward = forward;
+        _slot = forward ? LegionXInput.Find(model) : -1;
+        // The separate Generic Desktop collection is decoded using Windows' descriptor parser.
+        var gamepad = forward && _slot < 0
+            ? candidates.FirstOrDefault(c => c.UsagePage == 1 && c.Usage is 4 or 5 &&
+                                             !string.IsNullOrWhiteSpace(c.PhysicalLocation) &&
+                                             HidDevices.SamePhysicalLocation(c.PhysicalLocation,
+                                                 source.PhysicalLocation))
+            : null;
+        if (gamepad is not null)
+        {
+            _gamepad = HidDevices.OpenStream(gamepad);
+            _dinput = new LegionDInput(_gamepad.SafeFileHandle);
+        }
+
+        // Only controller nodes from this composite device are eligible for hiding; never hide the command/IMU channel.
+        var nodes = forward ? HidDevices.PresentNodes(model.VendorId, model.ProductIds.ToArray()) : [];
+        var identities = nodes.Where(n => n.ClassGuid is var type &&
+                                          (type == HidDevices.XnaCompositeClass ||
+                                           type == HidDevices.XboxCompositeClass) &&
+                                          !string.IsNullOrWhiteSpace(n.PhysicalLocation) &&
+                                          HidDevices.SamePhysicalLocation(n.PhysicalLocation, source.PhysicalLocation))
+            .Concat(nodes.Where(n => n.ClassGuid == HidDevices.HidClass &&
+                                     n.InstancePath.Contains("&IG_", StringComparison.OrdinalIgnoreCase) &&
+                                     !string.IsNullOrWhiteSpace(n.PhysicalLocation) &&
+                                     HidDevices.SamePhysicalLocation(n.PhysicalLocation, source.PhysicalLocation)))
+            .Select(n => new PhysicalDeviceIdentity
+            {
+                InstancePath = n.InstancePath, LocationPath = n.PhysicalLocation,
+                VendorId = model.VendorId.ToString("X4", CultureInfo.InvariantCulture),
+                ProductId = source.ProductId.ToString("X4", CultureInfo.InvariantCulture), RequiresHiding = true
+            }).ToArray();
+        if (gamepad is not null)
+        {
+            identities =
+            [
+                .. identities, new PhysicalDeviceIdentity
+                {
+                    InstancePath = gamepad.InstancePath, LocationPath = gamepad.PhysicalLocation,
+                    VendorId = model.VendorId.ToString("X4", CultureInfo.InvariantCulture),
+                    ProductId = gamepad.ProductId.ToString("X4", CultureInfo.InvariantCulture), RequiresHiding = true
+                }
+            ];
+        }
+
+        if (forward && _slot >= 0 && identities.Length == 0)
+        {
+            throw new IOException("The Lenovo XInput slot has no matching physical controller identity for hiding.");
+        }
+
+        await sink.PublishPhysicalDevicesAsync(identities, _slot >= 0
+            ? new HapticCapabilities
+            {
+                LowFrequency = OutputChannelSupport.Native, HighFrequency = OutputChannelSupport.Native
+            }
+            : null, cancellationToken).ConfigureAwait(false);
+        var token = _readerCancellation!.Token;
+        if (gamepad is not null)
+        {
+            _gamepadReader = ReadGamepadAsync(gamepad, token);
+        }
+
+        if (!Listening)
+        {
+            _reader = ReadAsync(model, source, sink, token);
+        }
+    }
+
+    private async ValueTask StopReaderAsync()
+    {
+        _readerCancellation?.Cancel();
+        _input?.Dispose();
+        if (_reader is { } reader)
+        {
+            await reader.ConfigureAwait(false);
+        }
+
+        _reader = null;
+        _input = null;
+        _readerCancellation?.Dispose();
+        _readerCancellation = null;
+    }
+
+    private async Task ReadAsync(LegionGoModel model, HidCollection source, IDeviceSink sink, CancellationToken token)
+    {
+        var report = new byte[source.InputLength];
+        var nativeDisconnected = false;
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                int read;
+                try
+                {
+                    read = await _input!.ReadAsync(report, token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+                {
+                    nativeDisconnected = true;
+                    throw;
+                }
+
+                if (read == 0)
+                {
+                    nativeDisconnected = true;
+                    throw new IOException("The Lenovo controller disconnected.");
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                // hidapi strips Windows' leading zero from unnumbered input. HC's Go S offsets refer to that payload.
+                var offset = model.Slim && report[0] == 0 ? 1 : 0;
+                if (!LegionInputCodec.TryDecode(model, report.AsSpan(offset, read - offset), now, RightGyro,
+                        NativeTouchpad, out var decoded))
+                {
+                    continue;
+                }
+
+                var sample = decoded.Sample;
+                if (LegionXInput.Matches(_slot, model) && LegionXInput.TryRead(_slot, now, out var xinput))
+                {
+                    sample = LegionInputCodec.Merge(xinput, sample);
+                }
+                else if (_dinput is not null)
+                {
+                    CanonicalControllerSample direct;
+                    lock (_samples)
+                    {
+                        direct = _gamepadSample;
+                    }
+
+                    if (direct.Timestamp != default)
+                    {
+                        sample = LegionInputCodec.Merge(direct with
+                        {
+                            Timestamp = now,
+                            LeftTrigger = model.Slim ? direct.LeftTrigger : sample.LeftTrigger,
+                            RightTrigger = model.Slim ? direct.RightTrigger : sample.RightTrigger
+                        }, sample);
+                    }
+                }
+
+                if (_forward && !model.Slim && !NativeTouchpad)
+                {
+                    sample = _touch.Apply(sample);
+                }
+                else
+                {
+                    _touch.Reset();
+                }
+
+                var oem = (ushort)(_forward
+                    ? decoded.OemButtons | (_touch.SecondaryHeld ? 8192 : 0)
+                    : decoded.OemButtons & 3);
+                await PublishOemAsync(oem, now, sink, token).ConfigureAwait(false);
+                if (_forward)
+                {
+                    await _publishing.WaitAsync(token).ConfigureAwait(false);
+                    try
+                    {
+                        if (_forward)
+                        {
+                            await sink.PublishControllerSampleAsync(sample, token).ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        _publishing.Release();
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (!token.IsCancellationRequested)
+            {
+                sink.Trace(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
+                // A disconnect is a resource degradation; the owning observation turn performs a fresh acquisition.
+            }
+        }
+        finally
+        {
+            try
+            {
+                await PublishOemAsync(0, DateTimeOffset.UtcNow, sink, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                sink.Trace(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
+            }
+
+            try
+            {
+                await sink.PublishControllerSampleAsync(CanonicalControllerSample.Neutral(DateTimeOffset.UtcNow),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                sink.Trace(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
+            }
+
+            try
+            {
+                await sink.PublishPhysicalDevicesAsync([], null, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                sink.Trace(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
+            }
+
+            if (nativeDisconnected && !token.IsCancellationRequested)
+            {
+                Disconnected?.Invoke();
+            }
+        }
+    }
+
+    private async Task ReadGamepadAsync(HidCollection collection, CancellationToken token)
+    {
+        var report = new byte[collection.InputLength];
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                var count = await _gamepad!.ReadAsync(report, token).ConfigureAwait(false);
+                if (count == 0)
+                {
+                    break;
+                }
+
+                if (_dinput!.TryDecode(report.AsSpan(0, count), DateTimeOffset.UtcNow, out var sample))
+                {
+                    lock (_samples)
+                    {
+                        _gamepadSample = sample;
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            lock (_samples)
+            {
+                _gamepadSample = default;
+            }
+        }
+    }
+
+    private async ValueTask PublishOemAsync(ushort current, DateTimeOffset now, IDeviceSink sink,
+        CancellationToken token)
+    {
+        var changed = current ^ _oem;
+        _oem = current;
+        for (var index = 0; index < LegionControls.Ids.Length; index++)
+        {
+            var bit = 1 << index;
+            if ((changed & bit) == 0)
+            {
+                continue;
+            }
+
+            var pressed = (current & bit) != 0;
+            if (pressed)
+            {
+                _pressIds[index] = ++_pressSequence;
+            }
+
+            await sink.PublishOemEventAsync(new OemControlEvent(LegionControls.Ids[index], OemPressKind.Short, now,
+                        $"legion:{index}:{_pressIds[index]}",
+                        pressed ? OemControlEdge.Pressed : OemControlEdge.Released),
+                    token)
+                .ConfigureAwait(false);
+        }
+    }
+}
+
+internal sealed class LegionTouchState
+{
+    private bool _double;
+    private DateTimeOffset _down;
+    private DateTimeOffset _lastUp;
+    private float _lastX;
+    private float _lastY;
+    private bool _long;
+    private bool _pending;
+    private float _startX;
+    private float _startY;
+    private bool _touching;
+    public bool SecondaryHeld => _long && _touching;
+
+    public CanonicalControllerSample Apply(CanonicalControllerSample sample)
+    {
+        var touched = (sample.Buttons & CanonicalButtons.RightPadTouch) != 0;
+        var click = false;
+        if (touched && !_touching)
+        {
+            _double = _pending && sample.Timestamp - _lastUp < TimeSpan.FromMilliseconds(500) &&
+                      Distance(sample.RightPadX, sample.RightPadY, _lastX, _lastY) <= 0.48f;
+            _pending = false;
+            _long = false;
+            _down = sample.Timestamp;
+            _startX = sample.RightPadX;
+            _startY = sample.RightPadY;
+        }
+
+        if (touched)
+        {
+            _lastX = sample.RightPadX;
+            _lastY = sample.RightPadY;
+            _long |= !_double && sample.Timestamp - _down >= TimeSpan.FromMilliseconds(500) &&
+                     Distance(_lastX, _lastY, _startX, _startY) <= 0.1f;
+            click = _double;
+        }
+        else if (_touching)
+        {
+            _pending = !_double && !_long && Distance(_lastX, _lastY, _startX, _startY) <= 0.1f;
+            _lastUp = sample.Timestamp;
+            _double = false;
+            _long = false;
+        }
+
+        if (!touched && _pending && sample.Timestamp - _lastUp > TimeSpan.FromMilliseconds(500))
+        {
+            click = true;
+            _pending = false;
+        }
+
+        _touching = touched;
+        return sample with { Buttons = sample.Buttons | (click ? CanonicalButtons.RightPadClick : 0) };
+    }
+
+    public void Reset()
+    {
+        _touching = false;
+        _pending = false;
+        _double = false;
+        _long = false;
+    }
+
+    private static float Distance(float x, float y, float a, float b)
+    {
+        return MathF.Sqrt((x - a) * (x - a) + (y - b) * (y - b));
+    }
+}
+
+internal static class LegionControls
+{
+    public static readonly string[] Ids =
+    [
+        "legion-r", "legion-l", "y1", "y2", "m3", "y3", "m1", "m2", "page", "desktop", "wheel-click", "wheel-up",
+        "wheel-down", "touchpad-secondary-click"
+    ];
+}

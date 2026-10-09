@@ -1,14 +1,17 @@
 # LibHandheld
 
-Windows-first .NET hardware library, directly consumed by WSGM. The initial implementation contains
-five MSI Claw and four ASUS ROG Ally definitions, migrated from the existing MIT WSGM engines. It
-provides native identification, power, fans, charging, lighting, controller input, motion, haptics,
-OEM controls, glyphs and recovery without a WSGM SDK or device-package loader.
+Windows-first .NET hardware library, directly consumed by WSGM. Native families cover MSI Claw, ASUS
+ROG Ally, Lenovo Legion Go, GPD, AYANEO, OneXPlayer/AOKZOE, Valve, Zotac and the documented
+remaining Windows targets and fallback ranges. The original Claw and Ally engines were migrated from
+MIT WSGM sources. The library provides native identification, power, fans, charging, lighting,
+controller input, motion, haptics, OEM controls, glyphs and recovery without a WSGM SDK or
+device-package loader.
 
 The complete target remains every device supported by Handheld Companion (HC) or Handheld Daemon
 (HHD). The [inventory](inventory/README.md) contains 201 HC/HHD source records, not 201 unique
-physical devices. Nine seed definitions are implemented; the remaining families and Windows
-transports still require implementation. An inventory row or contribution scaffold is not support.
+physical devices. Current source coverage and concrete implementation paths are recorded in
+[implementation coverage](inventory/implementation-coverage.md). An inventory row or contribution
+scaffold is not support; compilation and hardware acceptance are recorded separately.
 
 ## Use and ownership
 
@@ -16,6 +19,12 @@ The public [API](API.md) is `HandheldDevice` and typed `LibHandheld.Contracts`, 
 `IHandheldObserver`. Detection matches supplied identity and does not open hardware. Start acquires
 native services; the caller owns lifecycle sequencing, generation, state-directory selection and
 terminal restoration. Cancellation does not establish that a native operation stopped.
+
+Call `CreateCurrent` for automatic model detection or `Create(modelId, ...)` for explicit selection,
+then use common operations such as `SetTdpAsync`, fan, charging and lighting setters. A family
+registry and shared Windows services route those operations to the appropriate native
+implementation. Variants sharing a protocol normally require one model profile. See
+[adding a device](CONTRIBUTING.md).
 
 The project targets `net10.0-windows10.0.19041.0`, x64, and uses System.Management for Windows
 hardware access. Internal helpers and family engines remain private; the consuming application owns
@@ -38,6 +47,7 @@ input decoders remain explicitly unimplemented research. Shared helpers should s
 protocols rather than create another plugin framework.
 
 - [API](API.md): contracts, operation results and native lifetimes.
+- [Contributing](CONTRIBUTING.md): model profiles, protocol services and source requirements.
 - [Plan](PLAN.md): applied extraction and remaining full-device target.
 - [Inventory guide](inventory/README.md): snapshots, evidence and source counts.
 - [Combined records](inventory/devices.json) and [device table](inventory/devices.csv): research
@@ -46,6 +56,6 @@ protocols rather than create another plugin framework.
 - `tests`: migrated Claw/Ally regression sources and fixtures.
 
 WSGM tracks this repository as `external/libhandheld`. Commit and push library changes before
-recording its gitlink in WSGM. Both repositories remain private during testing; automatic CI is off
-for `chore/device-integration-rework`. New automated tests and hardware acceptance must be reported
-from actual runs, separately from compilation and source evidence.
+recording its gitlink in WSGM. LibHandheld and LibGPUDriverInteract remain private during testing;
+automatic CI is off for `chore/device-integration-rework`. New automated tests and hardware
+acceptance must be reported from actual runs, separately from compilation and source evidence.

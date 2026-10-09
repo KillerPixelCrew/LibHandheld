@@ -1,0 +1,34 @@
+# Full device implementation
+
+Active goal: implement every HC/HHD target through real Windows backends and deliver the complete
+WSGM integration. Source priority: HC > HHD > OpenGamepadUI. Work branch:
+`chore/device-integration-rework`; repositories stay private and automatic CI stays off during
+testing.
+
+## Tasks
+
+- [x] **Shared device abstraction and public operations.** Detect the current model or accept an
+      explicit model; route TDP, fans, charging, lighting, input, motion, haptics and restoration
+      through family backends. A new variant of an existing protocol should require a model profile
+      rather than another lifecycle implementation. Preserve the nine existing Claw/Ally backends.
+- [x] **Lenovo Legion Go families.** Implement exact variants, WMI and indexed EC controls, raw HID
+      input, IMU, lighting, haptics, OEM events and lifecycle/recovery.
+- [x] **Privileged Windows transports.** Deliver checked PawnIO indexed/ACPI EC and AMD SMU access,
+      Intel power access, required modules and installation dependencies.
+- [x] **AYANEO, GPD and Zotac families.** Implement their actual shared EC/controller protocols and
+      model-specific variants, including modular AYANEO 3 behavior and GPD remapping mechanisms.
+- [x] **OneXPlayer and AOKZOE families.** Implement legacy indexed EC, X1, X2 WMI and distinct HID/
+      serial generations with their firmware predicates and complete supported controls.
+- [x] **Valve and remaining HC/HHD targets.** Implement Steam Deck HID, controls and power access,
+      generic physical-controller/sensor paths and Windows equivalents for HHD-only mechanisms.
+- [ ] **Complete delivery and coverage.** Map every source record to its concrete implementation,
+      integrate model capabilities/dependencies in WSGM/setup, format/build/deploy and record actual
+      testing separately. Audit omissions; detection rows, declarations and stubs do not count as
+      support.
+
+## Evidence
+
+The inventory contains 201 source records, including aliases and overlapping selectors.
+Implementation coverage is maintained in `inventory/implementation-coverage.json`; hardware
+observations remain separate. New automated tests and test-bearing gates follow the maintainer's
+manual-first policy.

@@ -6,20 +6,43 @@ project targets .NET 10 Windows 19041, x64.
 
 ## Identification and creation
 
-`HandheldDevice.Definitions` is the immutable list of currently implemented exact models: five Claw
-and four Ally definitions. `Detect(DeviceIdentitySnapshot)` matches only supplied normalized
-identity and returns a definition or null. Detection and construction acquire no hardware.
+`HandheldDevice.Definitions` is the immutable list of implemented model profiles and clearly named
+generic ranges. `Detect(DeviceIdentitySnapshot)` matches only supplied normalized identity and
+returns a definition or null. Detection and construction acquire no hardware.
 `Create(definition, stateDirectory, diagnostics)` validates the supported definition and creates its
 family engine. The caller chooses a family-owned recovery directory; WSGM retains its existing
 `DeviceState/<legacy family id>` directory.
 
 A `HandheldDefinition` contains stable model ID, family ID, plain name and glyph-profile ID.
-Unimplemented inventory models do not appear as generic supported fallbacks.
+`HasController` distinguishes physical-controller implementations from CPU-only fallbacks.
+`HardwareAccess` declares installation dependencies. Unimplemented inventory models do not become
+supported through a detection row.
+
+`ReadCurrentIdentity()` and `DetectCurrent()` read Windows identity without mutable transports.
+`CreateCurrent(stateDirectory)` selects the current supported model.
+`Create(modelId, stateDirectory)` selects a registered model explicitly. Startup revalidates the
+selected model against fresh identity before hardware acquisition.
+
+```csharp
+await using var device = HandheldDevice.CreateCurrent(stateDirectory);
+await device.StartAsync(controllerManagementEnabled: false);
+var result = await device.SetTdpAsync(20);
+// Inspect result.Applied, result.Reason and the ordered native results.
+await device.StopAsync(DeviceStopReason.Exiting, Deadline.After(TimeSpan.FromSeconds(5)));
+```
+
+The same calls apply after explicit model selection. No consuming application needs to select EC
+registers, firmware packets, WMI methods or CPU mailboxes.
 
 ## Native lifetime
 
-The consumer serializes lifecycle transitions and supplies monotonically fresh cycle generations.
-Cancellation requests cooperation; await actual native completion before surrendering ownership.
+Lifecycle transitions are serialized. A consumer can supply monotonically fresh cycle generations,
+or use `StartAsync(controllerManagementEnabled)` and `ResumeAsync(deadline)` with library-owned
+generations. Do not mix these two styles on one instance. Start is admitted once per instance.
+Suspend and resume preserve that native owner; resume requires a successful suspension. After
+terminal stop, create a new instance for another lifetime. Repeated stop returns its original result
+rather than repeating native restoration. Cancellation requests cooperation; await actual native
+completion before surrendering ownership.
 
 | Operation                                                                | Behavior                                                                                                                             |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -29,13 +52,24 @@ Cancellation requests cooperation; await actual native completion before surrend
 | `SetControllerManagementAsync(enabled, deadline, cancellationToken)`     | Changes physical controller ownership while other services remain resident.                                                          |
 | `ReleaseControllerAsync(scope, deadline, cancellationToken)`             | Releases physical acquisition and writes the documented native baseline.                                                             |
 | `StopAsync(reason, deadline, cancellationToken)`                         | Restores and releases native resources; returns Clean, Unverified or Failed with an optional reason.                                 |
-| `DisposeAsync()`                                                         | Joins outstanding native calls and disposes once. It does not replace Stop or write restoration state itself.                        |
+| `DisposeAsync()`                                                         | Joins outstanding calls, restores owned temporary state and disposes once. Call Stop first to receive restoration evidence.          |
 
 A deadline bounds the native operation's available budget. Cancellation or timeout does not prove
 that a dispatched hardware write stopped, nor that restoration succeeded. An uncertain write must
 not be retried automatically.
 
 ## Controls and publications
+
+Use `SetTdpAsync`, `SetPowerLimitsAsync`, `SetScenarioModeAsync`, `SetFanModeAsync`,
+`SetFanDutyAsync`, `SetFanTargetRpmAsync`, `SetFanCurveAsync`, `SetChargeLimitAsync`,
+`SetChargeProtectionAsync`, `SetChargeProtectionModeAsync`, `SetChargeBypassAsync`,
+`SetChargeBypassModeAsync` and the lighting setters for ordinary controls. `Controls` gives the
+current bounds, choices, instances and observations. Unsupported operations return a rejection
+before writing; partial or uncertain native results remain visible and are never automatically
+retried. `SetControlAsync(role, value, instanceId)` covers additional semantic roles.
+
+A firmware charge ceiling and a software policy that toggles bypass at a percentage are different
+mechanisms. Models with only native bypass expose bypass; they do not claim a firmware ceiling.
 
 `ExecuteAsync(CapabilityCommand, cancellationToken)` sends a typed hardware command and preserves
 its native result and timestamp. Descriptors specify capability identity, bounds, choices and

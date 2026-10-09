@@ -140,8 +140,15 @@ public sealed partial class HandheldDevice
             ["THIRD_PARTY_NOTICES.md"] = "LibHandheld.Families.RogAlly.THIRD_PARTY_NOTICES.md"
         });
 
-    private IReadOnlyDictionary<string, string> GlyphMap =>
-        Definition.FamilyId == "wsgm.device.msi.claw" ? MsiClawGlyphs : RogAllyGlyphs;
+    private static readonly IReadOnlyDictionary<string, string> NoAuthoredGlyphs =
+        new ReadOnlyDictionary<string, string>(new Dictionary<string, string>());
+
+    private IReadOnlyDictionary<string, string> GlyphMap => Definition.FamilyId switch
+    {
+        "wsgm.device.msi.claw" => MsiClawGlyphs,
+        "wsgm.device.asus.rog-ally" => RogAllyGlyphs,
+        _ => NoAuthoredGlyphs
+    };
 
     /// <summary>Exact allowlisted authored glyph paths and attribution notice, relative to the family resource root.</summary>
     public IReadOnlyList<string> GlyphResources => Array.AsReadOnly(GlyphMap.Keys.ToArray());

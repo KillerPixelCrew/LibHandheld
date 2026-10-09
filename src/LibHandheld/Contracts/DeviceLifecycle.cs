@@ -5,7 +5,31 @@ namespace LibHandheld.Contracts;
 /// <param name="FamilyId">Stable family identity, also identifying existing recovery state.</param>
 /// <param name="Name">Plain model name.</param>
 /// <param name="GlyphProfileId">Authored controller glyph profile identity.</param>
-public sealed record HandheldDefinition(string Id, string FamilyId, string Name, string GlyphProfileId);
+public sealed record HandheldDefinition(string Id, string FamilyId, string Name, string GlyphProfileId)
+{
+    /// <summary>Whether this implementation can acquire the model's physical controller.</summary>
+    public bool HasController { get; init; } = true;
+
+    /// <summary>Privileged Windows access used by the model's concrete native controls.</summary>
+    public DeviceHardwareAccess HardwareAccess { get; init; }
+}
+
+/// <summary>Native dependencies required by a model, independently of application controller routing.</summary>
+[Flags]
+public enum DeviceHardwareAccess
+{
+    /// <summary>No privileged driver helper is required.</summary>
+    None = 0,
+
+    /// <summary>Signed PawnIO modules provide embedded-controller or CPU access.</summary>
+    PawnIo = 1,
+
+    /// <summary>The pinned Intel KX helper provides the supported write path.</summary>
+    IntelKx = 2,
+
+    /// <summary>The pinned InpOut helper provides Steam Deck EC port and MMIO access.</summary>
+    InpOut = 4
+}
 
 /// <summary>Aggregate state of native device services.</summary>
 public enum DeviceOperationalState

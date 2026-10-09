@@ -25,7 +25,13 @@ Source extraction is applied. Current build, deployment and manual acceptance ev
 WSGM's delivery record. No new hardware pass is claimed by this plan; automated tests remain subject
 to the maintainer's manual-first acceptance sequence.
 
-## Remaining full target
+## Current full implementation
+
+[TASKS.md](TASKS.md) is the active implementation task list. It includes the shared model/backend
+abstraction and public device operations, all native families and their delivery. Source coverage
+now maps all 201 records to 123 runtime definitions, including 11 named ranges. The nine original
+seed definitions are preserved. Family backends, shared Windows services and semantic operations are
+implemented; final packaging/deployment and hardware acceptance are recorded separately.
 
 1. Resolve ambiguous board, CPU and firmware variants against the pinned inventory, preserving HC >
    HHD > OpenGamepadUI precedence and lower-priority observations.
@@ -38,5 +44,5 @@ to the maintainer's manual-first acceptance sequence.
 5. After testing, make library distribution and CI access available and maintain bounded device PRs.
 
 The inventory contains 201 HC/HHD source records; it is not a count of unique physical devices. The
-nine seed definitions do not complete that target. Inventory entries, declarations, selectors and
+source inventory alone does not complete that target. Inventory entries, declarations, selectors and
 scaffolds do not count as implemented native support.
