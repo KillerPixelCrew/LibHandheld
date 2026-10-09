@@ -47,7 +47,7 @@ internal static class OneXCommandCodec
             frame[1] = 7;
             frame[2] = 0xFF;
             frame[3] = 0xFD;
-            frame[4] = (byte)(enabled ? 1 : 0);
+            frame[4] = 1;
             frame[5] = 5;
             frame[6] = (byte)Math.Clamp((int)Math.Round(percentage / 20d), 0, 4);
             return frame;
@@ -55,11 +55,17 @@ internal static class OneXCommandCodec
 
         if (kind == OneXLightingKind.Serial)
         {
+            // X1's serial firmware uses a different boundary and a zero level when off.
+            level = (byte)(!enabled ? 0 : percentage < 33 ? 1 : percentage > 66 ? 4 : 3);
             var frame = Serial(side, 0xFD);
             frame[4] = side == 0 ? (byte)3 : (byte)0;
-            frame[6] = (byte)(enabled ? 1 : 0);
-            frame[7] = 5;
-            frame[8] = level;
+            frame[6] = (byte)(side == 0 || enabled ? 1 : 0);
+            if (side == 0)
+            {
+                frame[7] = 5;
+                frame[8] = level;
+            }
+
             return frame;
         }
 
@@ -103,7 +109,64 @@ internal static class OneXCommandCodec
 
     internal static byte[] Intercept(bool enabled)
     {
-        return V1(0xB2, [(byte)(enabled ? 3 : 0), 1, 2]);
+        return V1(0xB2, enabled ? [3] : [0, 1, 2]);
+    }
+
+    internal static IReadOnlyList<byte[]> ControllerConfiguration(OneXProtocolProfile profile)
+    {
+        // HC 1.3.1.6: X1/X2 use bank 0x20; X2 Mini Pro/Apex use bank 2.
+        // Only Mini/Apex end with intercept-off, and X1 Mini uses the B3 vibration command instead.
+        if (profile.SimpleVibration)
+        {
+            return [V1(0xB3, [1, 5, 5])];
+        }
+
+        var bank = (byte)(profile.Mini || profile.Apex ? 2 : 0x20);
+        var first = RemapPage(1, bank, 1, 9);
+        var second = RemapPage(2, bank, 10, 16);
+        AddMapping(second, 7, 0x22, 2, 1, (byte)(profile.Mini ? 104 : 103));
+        AddMapping(second, 8, 0x23, 2, 1, (byte)(profile.Mini ? 105 : 102));
+        var frames = new List<byte[]> { V1(0xB4, first), V1(0xB4, second) };
+        if (profile.Apex)
+        {
+            frames.Add(V1(0xB2, [1, 0x1F, 0x40, 3, 2, 3, 0, 0, 0, 1]));
+        }
+        else if (profile.X2)
+        {
+            frames.Add(V1(0xB4, [2, 0x38, bank, 3, 1, 0x24, 2, 2, 5, 0, 0, 0x25, 1, 0x21, 0, 0, 0]));
+        }
+
+        if (profile.Mini || profile.Apex)
+        {
+            frames.Add(Intercept(false));
+        }
+
+        return frames;
+    }
+
+    private static byte[] RemapPage(byte page, byte bank, byte first, byte last)
+    {
+        var payload = new byte[59];
+        payload[0] = 2;
+        payload[1] = 0x38;
+        payload[2] = bank;
+        payload[3] = page;
+        payload[4] = 1;
+        for (var id = first; id <= last; id++)
+        {
+            AddMapping(payload, id - first, id, 1, id, 0);
+        }
+
+        return payload;
+    }
+
+    private static void AddMapping(byte[] payload, int slot, byte button, byte kind, byte mapping, byte key)
+    {
+        var offset = 5 + slot * 6;
+        payload[offset] = button;
+        payload[offset + 1] = kind;
+        payload[offset + 2] = mapping;
+        payload[offset + 3] = key;
     }
 
     internal static byte[] Vibration(int strength, bool simple = false)
@@ -131,7 +194,8 @@ internal static class OneXCommandCodec
         {
             "solid" or "classic" => 0xFE, "breathing" => 0xF0, "rainbow" => 3, "monster-woke" => 0x0D,
             "sunset" => 0x0B, "neon" => 5, "dreamy" => 7, "cyberpunk" => 9, "colorful" => 0x0C,
-            "aurora" => 1, "sun" => 8, _ => throw new ArgumentOutOfRangeException(nameof(effect))
+            "aurora" => 1, "sun" => 8, "aok-classic" => 0x14,
+            _ => throw new ArgumentOutOfRangeException(nameof(effect))
         };
     }
 

@@ -3,11 +3,11 @@ using System.Text.Json.Serialization;
 namespace LibHandheld.Contracts;
 
 /// <summary>
-///     A logical OEM control published by the device engine.
+///     A logical OEM control published by the plugin.
 /// </summary>
 /// <remarks>
 ///     A separate channel from the gamepad, deliberately. Face buttons, sticks, triggers, and the D-pad
-///     are not expressible here, so a device engine can publish the physical vendor controls without supplying
+///     are not expressible here, so a plugin can publish the physical vendor controls without supplying
 ///     host assignment policy or turning the canonical gamepad channel into a remapper.
 /// </remarks>
 public sealed record OemControlDescriptor
@@ -15,8 +15,8 @@ public sealed record OemControlDescriptor
     /// <summary>Stable identifier within the device definition, for example <c>oem1</c>.</summary>
     public required string ControlId { get; init; }
 
-    /// <summary>How the consumer labels it.</summary>
-    public required string Label { get; init; }
+    /// <summary>How WSGM labels it.</summary>
+    public required CapabilityDisplay Display { get; init; }
 
     /// <summary>Where the control physically is, which decides what may be bound to it.</summary>
     public required OemControlPlacement Placement { get; init; }
@@ -25,12 +25,12 @@ public sealed record OemControlDescriptor
     public bool SupportsLongPress { get; init; }
 
     /// <summary>
-    ///     Whether this control disappears when the consumer controller management is turned off.
+    ///     Whether this control disappears when WSGM controller management is turned off.
     /// </summary>
     /// <remarks>
-    ///     Declared by the device engine rather than inferred: only it knows whether a control rides on the
+    ///     Declared by the plugin rather than inferred: only it knows whether a control rides on the
     ///     physical-controller resource. On the reference handheld the rear paddles do — they are visible
-    ///     only in the acquisition mode the device engine selects — while the front buttons arrive over a
+    ///     only in the acquisition mode the plugin selects — while the front buttons arrive over a
     ///     separate vendor event channel and survive.
     /// </remarks>
     public bool RequiresControllerAcquisition { get; init; }
@@ -40,18 +40,34 @@ public sealed record OemControlDescriptor
     ///     Armoury Crate or Legion Space.
     /// </summary>
     /// <remarks>
-    ///     Physical metadata, like Placement: it says what the button is for on the device,
-    ///     not what the consumer does with it. The host decides what an unassigned control of this kind does. A
-    ///     device engine that already routes the button into the controller sample as Guide or Quick Access
+    ///     Physical metadata, like <see cref="Placement" />: it says what the button is for on the device,
+    ///     not what WSGM does with it. The host decides what an unassigned control of this kind does. A
+    ///     plugin that already routes the button into the controller sample as Guide or Quick Access
     ///     leaves this false.
     /// </remarks>
     public bool CompanionApplication { get; init; }
+
+    /// <summary>Suggested semantic behavior; the consuming application's explicit assignment wins.</summary>
+    public OemControlDefaultActionHint DefaultActionHint { get; init; }
+}
+
+/// <summary>A physical control's semantic default, independent of an application or model name.</summary>
+public enum OemControlDefaultActionHint
+{
+    /// <summary>No suggested action.</summary>
+    None,
+
+    /// <summary>Open the consuming companion application.</summary>
+    CompanionApplication,
+
+    /// <summary>Hold the secondary mouse button for the physical press duration.</summary>
+    MouseSecondaryButton
 }
 
 /// <summary>Where an OEM control sits on the device.</summary>
 /// <remarks>
 ///     Placement is physical metadata. The host owns every action vocabulary and decides whether a
-///     mapping is compatible with that placement; device engines never publish host application policy.
+///     mapping is compatible with that placement; plugins never publish host application policy.
 /// </remarks>
 [JsonConverter(typeof(JsonStringEnumConverter<OemControlPlacement>))]
 public enum OemControlPlacement
@@ -95,7 +111,7 @@ public enum OemControlEdge
 /// <param name="Edge">Whether this event represents the press or release edge.</param>
 /// <remarks>
 ///     The deduplication ID exists because one press can legitimately arrive twice: a vendor event
-///     channel and a raw-input path may both see it. Without a shared identifier the consumer would toggle the
+///     channel and a raw-input path may both see it. Without a shared identifier WSGM would toggle the
 ///     QAM open and closed on a single press.
 /// </remarks>
 public sealed record OemControlEvent(

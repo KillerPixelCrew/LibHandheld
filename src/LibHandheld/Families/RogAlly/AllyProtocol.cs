@@ -1,3 +1,5 @@
+using LibHandheld.Internal.Windows;
+
 // SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
@@ -44,10 +46,10 @@ internal static class AllyProtocol
     ///     the same bytes the other way round, 0xE1 low to 0xF5 high (<c>hid.py:92-100</c>); HC is
     ///     followed for lighting and the disagreement is in PROVENANCE.md.
     /// </summary>
-    public const byte SpeedSlow = 0xEB;
+    public const byte SpeedSlow = AuraProtocol.SpeedSlow;
 
-    public const byte SpeedMedium = 0xF5;
-    public const byte SpeedFast = 0xE1;
+    public const byte SpeedMedium = AuraProtocol.SpeedMedium;
+    public const byte SpeedFast = AuraProtocol.SpeedFast;
 
     /// <summary>HC <c>M1F18M2F17</c> (<c>ROGAlly.cs:163-168</c>): M1 and M2 become keyboard keys the plugin can read.</summary>
     /// <remarks>
@@ -131,8 +133,7 @@ internal static class AllyProtocol
     /// <returns>A newly allocated five-byte Aura brightness feature report; no hardware call is made.</returns>
     public static byte[] Brightness(int percent)
     {
-        var level = (byte)Math.Clamp((int)Math.Round(percent / 33.33), 0, 3);
-        return [AuraReportId, 0xBA, 0xC5, 0xC4, level];
+        return AuraProtocol.Brightness(AuraReportId, 5, percent);
     }
 
     /// <summary>HC's <c>AuraMessage</c> (<c>ROGAlly.cs:595-617</c>), seventeen bytes.</summary>
@@ -144,40 +145,22 @@ internal static class AllyProtocol
     /// <returns>A newly allocated 17-byte Aura color message; this helper does not send it.</returns>
     public static byte[] Color(AuraEffect effect, AuraZone zone, int primary, int secondary, byte speed)
     {
-        return
-        [
-            AuraReportId,
-            0xB3,
-            (byte)zone,
-            (byte)effect,
-            Red(primary),
-            Green(primary),
-            Blue(primary),
-            speed,
-            0,
-            effect is AuraEffect.Breathing ? (byte)1 : (byte)0,
-            Red(secondary),
-            Green(secondary),
-            Blue(secondary),
-            0,
-            0,
-            0,
-            0
-        ];
+        return AuraProtocol.Color(AuraReportId, 17, (byte)effect, (byte)zone, primary, secondary, speed,
+            breathing: effect is AuraEffect.Breathing ? (byte)1 : (byte)0);
     }
 
     /// <summary>HC <c>MESSAGE_APPLY</c>.</summary>
     /// <returns>A new 0x5D/0xB4 apply message for the caller to send as an Aura output report.</returns>
     public static byte[] Apply()
     {
-        return [AuraReportId, 0xB4];
+        return AuraProtocol.Packet(AuraReportId, 2, 0xB4);
     }
 
     /// <summary>HC <c>MESSAGE_SET</c>.</summary>
     /// <returns>A new 0x5D/0xB5 set message for the caller to send as an Aura output report.</returns>
     public static byte[] Set()
     {
-        return [AuraReportId, 0xB5, 0, 0, 0];
+        return AuraProtocol.Packet(AuraReportId, 5, 0xB5);
     }
 
     /// <summary>HC's speed bands: at most 33 slow, at most 66 medium, else fast (<c>ROGAlly.cs:552</c>).</summary>
@@ -185,7 +168,7 @@ internal static class AllyProtocol
     /// <returns>The firmware slow, medium or fast byte for the requested band.</returns>
     public static byte Speed(int percent)
     {
-        return percent <= 33 ? SpeedSlow : percent <= 66 ? SpeedMedium : SpeedFast;
+        return AuraProtocol.Speed(percent);
     }
 
     internal static byte[] Pad(string hex)
@@ -199,20 +182,5 @@ internal static class AllyProtocol
         var report = new byte[ConfigurationLength];
         bytes.CopyTo(report, 0);
         return report;
-    }
-
-    private static byte Red(int color)
-    {
-        return (byte)((color >> 16) & 0xFF);
-    }
-
-    private static byte Green(int color)
-    {
-        return (byte)((color >> 8) & 0xFF);
-    }
-
-    private static byte Blue(int color)
-    {
-        return (byte)(color & 0xFF);
     }
 }

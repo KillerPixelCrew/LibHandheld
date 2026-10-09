@@ -1,5 +1,6 @@
 using System.Numerics;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Internal.Input;

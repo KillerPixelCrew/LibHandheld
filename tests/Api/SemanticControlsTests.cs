@@ -1,7 +1,4 @@
-using LibHandheld.Contracts;
-using N = LibHandheld.Internal.Plugin;
-using NC = LibHandheld.Internal.Capabilities;
-using NI = LibHandheld.Internal.Input;
+using N = LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Tests.Api;
 
@@ -16,7 +13,6 @@ public sealed class SemanticControlsTests
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await device.StartAsync(false));
         Assert.Equal(1, engine.Starts);
-        Assert.Equal(1, device.CycleGeneration);
     }
 
     [Fact]
@@ -26,9 +22,8 @@ public sealed class SemanticControlsTests
         await using var device = Create(engine);
         await device.StartAsync(false);
         await Assert.ThrowsAsync<InvalidOperationException>(async () => await device.ResumeAsync(Deadline.Never));
-        Assert.Equal(1, device.CycleGeneration);
-        var first = await device.StopAsync(DeviceStopReason.Exiting, Deadline.Never);
-        Assert.Same(first, await device.StopAsync(DeviceStopReason.Exiting, Deadline.Never));
+        var first = await device.StopAsync(Deadline.Never);
+        Assert.Same(first, await device.StopAsync(Deadline.Never));
         Assert.Equal(1, engine.Stops);
         await Assert.ThrowsAsync<InvalidOperationException>(async () => await device.StartAsync());
         await Assert.ThrowsAsync<InvalidOperationException>(async () => await device.ResumeAsync(Deadline.Never));
@@ -48,8 +43,6 @@ public sealed class SemanticControlsTests
         Assert.Equal("vendor.private.sustained", command.CapabilityId);
         Assert.Equal(25, command.RequestedValue!.IntegerValue);
         Assert.Equal(25, command.PairedPowerLimitWatts);
-        Assert.Equal(1, command.ExpectedCycleGeneration);
-        Assert.Equal(1, command.ExpectedDescriptorGeneration);
     }
 
     [Fact]
@@ -112,8 +105,8 @@ public sealed class SemanticControlsTests
     public async Task PartialNativeOutcomesRemainVisibleAndStopFurtherDispatch()
     {
         var engine = UnpairedEngine();
-        engine.Outcomes.Enqueue(NC.CommandOutcome.AppliedVerified);
-        engine.Outcomes.Enqueue(NC.CommandOutcome.Indeterminate);
+        engine.Outcomes.Enqueue(CommandOutcome.Applied);
+        engine.Outcomes.Enqueue(CommandOutcome.Indeterminate);
         await using var device = Create(engine);
         await device.StartAsync(false);
 
@@ -121,7 +114,7 @@ public sealed class SemanticControlsTests
 
         Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
         Assert.Equal(2, result.Results.Count);
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Results[0].Result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Results[0].Result.Outcome);
         Assert.Equal(CommandOutcome.Indeterminate, result.Results[1].Result.Outcome);
         Assert.Equal(2, engine.Commands.Count);
     }
@@ -139,7 +132,7 @@ public sealed class SemanticControlsTests
             cancellationToken: cancellation.Token);
 
         Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
-        Assert.Equal(CommandOutcome.AppliedVerified, Assert.Single(result.Results).Result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, Assert.Single(result.Results).Result.Outcome);
         Assert.Single(engine.Commands);
     }
 
@@ -155,7 +148,7 @@ public sealed class SemanticControlsTests
 
         Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
         Assert.Equal(2, result.Results.Count);
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Results[0].Result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Results[0].Result.Outcome);
         Assert.Equal(CommandOutcome.Indeterminate, result.Results[1].Result.Outcome);
         Assert.Equal(2, engine.Commands.Count);
     }
@@ -189,7 +182,7 @@ public sealed class SemanticControlsTests
     {
         var engine = new FakeEngine
         {
-            Descriptors = [Integer("private.charge", NC.CapabilityRole.ChargeLimit, 60, 100, NC.CapabilityUnit.Percent)]
+            Descriptors = [Integer("private.charge", CapabilityRole.ChargeLimit, 60, 100, CapabilityUnit.Percent)]
         };
         await using var device = Create(engine);
         await device.StartAsync(false);
@@ -201,59 +194,54 @@ public sealed class SemanticControlsTests
     }
 
     [Fact]
-    public async Task SupersededDescriptorAndCyclePublicationsCannotReplaceCurrentState()
+    public async Task UnknownAndInactivePublicationsCannotReplaceCurrentState()
     {
         var engine = PairedEngine();
         await using var device = Create(engine);
         await device.StartAsync(false);
         await device.SetTdpAsync(20);
-        await engine.PublishStateAsync("vendor.private.sustained", 99, 0, 1);
-        await engine.PublishStateAsync("vendor.private.sustained", 99, 1, 0);
-
+        await engine.PublishStateAsync("unknown.control", 99, 0, 0);
         Assert.Equal(20, device.Controls.ObservedPowerLimits!.SustainedWatts);
+        await device.SuspendAsync(Deadline.Never);
+        await engine.PublishStateAsync("vendor.private.sustained", 99, 0, 0);
         await engine.PublishDescriptorsAsync(2);
-        Assert.Null(device.Controls.ObservedPowerLimits);
-        await engine.PublishStateAsync("vendor.private.sustained", 99, 1, 1);
-        Assert.Null(device.Controls.ObservedPowerLimits);
+        Assert.Empty(device.Controls.Controls);
     }
 
     [Fact]
-    public async Task ConvenienceLifecyclesOwnFreshCyclesAndRejectMixedAuthority()
+    public async Task ResumeReplacesControlsAfterSuspension()
     {
         var engine = PairedEngine();
         await using var device = Create(engine);
         await device.StartAsync(false);
-        Assert.Equal(1, device.CycleGeneration);
         await device.SuspendAsync(Deadline.Never);
         await engine.PublishDescriptorsAsync(2);
         Assert.Empty(device.Controls.Controls);
         await device.ResumeAsync(Deadline.Never);
-        Assert.Equal(2, device.CycleGeneration);
         Assert.NotEmpty(device.Controls.Controls);
-
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await device.ResumeAsync(3, Deadline.Never));
+            await device.ResumeAsync(Deadline.Never));
     }
 
     [Fact]
-    public async Task ConsumerCyclesMustIncreaseAndStoppedPublicationsAreIgnored()
+    public async Task StoppedPublicationsAreIgnoredAndCommandsAreRejected()
     {
         var engine = PairedEngine();
         await using var device = Create(engine);
-        await device.StartAsync(7, false);
-        await device.SuspendAsync(Deadline.Never);
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
-            await device.ResumeAsync(7, Deadline.Never));
-        await device.ResumeAsync(8, Deadline.Never);
-        await device.StopAsync(DeviceStopReason.Exiting, Deadline.Never);
+        await device.StartAsync(false);
+        await device.StopAsync(Deadline.Never);
         await engine.PublishDescriptorsAsync(3);
         Assert.Empty(device.Controls.Controls);
+        Assert.Equal(CommandOutcome.Rejected, (await device.SetTdpAsync(20)).Outcome);
+        Assert.Empty(engine.Commands);
     }
 
     [Fact]
     public void ExplicitUnknownModelDoesNotFallBackToAnotherFamily()
     {
-        Assert.Throws<ArgumentException>(() => HandheldDevice.Create("unknown", "state"));
+        Assert.Throws<ArgumentException>(() =>
+            HandheldDevice.Create(new HandheldDefinition("unknown", "unknown", "Unknown", "unknown"),
+                new DeviceIdentitySnapshot(), "state"));
         Assert.Null(HandheldDevice.Detect(new DeviceIdentitySnapshot
         {
             SystemManufacturer = "Unknown", SystemProduct = "Unknown"
@@ -262,8 +250,8 @@ public sealed class SemanticControlsTests
 
     private static HandheldDevice Create(FakeEngine engine)
     {
-        return new HandheldDevice(new HandheldDefinition("fake", "fake", "Fake", "fake"), "fake-state", null, engine,
-            () => new DeviceIdentitySnapshot());
+        return new HandheldDevice(new HandheldDefinition("fake", "fake", "Fake", "fake"), new DeviceIdentitySnapshot(),
+            "fake-state", null, engine);
     }
 
     private static FakeEngine PairedEngine()
@@ -272,11 +260,11 @@ public sealed class SemanticControlsTests
         {
             Descriptors =
             [
-                Integer("vendor.private.sustained", NC.CapabilityRole.PowerSustainedLimit) with
+                Integer("vendor.private.sustained", CapabilityRole.PowerSustainedLimit) with
                 {
                     PairedPowerLimitId = "vendor.private.boost"
                 },
-                Integer("vendor.private.boost", NC.CapabilityRole.PowerSlowLimit)
+                Integer("vendor.private.boost", CapabilityRole.PowerSlowLimit)
             ]
         };
     }
@@ -287,75 +275,65 @@ public sealed class SemanticControlsTests
         {
             Descriptors =
             [
-                Integer("vendor.sustained", NC.CapabilityRole.PowerSustainedLimit),
-                Integer("vendor.slow", NC.CapabilityRole.PowerSlowLimit),
-                Integer("vendor.fast", NC.CapabilityRole.PowerFastLimit)
+                Integer("vendor.sustained", CapabilityRole.PowerSustainedLimit),
+                Integer("vendor.slow", CapabilityRole.PowerSlowLimit),
+                Integer("vendor.fast", CapabilityRole.PowerFastLimit)
             ]
         };
     }
 
-    private static NC.CapabilityDescriptor Integer(string id, NC.CapabilityRole role, int minimum = 5,
-        int maximum = 40, NC.CapabilityUnit unit = NC.CapabilityUnit.Watt)
+    private static CapabilityDescriptor Integer(string id, CapabilityRole role, int minimum = 5,
+        int maximum = 40, CapabilityUnit unit = CapabilityUnit.Watt)
     {
-        return new NC.CapabilityDescriptor
+        return new CapabilityDescriptor
         {
-            CapabilityId = id, Role = role, ValueKind = NC.CapabilityValueKind.Integer,
-            Display = new NC.CapabilityDisplay { Key = NC.DisplayKey.Custom, CustomLabel = "Native control" },
+            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Integer,
+            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "Native control" },
             Minimum = minimum, Maximum = maximum, Step = 1, Unit = unit, SupportsWrite = true,
-            Persistence = NC.CapabilityPersistence.Volatile
+            Persistence = CapabilityPersistence.Volatile
         };
     }
 
-    private static NC.CapabilityDescriptor Color(string id, string instance)
+    private static CapabilityDescriptor Color(string id, string instance)
     {
-        return new NC.CapabilityDescriptor
+        return new CapabilityDescriptor
         {
-            CapabilityId = id, InstanceId = instance, Role = NC.CapabilityRole.LightingZoneColor,
-            ValueKind = NC.CapabilityValueKind.Color,
-            Display = new NC.CapabilityDisplay { Key = NC.DisplayKey.Custom, CustomLabel = "Native zone" },
-            SupportsWrite = true, Persistence = NC.CapabilityPersistence.Volatile
+            CapabilityId = id, InstanceId = instance, Role = CapabilityRole.LightingZoneColor,
+            ValueKind = CapabilityValueKind.Color,
+            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "Native zone" },
+            SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
         };
     }
 
-    private sealed class FakeEngine : N.IDeviceEngine
+    private sealed class FakeEngine : N.NativeEngine
     {
-        private long _cycle;
-        private long _generation = 1;
         private N.IDeviceSink? _sink;
-        public IReadOnlyList<NC.CapabilityDescriptor> Descriptors { get; init; } = [];
-        public List<NC.CapabilityCommand> Commands { get; } = [];
-        public Queue<NC.CommandOutcome> Outcomes { get; } = [];
+        public IReadOnlyList<CapabilityDescriptor> Descriptors { get; init; } = [];
+        public List<CapabilityCommand> Commands { get; } = [];
+        public Queue<CommandOutcome> Outcomes { get; } = [];
         public Action? AfterCommand { get; set; }
         public int? ThrowOnCommand { get; set; }
         public int Starts { get; private set; }
         public int Stops { get; private set; }
-        public string PackageId => "fake";
 
-        public ValueTask<N.PluginDetectionResult> DetectAsync(N.PluginDetectionContext context,
-            CancellationToken cancellationToken)
-        {
-            return ValueTask.FromResult(new N.PluginDetectionResult { Matched = true, DeviceDefinitionId = "fake" });
-        }
 
-        public async ValueTask<N.PluginStartResult> StartAsync(N.PluginStartContext context,
+        public async ValueTask<N.EngineStartResult> StartAsync(N.EngineStartContext context,
             CancellationToken cancellationToken)
         {
             Starts++;
             _sink = context.Host;
-            _cycle = context.CycleGeneration;
             await PublishDescriptorsAsync(1);
-            return new N.PluginStartResult { State = N.PluginOperationalState.Active };
+            return new N.EngineStartResult { State = N.EngineOperationalState.Active };
         }
 
-        public async ValueTask<N.PluginStartResult> ResumeAsync(N.PluginResumeContext context,
+        public async ValueTask<N.EngineStartResult> ResumeAsync(N.EngineResumeContext context,
             CancellationToken cancellationToken)
         {
-            _cycle = context.CycleGeneration;
             await PublishDescriptorsAsync(1);
-            return new N.PluginStartResult { State = N.PluginOperationalState.Active };
+            return new N.EngineStartResult { State = N.EngineOperationalState.Active };
         }
 
-        public async ValueTask<NC.CapabilityCommandResult> ExecuteCommandAsync(NC.CapabilityCommand command,
+        public async ValueTask<CapabilityCommandResult> ExecuteCommandAsync(CapabilityCommand command,
             CancellationToken cancellationToken)
         {
             Commands.Add(command);
@@ -364,57 +342,55 @@ public sealed class SemanticControlsTests
                 throw new IOException("A native write may have completed.");
             }
 
-            var outcome = Outcomes.TryDequeue(out var next) ? next : NC.CommandOutcome.AppliedVerified;
-            if (outcome is NC.CommandOutcome.AppliedVerified or NC.CommandOutcome.AppliedUnverified)
+            var outcome = Outcomes.TryDequeue(out var next) ? next : CommandOutcome.Applied;
+            if (outcome is CommandOutcome.Applied)
             {
-                await _sink!.PublishCapabilityStateAsync(new NC.CapabilityState
+                await _sink!.PublishCapabilityStateAsync(new CapabilityState
                 {
                     CapabilityId = command.CapabilityId, InstanceId = command.InstanceId, Available = true,
-                    ObservedValue = command.RequestedValue, DescriptorGeneration = _generation,
-                    CycleGeneration = _cycle, Quality = NC.HardwareStateQuality.Observed,
+                    ObservedValue = command.RequestedValue, Quality = HardwareStateQuality.Observed,
                     ObservedAt = DateTimeOffset.UtcNow
                 }, CancellationToken.None);
             }
 
             AfterCommand?.Invoke();
-            return new NC.CapabilityCommandResult
+            return new CapabilityCommandResult
             {
-                CommandId = command.CommandId, Outcome = outcome, CompletedAt = DateTimeOffset.UtcNow,
-                ReadbackValue = outcome == NC.CommandOutcome.AppliedVerified ? command.RequestedValue : null
+                CommandId = command.CommandId, Outcome = outcome, CompletedAt = DateTimeOffset.UtcNow
             };
         }
 
-        public ValueTask SuspendAsync(N.PluginQuiesceContext context, CancellationToken cancellationToken)
+        public ValueTask SuspendAsync(N.EngineQuiesceContext context, CancellationToken cancellationToken)
         {
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask SetControllerManagementAsync(N.PluginControllerManagementContext context,
+        public ValueTask SetControllerManagementAsync(N.EngineControllerManagementContext context,
             CancellationToken cancellationToken)
         {
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask ReleaseControllerAsync(N.PluginControllerReleaseContext context,
+        public ValueTask ReleaseControllerAsync(N.EngineControllerReleaseContext context,
             CancellationToken cancellationToken)
         {
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask ApplyHapticOutputAsync(NI.HapticOutputFrame frame, CancellationToken cancellationToken)
+        public ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken cancellationToken)
         {
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask<N.PluginDiagnostics> GetDiagnosticsAsync(CancellationToken cancellationToken)
+        public ValueTask<IReadOnlyDictionary<string, string>> GetDiagnosticsAsync(CancellationToken cancellationToken)
         {
-            return ValueTask.FromResult(new N.PluginDiagnostics());
+            return ValueTask.FromResult<IReadOnlyDictionary<string, string>>(new Dictionary<string, string>());
         }
 
-        public ValueTask<N.PluginStopResult> StopAsync(N.PluginStopContext context, CancellationToken cancellationToken)
+        public ValueTask<N.EngineStopResult> StopAsync(N.EngineStopContext context, CancellationToken cancellationToken)
         {
             Stops++;
-            return ValueTask.FromResult(new N.PluginStopResult { Status = N.PluginStopStatus.Clean });
+            return ValueTask.FromResult(new N.EngineStopResult { Status = N.EngineStopStatus.Clean });
         }
 
         public ValueTask DisposeAsync()
@@ -424,20 +400,18 @@ public sealed class SemanticControlsTests
 
         public ValueTask PublishDescriptorsAsync(long generation)
         {
-            _generation = generation;
-            return _sink!.PublishDescriptorsAsync(new NC.CapabilityDescriptorSet
+            return _sink!.PublishDescriptorsAsync(new CapabilityDescriptorSet
             {
-                Generation = generation, CycleGeneration = _cycle, Descriptors = Descriptors
+                Descriptors = Descriptors
             }, CancellationToken.None);
         }
 
         public ValueTask PublishStateAsync(string id, int value, long generation, long cycle)
         {
-            return _sink!.PublishCapabilityStateAsync(new NC.CapabilityState
+            return _sink!.PublishCapabilityStateAsync(new CapabilityState
             {
-                CapabilityId = id, Available = true, ObservedValue = NC.CapabilityValue.Integer(value),
-                DescriptorGeneration = generation, CycleGeneration = cycle,
-                Quality = NC.HardwareStateQuality.Observed, ObservedAt = DateTimeOffset.UtcNow
+                CapabilityId = id, Available = true, ObservedValue = CapabilityValue.Integer(value),
+                Quality = HardwareStateQuality.Observed, ObservedAt = DateTimeOffset.UtcNow
             }, CancellationToken.None);
         }
     }

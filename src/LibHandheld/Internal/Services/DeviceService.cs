@@ -1,5 +1,5 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Lifecycle;
 
 namespace LibHandheld.Internal.Services;
 
@@ -33,11 +33,9 @@ internal enum DeviceServiceState
 
 /// <summary>The live facts one device cycle runs against.</summary>
 /// <typeparam name="TIdentity">The plugin's own identity snapshot for the cycle.</typeparam>
-/// <param name="CycleGeneration">The host's cycle generation.</param>
 /// <param name="Deadline">When the current lifecycle operation must finish.</param>
 /// <param name="Identity">The identity read for this operation.</param>
 internal readonly record struct DeviceCycleContext<TIdentity>(
-    long CycleGeneration,
     Deadline Deadline,
     TIdentity Identity);
 
@@ -59,13 +57,6 @@ internal abstract class DeviceServiceStatus(string serviceId)
     /// <summary>Why the service is not owned, when it is not.</summary>
     public CapabilityReason? Reason { get; private set; }
 
-    /// <summary>Set when an outstanding recovery entry makes acquiring this service unsafe.</summary>
-    /// <remarks>
-    ///     It outlives the cycle. The service itself decides how it acquires and releases while it is set; the
-    ///     lifecycle walk does not check it.
-    /// </remarks>
-    public CapabilityReason? ReconciliationBlockReason { get; set; }
-
     /// <summary>Takes the state and reason a lifecycle operation returned.</summary>
     /// <param name="result">The operation's result.</param>
     public void ApplyResult(DeviceServiceResult result)
@@ -78,8 +69,7 @@ internal abstract class DeviceServiceStatus(string serviceId)
     /// <summary>Marks the service faulted until it is next acquired.</summary>
     /// <param name="reason">Why it faulted.</param>
     /// <remarks>
-    ///     Unlike <see cref="ReconciliationBlockReason" />, a fault does not outlive the cycle: resume and
-    ///     controller re-enablement acquire the service again.
+    ///     Resume and controller re-enablement acquire the service again.
     /// </remarks>
     public void Fault(CapabilityReason reason)
     {
@@ -117,8 +107,35 @@ internal abstract class DeviceServiceStatus(string serviceId)
 /// </remarks>
 internal abstract class DeviceService<TIdentity>(string serviceId) : DeviceServiceStatus(serviceId)
 {
+    internal virtual bool RequiresControllerOwnership => false;
+    internal virtual IReadOnlyList<CapabilityDescriptor> Descriptors => [];
+    internal virtual IReadOnlyList<CapabilityState> States => [];
+    internal virtual IReadOnlyList<OemControlDescriptor> OemControls => [];
+
     /// <summary>Whether the service stops for suspend and is reacquired on resume.</summary>
     public virtual bool Suspendable => false;
+
+    internal virtual ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
+        CancellationToken token)
+    {
+        return ValueTask.FromResult(CommandResults.Rejected(command,
+            CapabilityReasonCode.Unsupported, "This service does not own the requested control."));
+    }
+
+    internal virtual ValueTask RefreshAsync(CancellationToken token)
+    {
+        return ValueTask.CompletedTask;
+    }
+
+    internal virtual ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken token)
+    {
+        return ValueTask.CompletedTask;
+    }
+
+    internal virtual ValueTask DisposeAsync()
+    {
+        return ValueTask.CompletedTask;
+    }
 
     /// <summary>Acquires the service for the cycle.</summary>
     /// <param name="context">The cycle the service is acquired for.</param>

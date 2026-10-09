@@ -1,9 +1,7 @@
-// SPDX-License-Identifier: MIT
-
 using System.Numerics;
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
+using LibHandheld.Contracts;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -141,7 +139,7 @@ internal readonly record struct AllyVendorAction(
 
 internal static class AllyModels
 {
-    public const string PackageId = "wsgm.device.asus.rog-ally";
+    public const string PackageId = "rog-ally";
     public const string Manufacturer = "ASUSTeK COMPUTER INC.";
     public const ushort AsusVendorId = 0x0B05;
 
@@ -414,7 +412,7 @@ internal static class AllyModels
         return new OemControlDescriptor
         {
             ControlId = id,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = label },
+            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
             Placement = placement,
             RequiresControllerAcquisition = requiresController
         };

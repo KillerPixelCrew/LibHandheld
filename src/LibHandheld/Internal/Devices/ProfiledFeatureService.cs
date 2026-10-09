@@ -1,25 +1,34 @@
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Internal.Devices;
 
 internal sealed record ProfiledFeatureContext(string StateDirectory, string Firmware, IDeviceSink Sink)
 {
+    internal required DeviceRecoveryJournal Journal { get; init; }
+    internal HandheldResources Resources { get; init; } = new();
     internal bool ControllerManagementEnabled { get; init; }
+    internal DeviceIdentitySnapshot Identity { get; init; } = new();
+    internal string DeviceDefinitionId { get; init; } = string.Empty;
 }
 
 /// <summary>A family's additional native codec joins the same lifecycle and command serialization.</summary>
 internal abstract class ProfiledFeatureService(string serviceId) : DeviceService<ProfiledCycleIdentity>(serviceId)
 {
-    internal abstract IReadOnlyList<CapabilityDescriptor> Descriptors { get; }
-    internal virtual long DescriptorGeneration => 0;
-    internal abstract IReadOnlyList<CapabilityState> States { get; }
+    internal abstract override IReadOnlyList<CapabilityDescriptor> Descriptors { get; }
+    internal virtual bool DescriptorsChanged => false;
+    internal abstract override IReadOnlyList<CapabilityState> States { get; }
 
-    internal abstract ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
+    internal virtual void AcknowledgeDescriptors()
+    {
+    }
+
+    internal abstract override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command,
+        string firmware,
         CancellationToken token);
 
-    internal virtual ValueTask RefreshAsync(CancellationToken token)
+    internal override ValueTask RefreshAsync(CancellationToken token)
     {
         return ValueTask.CompletedTask;
     }

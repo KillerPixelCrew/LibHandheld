@@ -1,3 +1,5 @@
+using LibHandheld.Contracts;
+
 namespace LibHandheld.Internal.Lifecycle;
 
 /// <summary>The time a deadline must still leave before a plugin starts a hardware write.</summary>

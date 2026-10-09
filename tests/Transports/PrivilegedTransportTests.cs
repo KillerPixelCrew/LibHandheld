@@ -124,6 +124,15 @@ public sealed class PrivilegedTransportTests
     }
 
     [Fact]
+    public void AmdReadbackNeverSendsZeroValuedSetMessages()
+    {
+        using var module = new RecordingModule();
+        using var smu = new AmdSmuTransport(module, 23, 1);
+        Assert.Throws<NotSupportedException>(() => smu.ReadLimits());
+        Assert.Empty(module.Calls);
+    }
+
+    [Fact]
     public void InvalidPowerRequestDoesNotReachHardware()
     {
         using var module = new RecordingModule();
@@ -138,7 +147,6 @@ public sealed class PrivilegedTransportTests
     public void IntelParsersRetainFullWidthValues()
     {
         Assert.Equal(0xFEDC0000L, IntelPowerTransport.ParseReturn("Return 4275830784\r\n"));
-        Assert.Equal(0x0043810000DD8078UL, IntelPowerTransport.ParseMsr("Msr Data     : 0x00438100 0x00DD8078\r\n"));
         Assert.Null(IntelPowerTransport.ParseReturn("not a response"));
     }
 

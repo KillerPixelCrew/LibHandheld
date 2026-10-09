@@ -79,7 +79,7 @@ internal sealed class PawnIoEmbeddedController : IEmbeddedController
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            return HardwareBus.Run(_indexed ? @"Global\Access_ISABUS.HTP.Method" : @"Global\Access_EC", Timeout,
+            return HardwareBus.Run(_indexed ? HardwareBus.IndexedIo : HardwareBus.EmbeddedController, Timeout,
                 operation);
         }
     }
@@ -100,12 +100,12 @@ internal sealed class PawnIoEmbeddedController : IEmbeddedController
             throw new ArgumentException("The signed module supports only the standard SuperIO slots.");
         }
 
-        return new PawnIoEmbeddedController(PawnIoModule.OpenLhm("LpcIO"), true, indexPort, dataPort);
+        return new PawnIoEmbeddedController(PawnIoModule.OpenModule("LpcIO"), true, indexPort, dataPort);
     }
 
     internal static PawnIoEmbeddedController OpenAcpi()
     {
-        return new PawnIoEmbeddedController(PawnIoModule.OpenLhm("LpcACPIEC"), false);
+        return new PawnIoEmbeddedController(PawnIoModule.OpenModule("LpcACPIEC"), false);
     }
 
     // For firmware command protocols (for example ONEXPLAYER), not an EC register read. The input

@@ -1,3 +1,5 @@
+using LibHandheld.Internal.Windows;
+
 namespace LibHandheld.Families.Generic;
 
 /// <summary>The Aura module chooses its report family and capabilities before any command is built.</summary>
@@ -25,7 +27,7 @@ internal static class AsusAuraProtocol
 
     internal static bool Application(ushort page, ushort usage)
     {
-        return ((uint)page << 16 | usage) is
+        return (((uint)page << 16) | usage) is
             0xFF310076 or 0xFF310079 or 0xFF310080 or 0xFF000020;
     }
 
@@ -43,7 +45,6 @@ internal static class AsusAuraProtocol
     internal static byte[] Handshake(ushort product)
     {
         var packet = Packet(product, 0);
-        packet[1] = 0x41;
         "ASUS Tech.Inc."u8.CopyTo(packet.AsSpan(1));
         return packet;
     }
@@ -57,15 +58,13 @@ internal static class AsusAuraProtocol
 
     internal static byte[] Brightness(ushort product, int percentage)
     {
-        return Packet(product, 0xBA, 0xC5, 0xC4,
-                (byte)Math.Clamp((int)Math.Round(Math.Clamp(percentage, 0, 100) * 3d / 100), 0, 3))
-            .WithReport(product == Xg2025 ? (byte)0x5E : (byte)0x5A);
-    }
+        if (!Supported(product))
+        {
+            throw new ArgumentOutOfRangeException(nameof(product));
+        }
 
-    private static byte[] WithReport(this byte[] packet, byte report)
-    {
-        packet[0] = report;
-        return packet;
+        return AuraProtocol.Brightness(product == Xg2025 ? (byte)0x5E : (byte)0x5A,
+            ReportLength(product), percentage);
     }
 
     internal static byte[] Power(ushort product, bool boot, bool awake, bool sleep, bool shutdown)
@@ -102,11 +101,9 @@ internal static class AsusAuraProtocol
             secondary = 0;
         }
 
-        var packet = Packet(product, 0xB3, 0, (byte)mode, (byte)(primary >> 16), (byte)(primary >> 8), (byte)primary,
-            effect == "solid" ? (byte)0 : (byte)(speed <= 33 ? 0xE1 : speed <= 66 ? 0xEB : 0xF5),
-            (byte)(effect == "cycle" && left ? 1 : 0), 0, (byte)(secondary >> 16), (byte)(secondary >> 8),
-            (byte)secondary);
-        return packet;
+        return AuraProtocol.Color(ReportId(product), ReportLength(product), (byte)mode, 0, primary, secondary,
+            effect == "solid" ? (byte)0 : AuraProtocol.Speed(speed),
+            (byte)(effect == "cycle" && left ? 1 : 0));
     }
 
     internal static IReadOnlyList<byte[]> Apply(ushort product)
@@ -123,15 +120,6 @@ internal static class AsusAuraProtocol
             throw new ArgumentOutOfRangeException(nameof(product));
         }
 
-        var packet = new byte[ReportLength(product)];
-        packet[0] = ReportId(product);
-        packet[1] = command;
-        if (arguments.Length > packet.Length - 2)
-        {
-            throw new ArgumentOutOfRangeException(nameof(arguments));
-        }
-
-        arguments.CopyTo(packet, 2);
-        return packet;
+        return AuraProtocol.Packet(ReportId(product), ReportLength(product), command, arguments);
     }
 }

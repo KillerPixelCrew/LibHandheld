@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Numerics;
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Identity;
+using LibHandheld.Contracts;
 
 namespace LibHandheld.Families.MsiClaw;
 

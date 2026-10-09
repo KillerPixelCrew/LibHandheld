@@ -40,13 +40,10 @@ chords. AYN is a different vendor and is never matched to these EC codecs.
 
 ## Sources and coverage
 
-Primary:
-[HC a250b19](https://github.com/Valkirie/HandheldCompanion/tree/a250b19a4b7e29dac3b383f2d1ac517d1af43e4e/HandheldCompanion/Devices/AYANEO),
-[exact selectors](https://github.com/Valkirie/HandheldCompanion/blob/a250b19a4b7e29dac3b383f2d1ac517d1af43e4e/HandheldCompanion/Devices/IDevice.cs#L814),
-[SuiPlay](https://github.com/Valkirie/HandheldCompanion/blob/a250b19a4b7e29dac3b383f2d1ac517d1af43e4e/HandheldCompanion/Devices/SuiPlay/SuiPlay0X1.cs),
-and the corresponding
-[device matrices](https://github.com/Valkirie/HandheldCompanion/tree/a250b19a4b7e29dac3b383f2d1ac517d1af43e4e/HandheldCompanion/Resources/Devices).
-Secondary:
+Primary Windows source: the decompiled Handheld Companion 1.3.1.6 reference in WSGM's
+_ref/HandheldCompanion, including Devices/AYANEO, Devices/SuiPlay, Devices/IDevice.cs and
+Resources/Devices. Public HC a250b19 is historical corroboration only. Exact source records remain
+the evidence for each model and wire value. Secondary:
 [HHD a87fb30 AYANEO protocol](https://github.com/hhd-dev/hhd/tree/a87fb308f9f14d4a78ef3cb0b8515827459f8466/src/hhd/device/ayaneo)
 and
 [exact generic aliases](https://github.com/hhd-dev/hhd/blob/a87fb308f9f14d4a78ef3cb0b8515827459f8466/src/hhd/device/generic/const.py).

@@ -1,8 +1,6 @@
-using LibHandheld.Internal.Capabilities;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
 
@@ -56,12 +54,9 @@ internal static class OneXPlayerModels
     internal static IReadOnlyList<ProfiledDeviceModel> All { get; } = Array.AsReadOnly<ProfiledDeviceModel>(
     [
         Model("oxp-mini-amd", "ONEXPLAYER Mini (5800U)", "OneXPlayerMiniAMD", ["ONE XPLAYER", "ONEXPLAYER Mini Pro"],
-                10, 25,
-                new OneXProtocolProfile(OneXEcKind.Acpi, 0xC4, 0xC5, 0, 100, OneXLightingKind.None, 0x1E),
-                MiniMotion) with
-            {
-                Versions = ["V01"]
-            },
+            10, 25,
+            new OneXProtocolProfile(OneXEcKind.Acpi, 0xC4, 0xC5, 0, 100, OneXLightingKind.None, 0x1E),
+            MiniMotion),
         Model("oxp-mini-intel", "ONEXPLAYER Mini (Intel)", "OneXPlayerMiniIntel",
                 ["ONE XPLAYER", "ONEXPLAYER Mini Pro"], 20, 64,
                 new OneXProtocolProfile(OneXEcKind.Acpi, 0xC4, 0xC5, 0, 255, OneXLightingKind.None, 0x1E),
@@ -164,7 +159,7 @@ internal static class OneXPlayerModels
     ]);
 
     internal static IReadOnlyList<HandheldDefinition> Definitions { get; } =
-        Array.AsReadOnly(All.Select(model => model.Definition).ToArray());
+        Array.AsReadOnly(All.Select(model => model.DeclaredDefinition).ToArray());
 
     private static KeyboardOemChord[] FrontChords =>
     [
@@ -196,13 +191,28 @@ internal static class OneXPlayerModels
     internal static ProfiledDeviceModel? Match(DeviceIdentitySnapshot identity)
     {
         return All.FirstOrDefault(model => model.IdentitySource == ProfileIdentitySource.Baseboard
-                                           && (model with { SystemProducts = [] }).Matches(identity))
-               ?? All.FirstOrDefault(model => model.Matches(identity));
+                                           && Matches(model with { SystemProducts = [] }, identity))
+               ?? All.FirstOrDefault(model => Matches(model, identity));
     }
 
-    internal static IDeviceEngine CreateEngine(HandheldDefinition definition)
+    private static bool Matches(ProfiledDeviceModel model, DeviceIdentitySnapshot identity)
     {
-        return new ProfiledDeviceEngine(All.Single(model => model.Definition == definition));
+        if (model.Definition.Id is "oxp-mini-amd" or "oxp-mini-intel" or "oxp-mini-pro")
+        {
+            // HC's exact Mini product selector has two special revisions and defaults to AMD.
+            var id = identity.BaseboardVersion?.Trim().ToUpperInvariant() switch
+            {
+                "1002-C" => "oxp-mini-intel", "V03" => "oxp-mini-pro", _ => "oxp-mini-amd"
+            };
+            return model.Definition.Id == id && (model with { Versions = [] }).Matches(identity);
+        }
+
+        return model.Matches(identity);
+    }
+
+    internal static NativeEngine CreateEngine(HandheldDefinition definition)
+    {
+        return new ProfiledDeviceEngine(All.Single(model => model.Definition.Id == definition.Id));
     }
 
     private static ProfiledDeviceModel Aok(string id, string name, string source, string product, byte maximum)
@@ -234,8 +244,25 @@ internal static class OneXPlayerModels
             SourceFamilyId = source, Manufacturers = OneNetbook, Products = products,
             SystemProducts = HhdProducts(source), Cpu = cpu,
             MinimumWatts = minimum, MaximumWatts = maximum, Controller = Controller, Motion = motion,
+            PowerPresets = Presets(source, minimum, maximum),
             KeyboardChords = Chords(source, protocol),
-            CreateNativeService = context => new OneXNativeService(context, protocol),
+            NativeRoles =
+            [
+                CapabilityRole.FanMode, CapabilityRole.FanDuty,
+                .. protocol.Temperature ? new[] { CapabilityRole.Telemetry } : [],
+                .. protocol.Charge != OneXChargeKind.None
+                    ? new[] { CapabilityRole.ChargeLimit, CapabilityRole.ChargeBypass }
+                    : [],
+                .. protocol.Lighting != OneXLightingKind.None
+                    ? new[]
+                    {
+                        CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
+                        CapabilityRole.LightingZoneColor
+                    }
+                    : [],
+                .. protocol.Vibration ? new[] { CapabilityRole.GenericRange } : []
+            ],
+            ServiceFactories = [context => new OneXNativeService(context, protocol)],
             CreateOemSource = protocol.VendorButtons || protocol.SerialButtons
                 ? () => new OneXOemSource(protocol)
                 : null,
@@ -247,6 +274,32 @@ internal static class OneXPlayerModels
                     .ToArray()
                 : []
         };
+    }
+
+    private static IReadOnlyList<DevicePowerPreset> Presets(string source, int minimum, int maximum)
+    {
+        // HC IDevice's default profile uses its 15 W sustained/slow pair. X1AMD/Intel
+        // additionally author 15/30/35 W profiles. PerformanceManager:414-423 clamps every
+        // profile target to the model cTDP (X1AMD:15-30 W, X1Intel:6-35 W), including its 64 W peak.
+        List<DevicePowerPreset> presets =
+        [
+            new("default", "Default", 15, 15, DevicePowerMode.Balanced)
+        ];
+        if (source is "OneXPlayerX1AMD" or "OneXPlayerX1Intel" or "OneXPlayerX1Pro")
+        {
+            presets.AddRange(
+            [
+                new DevicePowerPreset("battery", "Battery", 15, 15, DevicePowerMode.BetterBattery),
+                new DevicePowerPreset("balanced", "Balanced", 30, 30, DevicePowerMode.Balanced),
+                new DevicePowerPreset("performance", "Performance", 35, 35, DevicePowerMode.BestPerformance)
+            ]);
+        }
+
+        return presets.Select(preset => preset with
+        {
+            SustainedWatts = Math.Clamp(preset.SustainedWatts, minimum, maximum),
+            SlowWatts = Math.Clamp(preset.SlowWatts, minimum, maximum)
+        }).ToArray();
     }
 
     private static IReadOnlyList<string> HhdProducts(string source)
@@ -317,7 +370,7 @@ internal static class OneXPlayerModels
     {
         return new OemControlDescriptor
         {
-            ControlId = id, Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = label },
+            ControlId = id, Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
             Placement = placement, RequiresControllerAcquisition = true
         };
     }

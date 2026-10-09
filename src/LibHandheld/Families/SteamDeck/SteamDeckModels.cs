@@ -1,6 +1,6 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
 
@@ -8,17 +8,34 @@ namespace LibHandheld.Families.SteamDeck;
 
 internal static class SteamDeckModels
 {
-    internal const string FamilyId = "valve.steamdeck";
+    internal const string FamilyId = "valve";
 
     internal static IReadOnlyList<HandheldDefinition> Definitions { get; } = Array.AsReadOnly<HandheldDefinition>(
     [
         new HandheldDefinition("steamdeck-lcd", FamilyId, "Steam Deck LCD", "generic")
-            { HardwareAccess = DeviceHardwareAccess.InpOut },
+            { HardwareAccess = DeviceHardwareAccess.InpOut, DeclaredRoles = DeckRoles },
         new HandheldDefinition("steamdeck-oled", FamilyId, "Steam Deck OLED", "generic")
-            { HardwareAccess = DeviceHardwareAccess.InpOut },
+            { HardwareAccess = DeviceHardwareAccess.InpOut, DeclaredRoles = DeckRoles },
         new HandheldDefinition("steam-machine", FamilyId, "Steam Machine", "generic")
-            { HardwareAccess = DeviceHardwareAccess.PawnIo, HasController = false }
+        {
+            HardwareAccess = DeviceHardwareAccess.PawnIo, HasController = false,
+            DeclaredRoles =
+            [
+                CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit,
+                CapabilityRole.LightingPower, CapabilityRole.LightingBrightness,
+                CapabilityRole.LightingZoneColor, CapabilityRole.LightingEffect
+            ]
+        }
     ]);
+
+    private static IReadOnlyList<CapabilityRole> DeckRoles =>
+    [
+        CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit,
+        CapabilityRole.ControllerSource, CapabilityRole.MotionSource, CapabilityRole.HapticSink,
+        CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanTargetRpm,
+        CapabilityRole.FanMeasuredRpm, CapabilityRole.ChargeLimit, CapabilityRole.Telemetry,
+        CapabilityRole.GenericRange
+    ];
 
     internal static string? Match(DeviceIdentitySnapshot identity)
     {
@@ -36,7 +53,7 @@ internal static class SteamDeckModels
         };
     }
 
-    internal static IDeviceEngine CreateEngine(HandheldDefinition definition)
+    internal static NativeEngine CreateEngine(HandheldDefinition definition)
     {
         return definition.Id == "steam-machine"
             ? new ProfiledDeviceEngine(new ProfiledDeviceModel
@@ -45,9 +62,9 @@ internal static class SteamDeckModels
                 Products = ["Fremont"],
                 IdentitySource = ProfileIdentitySource.System, Cpu = CpuPowerKind.Amd, MinimumWatts = 35,
                 MaximumWatts = 45,
-                CreateNativeService = context => new SteamMachineLighting(context)
+                ServiceFactories = [context => new SteamMachineLighting(context)]
             })
-            : new SteamDeckDeviceEngine(definition);
+            : new ProfiledDeviceEngine(Profile(definition));
     }
 
     internal static IReadOnlyList<HandheldDefinition> GetDefinitions()
@@ -61,7 +78,16 @@ internal static class SteamDeckModels
         {
             Definition = definition, SourceFamilyId = "SteamDeck", Manufacturers = ["Valve"],
             Products = [definition.Id == "steamdeck-oled" ? "Galileo" : "Jupiter"],
-            IdentitySource = ProfileIdentitySource.System, Cpu = CpuPowerKind.Amd, MinimumWatts = 4, MaximumWatts = 15
+            IdentitySource = ProfileIdentitySource.System, Cpu = CpuPowerKind.Amd, MinimumWatts = 4, MaximumWatts = 15,
+            OpenPower = context => VangoghPower.Open(context.Resources.InpOutPath),
+            ServiceFactories = [context => new SteamDeckNativeService(context, NeptuneDevice.Open)],
+            OemControls = new[] { "steam", "quick-access", "l4", "r4", "l5", "r5" }.Select(id =>
+                new OemControlDescriptor
+                {
+                    ControlId = id, Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = id },
+                    Placement = id is "steam" or "quick-access" ? OemControlPlacement.Front : OemControlPlacement.Rear,
+                    RequiresControllerAcquisition = true
+                }).ToArray()
         };
     }
 }

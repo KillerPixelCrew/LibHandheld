@@ -106,7 +106,8 @@ internal static partial class HidDevices
     public static HidCollectionDetails Inspect(HidCollection collection)
     {
         ArgumentNullException.ThrowIfNull(collection);
-        using var handle = CreateFile(collection.DevicePath, 0, FileShareRead | FileShareWrite, 0, OpenExisting, 0,
+        using var handle = NativeDevice.CreateFile(collection.DevicePath, 0, FileShareRead | FileShareWrite, 0,
+            OpenExisting, 0,
             0);
         if (handle.IsInvalid)
         {
@@ -114,14 +115,14 @@ internal static partial class HidDevices
                 $"The HID collection {collection.Describe()} could not be opened.");
         }
 
-        if (!HidD_GetPreparsedData(handle, out var preparsed))
+        if (!NativeHid.HidD_GetPreparsedData(handle, out var preparsed))
         {
             throw new IOException($"The HID collection {collection.Describe()} has no report descriptor.");
         }
 
         try
         {
-            if (HidP_GetCaps(preparsed, out var caps) != HidpStatusSuccess)
+            if (NativeHid.HidP_GetCaps(preparsed, out var caps) != HidpStatusSuccess)
             {
                 throw new IOException($"The capabilities of {collection.Describe()} could not be read.");
             }
@@ -135,15 +136,15 @@ internal static partial class HidDevices
             AddCapabilities(capabilities, preparsed, HidReportType.Feature, false, caps.NumberFeatureValueCaps);
             return new HidCollectionDetails
             {
-                Manufacturer = ReadString(handle, HidD_GetManufacturerString),
-                Product = ReadString(handle, HidD_GetProductString),
+                Manufacturer = ReadString(handle, NativeHid.HidD_GetManufacturerString),
+                Product = ReadString(handle, NativeHid.HidD_GetProductString),
                 LinkCollections = caps.NumberLinkCollectionNodes,
                 Capabilities = capabilities
             };
         }
         finally
         {
-            _ = HidD_FreePreparsedData(preparsed);
+            _ = NativeHid.HidD_FreePreparsedData(preparsed);
         }
     }
 
@@ -159,11 +160,11 @@ internal static partial class HidDevices
             return;
         }
 
-        var entries = new HidpCapsEntry[count];
+        var entries = new NativeHid.HidpCapsEntry[count];
         var length = count;
         var status = buttons
-            ? HidP_GetButtonCaps((int)reportType, entries, ref length, preparsed)
-            : HidP_GetValueCaps((int)reportType, entries, ref length, preparsed);
+            ? NativeHid.HidP_GetButtonCaps((int)reportType, entries, ref length, preparsed)
+            : NativeHid.HidP_GetValueCaps((int)reportType, entries, ref length, preparsed);
         if (status != HidpStatusSuccess)
         {
             throw new IOException($"The {reportType} {(buttons ? "button" : "value")} capabilities could not be read.");
@@ -208,6 +209,13 @@ internal static partial class HidDevices
         }
     }
 
+    internal static HidCapability[] InputValues(nint data, ushort count)
+    {
+        List<HidCapability> capabilities = [];
+        AddCapabilities(capabilities, data, HidReportType.Input, false, count);
+        return capabilities.ToArray();
+    }
+
     private static string? ReadString(SafeFileHandle handle, Func<SafeFileHandle, byte[], uint, bool> read)
     {
         var buffer = new byte[StringBufferBytes];
@@ -222,43 +230,7 @@ internal static partial class HidDevices
         return text.Length == 0 ? null : text;
     }
 
-    [LibraryImport("hid.dll")]
-    [return: MarshalAs(UnmanagedType.U1)]
-    private static partial bool HidD_GetManufacturerString(SafeFileHandle device, [Out] byte[] buffer, uint length);
-
-    [LibraryImport("hid.dll")]
-    [return: MarshalAs(UnmanagedType.U1)]
-    private static partial bool HidD_GetProductString(SafeFileHandle device, [Out] byte[] buffer, uint length);
-
-    [LibraryImport("hid.dll")]
-    private static partial int HidP_GetButtonCaps(int reportType, [Out] HidpCapsEntry[] capabilities,
-        ref ushort length, nint preparsedData);
-
-    [LibraryImport("hid.dll")]
-    private static partial int HidP_GetValueCaps(int reportType, [Out] HidpCapsEntry[] capabilities,
-        ref ushort length, nint preparsedData);
 
     // HIDP_BUTTON_CAPS and HIDP_VALUE_CAPS share one 72-byte layout up to offset 16, where the button's
     // ReportCount and the value's HasNull overlap; the usage range union starts at 56 in both.
-    [StructLayout(LayoutKind.Explicit, Size = 72)]
-    private struct HidpCapsEntry
-    {
-        [FieldOffset(0)] public ushort UsagePage;
-        [FieldOffset(2)] public byte ReportId;
-        [FieldOffset(6)] public ushort LinkCollection;
-        [FieldOffset(12)] public byte IsRange;
-        [FieldOffset(15)] public byte IsAbsolute;
-        [FieldOffset(16)] public ushort ButtonReportCount;
-        [FieldOffset(16)] public byte HasNull;
-        [FieldOffset(18)] public ushort BitSize;
-        [FieldOffset(20)] public ushort ValueReportCount;
-        [FieldOffset(32)] public uint UnitsExponent;
-        [FieldOffset(36)] public uint Units;
-        [FieldOffset(40)] public int LogicalMin;
-        [FieldOffset(44)] public int LogicalMax;
-        [FieldOffset(48)] public int PhysicalMin;
-        [FieldOffset(52)] public int PhysicalMax;
-        [FieldOffset(56)] public ushort UsageMin;
-        [FieldOffset(58)] public ushort UsageMax;
-    }
 }

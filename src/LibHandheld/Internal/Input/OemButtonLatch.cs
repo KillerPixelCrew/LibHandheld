@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using LibHandheld.Contracts;
+
 namespace LibHandheld.Internal.Input;
 
 /// <summary>Turns a release-less OEM button event into a press the virtual pad can deliver.</summary>
@@ -13,7 +16,22 @@ internal sealed class OemButtonLatch
     public static readonly TimeSpan HoldDuration = TimeSpan.FromMilliseconds(200);
 
     private long _guideUntilTicks;
+    private long _pulseUntil;
     private long _quickAccessUntilTicks;
+
+    /// <summary>Monotonic deadline for a native control pulse, including controls without a gamepad bit.</summary>
+    internal long PulseDeadline => Volatile.Read(ref _pulseUntil);
+
+    internal void Pulse(TimeSpan duration)
+    {
+        Volatile.Write(ref _pulseUntil,
+            Stopwatch.GetTimestamp() + checked((long)(duration.TotalSeconds * Stopwatch.Frequency)));
+    }
+
+    internal bool PulseHeld(long now)
+    {
+        return now < PulseDeadline;
+    }
 
     /// <summary>Latches Guide and/or Quick Access down for <see cref="HoldDuration" />.</summary>
     /// <param name="button">The canonical buttons the press maps to; others are ignored.</param>
@@ -48,5 +66,6 @@ internal sealed class OemButtonLatch
     {
         Volatile.Write(ref _guideUntilTicks, 0);
         Volatile.Write(ref _quickAccessUntilTicks, 0);
+        Volatile.Write(ref _pulseUntil, 0);
     }
 }

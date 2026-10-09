@@ -1,3 +1,5 @@
+using LibHandheld.Contracts;
+
 namespace LibHandheld.Internal.Capabilities;
 
 /// <summary>Validation for optional coordinated sustained/boost power limits and the commands that write them.</summary>

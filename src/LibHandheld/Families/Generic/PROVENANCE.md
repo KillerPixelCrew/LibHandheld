@@ -69,13 +69,13 @@ the documented `BD` masks; XG power uses `C5` instead.
 `GenericAsusService` composes the modules alongside its existing ATKACPI controls, with separate
 instance IDs and existing semantic lighting roles. Its `firmwareControls=false` mode owns only
 actual Aura USB endpoints, allowing an accessory on another manufacturer's host without advertising
-ASUS laptop firmware controls. Endpoint topology changes increment the service descriptor generation
-for the shared runtime to republish; suspend/detach closes handles and resume discovers fresh ones.
+ASUS laptop firmware controls. Endpoint topology changes republish the service descriptor set;
+suspend/detach closes handles and resume discovers fresh ones.
 
 Discovery and resume send no lighting configuration. An uncertain write closes that module and is
-latched across rediscovery/resume rather than automatically repeated. Successful explicit writes
-publish observed state; no Aura readback of colors or power settings is invented. Before any write,
-those settings remain unknown. Normal-module power masks use HHD's explicit preference defaults for
-fields not yet authored; these are desired settings, not observed originals. Persistent settings
-stay on the device at shutdown. Packet/lifecycle test sources use injected endpoints and do not
-establish hardware acceptance.
+not automatically repeated. A later explicit command is admitted normally. Successful explicit
+writes publish observed state; no Aura readback of colors or power settings is invented. Before any
+write, those settings remain unknown. Normal-module power masks use HHD's explicit preference
+defaults for fields not yet authored; these are desired settings, not observed originals. Persistent
+settings stay on the device at shutdown. Packet/lifecycle test sources use injected endpoints and do
+not establish hardware acceptance.

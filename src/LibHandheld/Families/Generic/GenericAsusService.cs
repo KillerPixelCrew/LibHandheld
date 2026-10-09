@@ -1,7 +1,11 @@
+using System.Globalization;
+using LibHandheld.Contracts;
 using LibHandheld.Families.RogAlly;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Generic;
 
@@ -9,7 +13,7 @@ namespace LibHandheld.Families.Generic;
 internal sealed class GenericAsusService(
     ProfiledFeatureContext context,
     AsusAuraController? aura = null,
-    bool firmwareControls = true) : ProfiledFeatureService("asus-firmware")
+    bool firmwareControls = true) : ProfiledFeatureService(firmwareControls ? "asus-firmware" : "asus-accessories")
 {
     private static readonly IReadOnlyList<CapabilityDescriptor> Surface =
     [
@@ -17,50 +21,90 @@ internal sealed class GenericAsusService(
         {
             CapabilityId = CapabilityIds.Scenario, Role = CapabilityRole.ScenarioMode,
             ValueKind = CapabilityValueKind.Choice,
-            Display = Label("Performance mode"), SupportsRead = true, SupportsWrite = true,
+            Display = CapabilityDescriptors.Label("Performance mode"), SupportsRead = true, SupportsWrite = true,
             Persistence = CapabilityPersistence.Volatile,
             Choices =
             [
-                new CapabilityChoice("performance", Label("Performance")),
-                new CapabilityChoice("turbo", Label("Turbo")), new CapabilityChoice("silent", Label("Silent"))
+                new CapabilityChoice("performance", CapabilityDescriptors.Label("Performance")),
+                new CapabilityChoice("turbo", CapabilityDescriptors.Label("Turbo")),
+                new CapabilityChoice("silent", CapabilityDescriptors.Label("Silent"))
             ]
         },
         new()
         {
             CapabilityId = CapabilityIds.ChargeLimit, Role = CapabilityRole.ChargeLimit,
             ValueKind = CapabilityValueKind.Integer,
-            Display = Label("Battery charge ceiling"), Minimum = 40, Maximum = 100, Step = 1,
+            Display = CapabilityDescriptors.Label("Battery charge ceiling"),
+            Minimum = AllyChargeLimitCapability.MinimumPercent,
+            Maximum = AllyChargeLimitCapability.MaximumPercent, Step = 1,
             Unit = CapabilityUnit.Percent,
             SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent,
             ProfileScope = CapabilityProfileScope.GlobalOnly
         },
         Fan("cpu", "CPU fan curve"), Fan("gpu", "GPU fan curve"),
+        Duty("cpu"), Duty("gpu"),
         new()
         {
-            CapabilityId = "asus.xg-enabled", Role = CapabilityRole.GenericToggle,
+            CapabilityId = CapabilityIds.FanMode, Role = CapabilityRole.FanMode,
+            ValueKind = CapabilityValueKind.Choice, Display = new CapabilityDisplay { Key = DisplayKey.FanMode },
+            SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
+            Choices =
+            [
+                new CapabilityChoice("automatic", CapabilityDescriptors.Label("Automatic")),
+                new CapabilityChoice("custom", CapabilityDescriptors.Label("Custom"))
+            ]
+        },
+        new()
+        {
+            CapabilityId = "asus.xg-enabled", InstanceId = "xg", Role = CapabilityRole.GenericToggle,
             ValueKind = CapabilityValueKind.Boolean,
-            Display = Label("XG Mobile enabled"), SupportsRead = true, SupportsWrite = true,
+            Display = CapabilityDescriptors.Label("XG Mobile enabled"), SupportsRead = true, SupportsWrite = true,
             Persistence = CapabilityPersistence.DevicePersistent,
             ProfileScope = CapabilityProfileScope.GlobalOnly
         },
         new()
         {
-            CapabilityId = "asus.xg-lighting", Role = CapabilityRole.LightingPower,
+            CapabilityId = "asus.xg-lighting", InstanceId = "xg", Role = CapabilityRole.LightingPower,
             ValueKind = CapabilityValueKind.Boolean,
-            Display = Label("XG Mobile lighting"), SupportsWrite = true, Persistence = CapabilityPersistence.Unknown
+            Display = CapabilityDescriptors.Label("XG Mobile lighting"), SupportsWrite = true,
+            Persistence = CapabilityPersistence.Unknown
         },
         Fan("xg", "XG Mobile fan curve")
     ];
 
     private readonly AsusAuraController _aura = aura ?? new AsusAuraController();
-    private readonly Dictionary<(string, string?), CapabilityValue> _observed = [];
-    private readonly HashSet<(string, string?)> _uncertainFirmwareCommands = [];
+    private readonly HashSet<string> _changedFans = [];
+    private readonly ObservedValues _observed = new();
+
+    private IReadOnlyList<HidCollection>? _accessoryCollections;
     private IAsusAcpi? _acpi;
-    private GenericRecoveryJournal? _journal;
+    private AllyChargeLimitCapability? _charge;
+    private DeviceRecoveryJournal? _journal;
+    private bool _topologyChanged;
     private bool _unknownOriginal;
     private AsusXgTransport? _xg;
-    internal override long DescriptorGeneration => _aura.Generation;
-    private IReadOnlyList<CapabilityDescriptor> FirmwareSurface => firmwareControls ? Surface : [];
+
+    internal static IReadOnlyList<CapabilityRole> AccessoryRoles { get; } =
+    [
+        CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect, CapabilityRole.LightingEffectSpeed,
+        CapabilityRole.LightingZoneColor, CapabilityRole.LightingPower, CapabilityRole.GenericToggle,
+        CapabilityRole.GenericChoice, CapabilityRole.FanCurve
+    ];
+
+    private bool AccessoryPresent => aura is not null || (_accessoryCollections is { } current
+        ? current.Count > 0
+        : MatchesAccessoryIdentity(context.Identity));
+
+    private bool XgPresent => _accessoryCollections is { } current
+        ? current.Any(collection => collection.ProductId is 0x1970 or 0x1A9A or 0x1BC1)
+        : context.Identity.UsbEndpoints.Any(endpoint =>
+            endpoint.VendorId.Equals("0B05", StringComparison.OrdinalIgnoreCase)
+            && endpoint.ProductId.ToUpperInvariant() is "1970" or "1A9A" or "1BC1");
+
+    internal override bool DescriptorsChanged => _topologyChanged || _aura.DescriptorsChanged;
+
+    private IReadOnlyList<CapabilityDescriptor> FirmwareSurface => Surface.Where(descriptor =>
+        descriptor.InstanceId == "xg" ? XgPresent : firmwareControls).ToArray();
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
         Array.AsReadOnly(FirmwareSurface.Concat(_aura.Descriptors).ToArray());
@@ -69,19 +113,41 @@ internal sealed class GenericAsusService(
     {
         var xg = descriptor.CapabilityId.StartsWith("asus.xg", StringComparison.Ordinal) ||
                  descriptor.InstanceId == "xg";
-        _observed.TryGetValue((descriptor.CapabilityId, descriptor.InstanceId), out var value);
+        var value = _observed.Value(descriptor.CapabilityId, descriptor.InstanceId);
         return new CapabilityState
         {
             CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
-            Available = !_uncertainFirmwareCommands.Contains((descriptor.CapabilityId, descriptor.InstanceId))
-                        && (xg ? _xg?.Connected == true : _acpi is not null),
+            Available = xg ? _xg is not null : _acpi is not null,
             ObservedValue = value,
             Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-            DescriptorGeneration = 0, CycleGeneration = 0
+            ObservedAt = _observed.Time(descriptor.CapabilityId, descriptor.InstanceId)
         };
     }).Concat(_aura.States).ToArray());
 
     public override bool Suspendable => true;
+
+    internal static bool MatchesAccessoryIdentity(DeviceIdentitySnapshot identity)
+    {
+        return identity.UsbEndpoints.Any(endpoint =>
+            ushort.TryParse(endpoint.VendorId, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var vendor) &&
+            vendor == AsusAuraProtocol.Vendor
+            && ushort.TryParse(endpoint.ProductId, NumberStyles.HexNumber, CultureInfo.InvariantCulture,
+                out var product)
+            && (AsusAuraProtocol.Supported(product) || product is 0x1970 or 0x1A9A));
+    }
+
+    internal void SetAccessoryCollections(IReadOnlyList<HidCollection> collections)
+    {
+        var hadXg = XgPresent;
+        _accessoryCollections = collections;
+        _topologyChanged |= hadXg != XgPresent;
+    }
+
+    internal override void AcknowledgeDescriptors()
+    {
+        _topologyChanged = false;
+        _aura.AcknowledgeDescriptors();
+    }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
@@ -93,35 +159,25 @@ internal sealed class GenericAsusService(
             if (acpi.TryOpen())
             {
                 _acpi = acpi;
+                _charge = new AllyChargeLimitCapability(acpi);
             }
             else
             {
                 acpi.Dispose();
             }
-
-            _xg = AsusXgTransport.Open();
         }
 
-        _aura.Refresh(token);
         if (firmwareControls)
         {
-            _journal = await GenericRecoveryJournal.Open(Path.Combine(context.StateDirectory, "asus-firmware"), token)
-                .ConfigureAwait(false);
+            _journal = context.Journal;
         }
 
         if (_journal is { } journal)
         {
-            foreach (var entry in journal.OutstandingEntries)
+            foreach (var entry in journal.Entries<GenericRecoveryState>())
             {
-                if (entry.FirmwareIdentity != context.Firmware)
-                {
-                    await journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoredVerified, token)
-                        .ConfigureAwait(false);
-                }
-                else if (entry.Status == DeviceRecoveryStatus.Pending && _acpi is not null)
-                {
-                    await RestoreAsync(entry.ServiceId, token).ConfigureAwait(false);
-                }
+                await journal.ReconcileAsync<GenericRecoveryState>(entry.ServiceId, context.Firmware,
+                    (_, ct) => RestoreAsync(entry.ServiceId, ct), token).ConfigureAwait(false);
             }
         }
 
@@ -138,26 +194,55 @@ internal sealed class GenericAsusService(
     internal override ValueTask RefreshAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _aura.Refresh(token);
+        if (AccessoryPresent)
+        {
+            try
+            {
+                var collections = aura is null
+                    ? _accessoryCollections ?? AsusAuraTransport.DiscoverCollections()
+                    : [];
+                _aura.Refresh(token, aura is null ? AsusAuraTransport.Modules(collections) : null);
+                if (XgPresent && _xg is null)
+                {
+                    _xg = AsusXgTransport.Open(collections);
+                }
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException && !token.IsCancellationRequested)
+            {
+                DeviceTrace.Change("asus-accessories", "discovery", exception.Message, DeviceTraceLevel.Warn);
+            }
+        }
+        else
+        {
+            _aura.Close();
+        }
+
+        if (!XgPresent)
+        {
+            _xg?.Dispose();
+            _xg = null;
+        }
+
         if (_acpi is not null)
         {
             if (AsusAcpiProtocol.TryDecodeScalar(_acpi.ReadStatus(AsusAcpiId.PerformanceMode), out var mode) &&
                 mode is >= 0 and <= 2)
             {
-                _observed[(CapabilityIds.Scenario, null)] = CapabilityValue.Choice(Mode(mode));
+                _observed.Read(CapabilityIds.Scenario, CapabilityValue.Choice(AllyModels.ScenarioName(mode)!));
             }
 
-            if (AsusAcpiProtocol.TryDecodeScalar(_acpi.ReadStatus(AsusAcpiId.ChargeLimit), out var charge) &&
-                charge is >= 40 and <= 100)
-            {
-                _observed[(CapabilityIds.ChargeLimit, null)] = CapabilityValue.Integer(charge);
-            }
+            var charge = _charge!.Read();
+            _observed.Read(CapabilityIds.ChargeLimit, charge is null ? null : CapabilityValue.Integer(charge.Value));
         }
 
         if (_xg?.ReadEnabled() is { } enabled)
         {
-            _observed[("asus.xg-enabled", null)] = CapabilityValue.Boolean(enabled);
+            _observed.Read("asus.xg-enabled", CapabilityValue.Boolean(enabled), "xg");
         }
+
+        Set(_acpi is not null || _xg is not null || _aura.Available
+            ? DeviceServiceState.Owned
+            : DeviceServiceState.Passive);
 
         return ValueTask.CompletedTask;
     }
@@ -170,17 +255,12 @@ internal sealed class GenericAsusService(
             return _aura.Execute(command, token);
         }
 
-        if (!firmwareControls)
+        if (!firmwareControls && command.InstanceId != "xg")
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
                 "This accessory service owns only discovered Aura modules.");
         }
 
-        if (_uncertainFirmwareCommands.Contains((command.CapabilityId, command.InstanceId)))
-        {
-            return CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted,
-                "The previous firmware write was uncertain and is not repeated automatically.");
-        }
 
         var dispatched = false;
         try
@@ -188,7 +268,7 @@ internal sealed class GenericAsusService(
             var value = command.RequestedValue!;
             if (command.CapabilityId is "asus.xg-enabled" or "asus.xg-lighting" || command.InstanceId == "xg")
             {
-                if (_xg?.Connected != true)
+                if (_xg is null)
                 {
                     return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                         "XG Mobile is disconnected.");
@@ -225,15 +305,97 @@ internal sealed class GenericAsusService(
                 if (command.CapabilityId == CapabilityIds.ChargeLimit)
                 {
                     token.ThrowIfCancellationRequested();
-                    dispatched = true;
-                    _acpi.Write(AsusAcpiId.ChargeLimit, checked((uint)value.IntegerValue!.Value));
+                    var result = _charge!.Apply(command, value.IntegerValue!.Value);
+                    if (result.Outcome == CommandOutcome.Applied)
+                    {
+                        _observed.Written(command.CapabilityId, value, command.InstanceId);
+                    }
+
+                    return result;
                 }
-                else if (command.CapabilityId == CapabilityIds.Scenario)
+
+                if (command.CapabilityId == CapabilityIds.Scenario)
                 {
-                    await CaptureAsync("mode", [0], OriginalMode(), token).ConfigureAwait(false);
+                    await CaptureAsync("mode", [0], OriginalMode, token).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
                     dispatched = true;
-                    _acpi.Write(AsusAcpiId.PerformanceMode, checked((uint)Mode(value.ChoiceValue!)));
+                    _acpi.Write(AsusAcpiId.PerformanceMode, AllyModels.ScenarioValue(value.ChoiceValue!));
+                }
+                else if (command.CapabilityId == "fan.duty")
+                {
+                    var fan = command.InstanceId == "gpu" ? AsusAcpiId.GpuFanCurve : AsusAcpiId.CpuFanCurve;
+                    await CaptureAsync("mode", [0], OriginalMode, token).ConfigureAwait(false);
+                    await CaptureFanAsync(command.InstanceId!, fan, token).ConfigureAwait(false);
+                    var percent = value.IntegerValue!.Value;
+                    var curve = AsusAcpiProtocol.FlatFanCurve(percent);
+                    token.ThrowIfCancellationRequested();
+                    dispatched = true;
+                    _changedFans.Add(command.InstanceId!);
+                    _acpi.WriteBuffer(fan, curve);
+                    _observed.Written(CapabilityIds.FanMode, CapabilityValue.Choice("custom"));
+                }
+                else if (command.CapabilityId == CapabilityIds.FanMode)
+                {
+                    if (value.ChoiceValue == "automatic")
+                    {
+                        var restored = new List<string>();
+                        foreach (var fan in _changedFans)
+                        {
+                            if (!_journal!.HasUnrestoredMutation("fan-" + fan))
+                            {
+                                continue;
+                            }
+
+                            token.ThrowIfCancellationRequested();
+                            dispatched = true;
+                            await RestoreAsync("fan-" + fan, token).ConfigureAwait(false);
+                            restored.Add(fan);
+                        }
+
+                        foreach (var fan in restored)
+                        {
+                            _changedFans.Remove(fan);
+                            _observed.Forget("fan.duty", fan);
+                            _observed.Forget(CapabilityIds.FanCurve, fan);
+                        }
+
+                        if (dispatched && _changedFans.Count > 0)
+                        {
+                            return CommandResults.Indeterminate(command, CapabilityReasonCode.PrerequisiteMissing,
+                                "Only the captured fan tables were restored; another changed fan has an unknown original.");
+                        }
+
+                        // HHD disables its Linux hwmon override separately from changing thermal policy.
+                        // No equivalent Windows reset is documented for Flow; a mode write alone cannot
+                        // be claimed to release custom fan ownership when the original curves are unknown.
+                        if (!dispatched)
+                        {
+                            return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                                "The original fan tables were not readable; the Windows automatic reset protocol is not known.");
+                        }
+                    }
+                    else
+                    {
+                        foreach (var instance in new[] { "cpu", "gpu" })
+                        {
+                            if (_observed.Value("fan.duty", instance)?.IntegerValue is not { } duty)
+                            {
+                                continue;
+                            }
+
+                            var curve = AsusAcpiProtocol.FlatFanCurve(duty);
+                            token.ThrowIfCancellationRequested();
+                            dispatched = true;
+                            _acpi.WriteBuffer(instance == "gpu" ? AsusAcpiId.GpuFanCurve : AsusAcpiId.CpuFanCurve,
+                                curve);
+                        }
+
+                        if (!dispatched)
+                        {
+                            return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                                "Set a fan duty to enter native custom control.");
+                        }
+                    }
                 }
                 else if (command.CapabilityId == CapabilityIds.FanCurve)
                 {
@@ -243,21 +405,21 @@ internal sealed class GenericAsusService(
                     }
 
                     var id = command.InstanceId == "gpu" ? AsusAcpiId.GpuFanCurve : AsusAcpiId.CpuFanCurve;
-                    var mode = OriginalMode();
-                    byte[]? original = null;
-                    if (mode is not null)
-                    {
-                        var read = _acpi.ReadBuffer(id, AsusAcpiProtocol.CurveSelector(mode[0]));
-                        if (AsusAcpiProtocol.IsValidCurve(read))
-                        {
-                            original = [mode[0], .. read];
-                        }
-                    }
-
                     await CaptureAsync("fan-" + command.InstanceId,
-                        [command.InstanceId == "gpu" ? (ushort)2 : (ushort)1], original, token).ConfigureAwait(false);
+                        [command.InstanceId == "gpu" ? (ushort)2 : (ushort)1], () =>
+                        {
+                            var mode = OriginalMode();
+                            if (mode is null)
+                            {
+                                return null;
+                            }
+
+                            var read = _acpi.ReadBuffer(id, AsusAcpiProtocol.CurveSelector(mode[0]));
+                            return AsusAcpiProtocol.IsValidCurve(read) ? [mode[0], .. read] : null;
+                        }, token).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
                     dispatched = true;
+                    _changedFans.Add(command.InstanceId!);
                     _acpi.WriteBuffer(id, curve);
                 }
                 else
@@ -267,57 +429,52 @@ internal sealed class GenericAsusService(
                 }
             }
 
-            _observed[(command.CapabilityId, command.InstanceId)] = value;
-            return CommandResults.Unverified(command);
+            _observed.Written(command.CapabilityId, value, command.InstanceId);
+            return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            if (dispatched)
+            return CommandResults.TransportFailure(command, dispatched, exception);
+        }
+    }
+
+    private ValueTask CaptureFanAsync(string instance, AsusAcpiId id, CancellationToken token)
+    {
+        return CaptureAsync("fan-" + instance, [instance == "gpu" ? (ushort)2 : (ushort)1], () =>
+        {
+            var mode = OriginalMode();
+            if (mode is null)
             {
-                _uncertainFirmwareCommands.Add((command.CapabilityId, command.InstanceId));
+                return null;
             }
 
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message,
-                    RollbackResult.NotRequired)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
-        }
+            var curve = _acpi!.ReadBuffer(id, AsusAcpiProtocol.CurveSelector(mode[0]));
+            return AsusAcpiProtocol.IsValidCurve(curve) ? [mode[0], .. curve] : null;
+        }, token);
     }
 
     private byte[]? OriginalMode()
     {
         return _acpi is not null && AsusAcpiProtocol.TryDecodeScalar(_acpi.ReadStatus(AsusAcpiId.PerformanceMode),
                                      out var mode)
-                                 && mode is >= 0 and <= 2
+                                 && mode is 0 or 1 or 2 or 4
             ? [(byte)mode]
             : null;
     }
 
-    private async ValueTask CaptureAsync(string id, ushort[] addresses, byte[]? original, CancellationToken token)
+    private async ValueTask CaptureAsync(string id, ushort[] addresses, Func<byte[]?> capture, CancellationToken token)
     {
-        if (_journal!.EntryFor(id) is { } prior)
+        var captured = await _journal!.BeginAsync(id, context.Firmware, () =>
         {
-            if (prior.Status != DeviceRecoveryStatus.Pending)
-            {
-                await _journal.BeginAsync(id, context.Firmware, prior.OriginalState, token).ConfigureAwait(false);
-            }
-
-            return;
-        }
-
-        if (original is null)
-        {
-            _unknownOriginal = true;
-            return;
-        }
-
-        await _journal.BeginAsync(id, context.Firmware,
-            new GenericRecoveryState { Addresses = addresses, Values = original }, token).ConfigureAwait(false);
+            var original = capture();
+            return original is null ? null : new GenericRecoveryState { Addresses = addresses, Values = original };
+        }, token).ConfigureAwait(false);
+        _unknownOriginal |= captured is null;
     }
 
     private async ValueTask RestoreAsync(string id, CancellationToken token)
     {
-        if (_acpi is null || _journal?.PendingOriginalFor(id) is not { } original)
+        if (_acpi is null || _journal?.PendingOriginalFor<GenericRecoveryState>(id) is not { } original)
         {
             return;
         }
@@ -366,7 +523,7 @@ internal sealed class GenericAsusService(
                 await RestoreAsync(id, token).ConfigureAwait(false);
             }
 
-            return _unknownOriginal || _journal?.OutstandingEntries.Count > 0
+            return _unknownOriginal || _journal?.Entries<GenericRecoveryState>().Count > 0
                 ? Set(DeviceServiceState.ReleasedUnverified,
                     Missing("ASUS temporary settings were restored without complete readback."))
                 : Set(DeviceServiceState.Idle);
@@ -375,6 +532,7 @@ internal sealed class GenericAsusService(
         {
             _acpi?.Dispose();
             _acpi = null;
+            _charge = null;
             _xg?.Dispose();
             _xg = null;
             _aura.Close();
@@ -382,23 +540,27 @@ internal sealed class GenericAsusService(
         }
     }
 
-    private static string Mode(int mode)
+    internal override ValueTask DisposeAsync()
     {
-        return mode switch { 0 => "performance", 1 => "turbo", _ => "silent" };
+        _aura.Close();
+        _xg?.Dispose();
+        _xg = null;
+        _acpi?.Dispose();
+        _acpi = null;
+        _charge = null;
+        return ValueTask.CompletedTask;
     }
 
-    private static int Mode(string mode)
+
+    private static CapabilityDescriptor Duty(string instance)
     {
-        return mode switch
+        return new CapabilityDescriptor
         {
-            "performance" => 0, "turbo" => 1, "silent" => 2,
-            _ => throw new ArgumentOutOfRangeException(nameof(mode))
+            CapabilityId = "fan.duty", InstanceId = instance, Role = CapabilityRole.FanDuty,
+            ValueKind = CapabilityValueKind.Integer, Display = new CapabilityDisplay { Key = DisplayKey.FanSpeed },
+            Minimum = 0, Maximum = 100, Step = 1, Unit = CapabilityUnit.Percent, SupportsWrite = true,
+            Persistence = CapabilityPersistence.Volatile
         };
-    }
-
-    private static CapabilityDisplay Label(string text)
-    {
-        return new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = text };
     }
 
     private static CapabilityDescriptor Fan(string instance, string label)
@@ -407,7 +569,8 @@ internal sealed class GenericAsusService(
         {
             CapabilityId = CapabilityIds.FanCurve, InstanceId = instance, Role = CapabilityRole.FanCurve,
             ValueKind = CapabilityValueKind.Curve,
-            Display = Label(label), Minimum = 0, Maximum = 100, Unit = CapabilityUnit.Percent, SupportsWrite = true,
+            Display = CapabilityDescriptors.Label(label), Minimum = 0, Maximum = 100, Unit = CapabilityUnit.Percent,
+            SupportsWrite = true,
             Persistence = instance == "xg" ? CapabilityPersistence.Unknown : CapabilityPersistence.Volatile
         };
     }

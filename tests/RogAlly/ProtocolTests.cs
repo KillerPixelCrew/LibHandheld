@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: MIT
-
 using System.Buffers.Binary;
 using System.Numerics;
 using LibHandheld.Internal.Input;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly.Tests;
 

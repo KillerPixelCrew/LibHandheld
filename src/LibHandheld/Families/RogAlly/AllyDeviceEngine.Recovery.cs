@@ -1,8 +1,7 @@
-// SPDX-License-Identifier: MIT
-
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -21,26 +20,8 @@ internal sealed partial class AllyDeviceEngine
             return;
         }
 
-        foreach (var entry in _journal.OutstandingEntries)
+        foreach (var entry in _journal.Entries<AllyRecoveryState>())
         {
-            // Earlier builds read restores back and recorded the result. A restore that reached the
-            // device is complete now (D9), and one that failed is pending again, so this start writes it.
-            if (entry.Status is DeviceRecoveryStatus.RestoredUnverified)
-            {
-                DeviceTrace.Info("recovery", $"'{entry.ServiceId}' was restored by an earlier build; entry removed.");
-                await _journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoredVerified,
-                    CancellationToken.None).ConfigureAwait(false);
-                continue;
-            }
-
-            if (entry.Status is DeviceRecoveryStatus.RestoreFailed)
-            {
-                DeviceTrace.Info("recovery", $"'{entry.ServiceId}' kept a failed restore from an earlier build; "
-                                             + "it is pending again.");
-                await _journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.Pending,
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-
             string? current;
             if (entry.ServiceId == AllyServiceIds.Controller)
             {
@@ -53,7 +34,7 @@ internal sealed partial class AllyDeviceEngine
                 current = _hardware.Acpi.TryOpen() ? identity.FirmwareIdentity : null;
             }
 
-            switch (AllyRecoveryJournal.Decide(entry, current))
+            switch (AllyRecoveryRules.Decide(entry, current))
             {
                 case AllyReconciliationAction.Wait:
                     DeviceTrace.Info("recovery", $"'{entry.ServiceId}' waits: its transport is not available yet.");
@@ -62,7 +43,7 @@ internal sealed partial class AllyDeviceEngine
                     DeviceTrace.Warn("recovery",
                         $"dropped the '{entry.ServiceId}' entry bound to {entry.FirmwareIdentity}: the firmware now "
                         + $"reads {current}, so its captured state is not restored.");
-                    await _journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoredVerified,
+                    await _journal.RetireAsync(entry.ServiceId, "firmware changed",
                         CancellationToken.None).ConfigureAwait(false);
                     continue;
                 case AllyReconciliationAction.Restore:
@@ -126,14 +107,6 @@ internal sealed partial class AllyDeviceEngine
                 }
 
                 return;
-        }
-    }
-
-    private static void Block(CapabilityReason reason, params DeviceService<AllyIdentityState>?[] services)
-    {
-        foreach (var service in services)
-        {
-            service?.ReconciliationBlockReason = reason;
         }
     }
 }

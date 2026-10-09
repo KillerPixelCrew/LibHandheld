@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Management;
 using LibHandheld.Internal.Transports;
+using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.OneXPlayer;
 
@@ -13,9 +14,7 @@ internal sealed class OneXWmiEc : IEmbeddedController
 
     internal OneXWmiEc()
     {
-        using var query = new ManagementObjectSearcher("root\\WMI", "SELECT * FROM SuRwECRegInterface");
-        using var result = query.Get();
-        _instance = result.Cast<ManagementObject>().FirstOrDefault()
+        _instance = WmiProvider.TryOpen("root\\WMI", "SELECT * FROM SuRwECRegInterface")
                     ?? throw new InvalidOperationException("ONEXPLAYER SuRwECRegInterface is unavailable.");
     }
 
@@ -24,7 +23,7 @@ internal sealed class OneXWmiEc : IEmbeddedController
         return Transaction(() =>
         {
             object?[] arguments = [Address(address), null];
-            _instance.InvokeMethod("ReadECReg", arguments);
+            WmiProvider.Invoke(_instance, "ReadECReg", arguments);
             var fields = Response(arguments);
             if (fields.Length < 2)
             {
@@ -46,7 +45,7 @@ internal sealed class OneXWmiEc : IEmbeddedController
         Transaction(() =>
         {
             object?[] arguments = [Address(address) | ((uint)value << 16), null];
-            _instance.InvokeMethod("WriteECReg", arguments);
+            WmiProvider.Invoke(_instance, "WriteECReg", arguments);
             _ = Response(arguments);
             return true;
         });
@@ -67,7 +66,7 @@ internal sealed class OneXWmiEc : IEmbeddedController
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            return HardwareBus.Run(@"Global\Access_EC", TimeSpan.FromMilliseconds(500), operation);
+            return HardwareBus.Run(HardwareBus.EmbeddedController, TimeSpan.FromMilliseconds(500), operation);
         }
     }
 

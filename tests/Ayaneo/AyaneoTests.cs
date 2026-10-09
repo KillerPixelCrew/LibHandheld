@@ -3,10 +3,6 @@ using System.Numerics;
 using LibHandheld.Families.Ayaneo;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Testing;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Testing;
 
@@ -76,7 +72,7 @@ public sealed class AyaneoTests
         Assert.Equal(0x20, report[24]);
         Assert.Equal(1, report[32]);
         var mapping = AyaneoSuperJoy.Mapping(12, 0x6E);
-        Assert.Equal(new byte[] { 0, 0x6E, 0, 0x0B, 7, 12, 0, 0, 0, 0, 0, 0x6E }, mapping[..12]);
+        Assert.Equal(new byte[] { 0, 0x6E, 0, 0x0B, 7, 12, 0, 0, 0, 0, 0, 0, 0x6E }, mapping[..13]);
         Assert.Equal("Cross / Touchpad", AyaneoSuperJoy.LeftModule(0x06));
         Assert.Equal("Touchpad / ABXY", AyaneoSuperJoy.RightModule(0x52));
     }
@@ -93,7 +89,7 @@ public sealed class AyaneoTests
         ec.FailReadback = true;
         var result = await service.ExecuteAsync(Command(AyaneoNativeService.BypassId,
             CapabilityValue.Boolean(true)), "bios1", CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Contains(((ushort)address, (byte)value), ec.Writes);
         ec.FailReadback = false;
         await service.ReleaseAsync(Cycle(), CancellationToken.None);
@@ -157,6 +153,143 @@ public sealed class AyaneoTests
         await service.ReleaseAsync(Cycle(), CancellationToken.None);
     }
 
+    [Fact]
+    public void SuperJoyMappingUsesModifierTenAndKeyboardKeyTwelve()
+    {
+        var report = AyaneoSuperJoy.Mapping(12, 0x6E, modifier: 4);
+        Assert.Equal(4, report[10]);
+        Assert.Equal(0x6E, report[12]);
+        Assert.Equal(0, report[9]);
+        Assert.Equal(0, report[11]);
+        Assert.Equal((ushort)0x72, BinaryPrimitives.ReadUInt16LittleEndian(report.AsSpan(1)));
+    }
+
+    [Theory]
+    [InlineData("flip-kb")]
+    [InlineData("flip-1s-kb")]
+    public void FlipKeyboardModelsRetainCecConfirmation(string id)
+    {
+        Assert.True(Model(id).RgbConfirmation);
+    }
+
+    [Fact]
+    public async Task SecondaryBrightnessClearsTheDocumentedPrefixAndWritesTheScaledValue()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FakeEc();
+        var service = Service(Model("flip-ds"), directory.Root, ec);
+        await service.AcquireAsync(Cycle(), CancellationToken.None);
+        ec.Writes.Clear();
+        var result = await service.ExecuteAsync(Command(AyaneoNativeService.SecondaryId,
+            CapabilityValue.Integer(50)), "bios1", CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(new (ushort, byte)[] { (0x4F, 0), (0x4E, 127) }, ec.Writes);
+        await service.ReleaseAsync(Cycle(), CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task KunZoneThreeAndFourUseTheirSeparateBgrChannelOrders()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FakeEc();
+        var service = Service(Model("kun"), directory.Root, ec);
+        await service.AcquireAsync(Cycle(), CancellationToken.None);
+        ec.Writes.Clear();
+        var command = Command(CapabilityIds.LightingColor, CapabilityValue.Color(0x305070)) with
+        {
+            InstanceId = "left"
+        };
+        await service.ExecuteAsync(command, "bios1", CancellationToken.None);
+        List<(byte Register, byte Value)> left = [];
+        byte group = 0;
+        byte register = 0;
+        foreach (var write in ec.Writes)
+        {
+            if (write.Address == 0x6D)
+            {
+                group = write.Value;
+            }
+            else if (write.Address == 0xB1)
+            {
+                register = write.Value;
+            }
+            else if (write.Address == 0xB2 && group == 1)
+            {
+                left.Add((register, write.Value));
+            }
+        }
+
+        Assert.Contains(((byte)9, (byte)84), left);
+        Assert.Contains(((byte)10, (byte)36), left);
+        Assert.Contains(((byte)11, (byte)60), left);
+        Assert.Contains(((byte)12, (byte)84), left);
+        Assert.Contains(((byte)13, (byte)60), left);
+        Assert.Contains(((byte)14, (byte)36), left);
+        await service.ReleaseAsync(Cycle(), CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("submission")]
+    [InlineData("query")]
+    [InlineData("unconfirmed")]
+    public async Task EjectFailuresNeverCutControllerPower(string failure)
+    {
+        var powerDown = false;
+        var submissions = 0;
+
+        ValueTask<byte[]> Submit(CancellationToken _)
+        {
+            submissions++;
+            return failure == "submission"
+                ? ValueTask.FromException<byte[]>(new IOException("Submission unknown"))
+                : ValueTask.FromResult(new byte[65]);
+        }
+
+        ValueTask<byte[]> Query(CancellationToken _)
+        {
+            if (failure == "query")
+            {
+                return ValueTask.FromException<byte[]>(new IOException("Query failed"));
+            }
+
+            var response = new byte[65];
+            response[20] = 0x77;
+            return ValueTask.FromResult(response);
+        }
+
+        await Assert.ThrowsAsync<IOException>(() => AyaneoNativeService.CompleteEjectAsync(Submit, Query,
+            () => powerDown = true, CancellationToken.None, (_, _) => Task.CompletedTask).AsTask());
+        Assert.Equal(1, submissions);
+        Assert.False(powerDown);
+    }
+
+    [Fact]
+    public async Task ConfirmedEjectPowersDownExactlyOnceAfterItsMinimumLatchTime()
+    {
+        List<string> calls = [];
+        var queries = 0;
+        await AyaneoNativeService.CompleteEjectAsync(_ =>
+            {
+                calls.Add("submit");
+                return ValueTask.FromResult(new byte[65]);
+            }, _ =>
+            {
+                calls.Add("query");
+                queries++;
+                var response = new byte[65];
+                response[20] = queries == 1 ? (byte)0x77 : (byte)0x11;
+                return ValueTask.FromResult(response);
+            }, () => calls.Add("power-down"), CancellationToken.None,
+            (duration, _) =>
+            {
+                calls.Add(duration > TimeSpan.FromSeconds(2) ? "minimum-latch-delay" : "status-delay");
+                return Task.CompletedTask;
+            }, () => TimeSpan.Zero);
+        Assert.Equal(
+            new[] { "submit", "query", "status-delay", "query", "status-delay", "minimum-latch-delay", "power-down" },
+            calls);
+    }
+
     private static DeviceIdentitySnapshot Identity(string product)
     {
         return new DeviceIdentitySnapshot { SystemManufacturer = "AYANEO", SystemProduct = product };
@@ -170,20 +303,20 @@ public sealed class AyaneoTests
     private static AyaneoNativeService Service(AyaneoModel model, string directory, FakeEc ec)
     {
         return new AyaneoNativeService(model,
-            new ProfiledFeatureContext(directory, "bios1", new TestPluginHostAdapter(1)), _ => ec);
+            new ProfiledFeatureContext(directory, "bios1", new TestPluginHostAdapter(1))
+                { Journal = TestRecovery.Open(directory) }, _ => ec);
     }
 
     private static DeviceCycleContext<ProfiledCycleIdentity> Cycle()
     {
-        return new DeviceCycleContext<ProfiledCycleIdentity>(1, Deadline.Never, new ProfiledCycleIdentity("bios1"));
+        return new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never, new ProfiledCycleIdentity("bios1"));
     }
 
     private static CapabilityCommand Command(string id, CapabilityValue value)
     {
         return new CapabilityCommand
         {
-            CommandId = Guid.NewGuid(), CapabilityId = id, RequestedValue = value, Deadline = Deadline.Never,
-            ExpectedCycleGeneration = 1, ExpectedDescriptorGeneration = 1
+            CommandId = Guid.NewGuid(), CapabilityId = id, RequestedValue = value, Deadline = Deadline.Never
         };
     }
 

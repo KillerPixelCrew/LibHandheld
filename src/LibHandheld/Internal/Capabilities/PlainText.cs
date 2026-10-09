@@ -1,3 +1,5 @@
+using LibHandheld.Contracts;
+
 namespace LibHandheld.Internal.Capabilities;
 
 /// <summary>

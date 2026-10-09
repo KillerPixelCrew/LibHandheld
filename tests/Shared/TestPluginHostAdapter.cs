@@ -1,14 +1,11 @@
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
-using LibHandheld.Internal.Settings;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Testing;
 
-/// <summary>In-memory host adapter for focused plugin tests.</summary>
+/// <summary>In-memory host adapter for focused native provider tests.</summary>
 /// <remarks>
-///     Records publications without dispatching commands or enforcing production descriptor, generation,
-///     freshness or settings validation. Collection getters return snapshots; records and nested collections
+///     Records publications without dispatching commands or enforcing production descriptor or freshness validation.
+///     Collection getters return snapshots; records and nested collections
 ///     are retained by reference except physical-device and OEM-control lists, which are copied on receipt.
 ///     Recording is synchronized but this adapter does not model host lifecycle or hardware ownership.
 /// </remarks>
@@ -22,15 +19,13 @@ internal sealed class TestPluginHostAdapter : IDeviceSink
     private readonly List<IReadOnlyList<OemControlDescriptor>> _oemControlSets = [];
     private readonly List<OemControlEvent> _oemEvents = [];
     private readonly List<IReadOnlyList<PhysicalDeviceIdentity>> _physicalDeviceSets = [];
-    private readonly List<PluginSettingsManifest> _settingsManifests = [];
     private readonly List<(DeviceTraceLevel Level, string Scope, string Message)> _traces = [];
 
-    /// <summary>Creates an adapter for one cycle generation.</summary>
-    /// <param name="cycleGeneration">Cycle generation exposed to the plugin.</param>
-    public TestPluginHostAdapter(long cycleGeneration)
+    /// <summary>Creates an independent publication fixture.</summary>
+    /// <param name="fixtureId">Optional identity used to distinguish fixture instances.</param>
+    public TestPluginHostAdapter(long fixtureId)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(cycleGeneration);
-        CycleGeneration = cycleGeneration;
+        ArgumentOutOfRangeException.ThrowIfNegative(fixtureId);
     }
 
     /// <summary>Descriptor replacements in publication order.</summary>
@@ -55,8 +50,6 @@ internal sealed class TestPluginHostAdapter : IDeviceSink
     /// <summary>OEM-control events in publication order.</summary>
     public IReadOnlyList<OemControlEvent> OemEvents => Snapshot(_oemEvents);
 
-    /// <summary>Settings manifests the plugin declared, in publication order.</summary>
-    public IReadOnlyList<PluginSettingsManifest> SettingsManifests => Snapshot(_settingsManifests);
 
     /// <summary>Trace lines in emission order.</summary>
     /// <remarks>Empty messages are omitted; retained messages are not sanitized or length-limited.</remarks>
@@ -68,8 +61,6 @@ internal sealed class TestPluginHostAdapter : IDeviceSink
         Snapshot(_changes);
 
     /// <inheritdoc />
-    public long CycleGeneration { get; }
-
     /// <inheritdoc />
     public ValueTask PublishDescriptorsAsync(
         CapabilityDescriptorSet descriptors,
@@ -129,13 +120,6 @@ internal sealed class TestPluginHostAdapter : IDeviceSink
     }
 
     /// <inheritdoc />
-    public ValueTask PublishSettingsManifestAsync(
-        PluginSettingsManifest manifest,
-        CancellationToken cancellationToken)
-    {
-        return RecordAsync(_settingsManifests, manifest, cancellationToken);
-    }
-
     /// <inheritdoc />
     public void Trace(DeviceTraceLevel level, string scope, string message)
     {

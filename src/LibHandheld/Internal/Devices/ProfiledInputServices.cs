@@ -1,20 +1,26 @@
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Internal.Devices;
 
-internal sealed class ProfiledMotionService(StandardMotionSource source)
+internal sealed partial class ProfiledMotionService(StandardMotionSource source)
     : DeviceService<ProfiledCycleIdentity>("motion")
 {
     public override bool Suspendable => true;
+
+    internal override ValueTask DisposeAsync()
+    {
+        source.Dispose();
+        return ValueTask.CompletedTask;
+    }
 
     public override ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> context,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+        _startedAt = DateTimeOffset.UtcNow;
         return ValueTask.FromResult(source.Start()
             ? Set(DeviceServiceState.Owned)
             : Set(DeviceServiceState.Passive, Missing("Windows exposes no motion sensor pair.")));
@@ -31,8 +37,15 @@ internal sealed class ProfiledMotionService(StandardMotionSource source)
 internal sealed class ProfiledTouchService(StandardControllerTouchpad source)
     : DeviceService<ProfiledCycleIdentity>("touchpad")
 {
+    internal override bool RequiresControllerOwnership => true;
+
     internal bool NeedsReconnect => !source.IsConnected;
     public override bool Suspendable => true;
+
+    internal override ValueTask DisposeAsync()
+    {
+        return source.StopAsync(CancellationToken.None);
+    }
 
     public override ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> context,
         CancellationToken token)
@@ -59,16 +72,34 @@ internal sealed class ProfiledOemService(
 {
     private KeyboardOemSource? _keyboard;
     private IProfiledOemSource? _native;
-    private bool _nativeReady;
-    internal bool NeedsReconnect => _nativeReady && _native is { IsConnected: false };
+
+    internal override bool RequiresControllerOwnership => profile.KeyboardChords.All(chord => chord.RequiresController)
+                                                          && profile.NativeOemRequiresController;
+
+    internal bool NeedsReconnect => _native is { IsConnected: false } || _keyboard is { IsConnected: false };
     public override bool Suspendable => true;
+
+    internal override async ValueTask DisposeAsync()
+    {
+        if (_native is not null)
+        {
+            await _native.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        if (_keyboard is not null)
+        {
+            await _keyboard.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        _native = null;
+        _keyboard = null;
+    }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> context,
         CancellationToken token)
     {
         _native = manage() || !profile.NativeOemRequiresController ? profile.CreateOemSource?.Invoke() : null;
         var nativeReady = _native is not null && await _native.StartAsync(publish, token).ConfigureAwait(false);
-        _nativeReady = nativeReady;
         var chords = profile.KeyboardChords.Where(chord => (manage() || !chord.RequiresController)
                                                            && (!nativeReady ||
                                                                !profile.NativeOemReplacesChords.Contains(chord.Id)))
@@ -98,13 +129,12 @@ internal sealed class ProfiledOemService(
 
         _native = null;
         _keyboard = null;
-        _nativeReady = false;
         return Set(DeviceServiceState.Idle);
     }
 }
 
 /// <summary>Re-discovers the same physical topology after detach; never retries device writes.</summary>
-internal sealed class ProfiledControllerService(
+internal sealed partial class ProfiledControllerService(
     StandardControllerSource source,
     IDeviceSink sink,
     Func<CanonicalButtons> buttons,
@@ -113,9 +143,12 @@ internal sealed class ProfiledControllerService(
     : DeviceService<ProfiledCycleIdentity>("controller")
 {
     private volatile bool _connected;
+    private DateTimeOffset? _ownershipAt;
+    private bool _readerStarted;
     private CancellationTokenSource? _stop;
     private Task? _supervisor;
     private bool _supportsRumble;
+    internal override bool RequiresControllerOwnership => true;
     public override bool Suspendable => true;
     internal bool Connected => _connected;
     internal bool SupportsRumble => _connected && _supportsRumble;
@@ -152,10 +185,17 @@ internal sealed class ProfiledControllerService(
             HighFrequency = topology.SupportsRumble ? OutputChannelSupport.Native : OutputChannelSupport.Unsupported
         }, token).ConfigureAwait(false);
         _connected = true;
+        _ownershipAt = DateTimeOffset.UtcNow;
         try
         {
-            source.Start(topology, buttons, motion, sink.PublishControllerSampleAsync, _ => _connected = false,
+            _readerStarted = true;
+            source.Start(topology, buttons, motion, sink.PublishControllerSampleAsync, _ =>
+                {
+                    _connected = false;
+                    _ownershipAt = DateTimeOffset.UtcNow;
+                },
                 touchpad);
+            _readerStarted = true;
         }
         catch
         {
@@ -176,16 +216,21 @@ internal sealed class ProfiledControllerService(
                     continue;
                 }
 
-                await source.StopAsync(token).ConfigureAwait(false);
-                await sink.PublishPhysicalDevicesAsync([], null, token).ConfigureAwait(false);
                 try
                 {
+                    if (_readerStarted)
+                    {
+                        await source.StopAsync(token).ConfigureAwait(false);
+                        _readerStarted = false;
+                        await sink.PublishPhysicalDevicesAsync([], null, token).ConfigureAwait(false);
+                    }
+
                     await ConnectAsync(token).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (exception is not OutOfMemoryException &&
                                                   !token.IsCancellationRequested)
                 {
-                    sink.TraceChange(DeviceTraceLevel.Warn, "controller", "reconnect", exception.Message);
+                    DeviceTrace.Change("controller", "reconnect", exception.Message, DeviceTraceLevel.Warn);
                 }
             }
         }
@@ -209,6 +254,7 @@ internal sealed class ProfiledControllerService(
         }
 
         await source.StopAsync(token).ConfigureAwait(false);
+        _readerStarted = false;
         _connected = false;
         await sink.PublishControllerSampleAsync(CanonicalControllerSample.Neutral(DateTimeOffset.UtcNow), token)
             .ConfigureAwait(false);
@@ -217,5 +263,22 @@ internal sealed class ProfiledControllerService(
         _stop = null;
         _supervisor = null;
         return Set(DeviceServiceState.Idle);
+    }
+
+    internal override async ValueTask DisposeAsync()
+    {
+        _stop?.Cancel();
+        if (_supervisor is not null)
+        {
+            await _supervisor.ConfigureAwait(false);
+        }
+
+        await source.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        _stop?.Dispose();
+        _stop = null;
+        _supervisor = null;
+        _connected = false;
+        _ownershipAt = DateTimeOffset.UtcNow;
+        _readerStarted = false;
     }
 }

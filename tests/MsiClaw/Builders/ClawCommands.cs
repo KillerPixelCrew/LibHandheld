@@ -1,12 +1,9 @@
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Lifecycle;
-
 namespace LibHandheld.Families.MsiClaw.Tests.Builders;
 
 /// <summary>Capability commands addressed to the fake hardware's cycle.</summary>
 internal static class ClawCommands
 {
-    internal const long CycleGeneration = 7;
+    internal const long FixtureId = 7;
 
     internal static CapabilityCommand Command(
         string capabilityId,
@@ -19,8 +16,6 @@ internal static class ClawCommands
             CapabilityId = capabilityId,
             InstanceId = instanceId,
             RequestedValue = value,
-            ExpectedDescriptorGeneration = 1,
-            ExpectedCycleGeneration = CycleGeneration,
             Deadline = Deadline.After(TimeSpan.FromMinutes(1))
         };
     }

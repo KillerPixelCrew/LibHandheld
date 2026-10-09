@@ -1,8 +1,7 @@
-// SPDX-License-Identifier: MIT
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Windows;
 
-using System.Runtime.InteropServices;
-using LibHandheld.Internal.Identity;
-using Microsoft.Win32;
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -41,57 +40,18 @@ internal interface IAllyIdentityReader
 ///     touches no device and needs no WMI provider. HC matches the same baseboard fields through
 ///     <c>MotherboardInfo</c> (<c>HandheldCompanion.Devices/IDevice.cs:710-716</c>).
 /// </remarks>
-internal sealed partial class WindowsAllyIdentityReader : IAllyIdentityReader
+internal sealed class WindowsAllyIdentityReader : IAllyIdentityReader
 {
-    private const string BiosKey = @"HARDWARE\DESCRIPTION\System\BIOS";
-
     /// <inheritdoc />
     public ValueTask<AllyIdentityState> ReadAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        using var key = Registry.LocalMachine.OpenSubKey(BiosKey);
-        DeviceIdentitySnapshot snapshot = new()
-        {
-            BaseboardManufacturer = Read(key, "BaseBoardManufacturer"),
-            BaseboardProduct = Read(key, "BaseBoardProduct"),
-            BaseboardVersion = Read(key, "BaseBoardVersion"),
-            SystemManufacturer = Read(key, "SystemManufacturer"),
-            SystemProduct = Read(key, "SystemProductName"),
-            SystemSku = Read(key, "SystemSKU"),
-            SystemFamily = Read(key, "SystemFamily"),
-            BiosVersion = Read(key, "BIOSVersion")
-        };
+        var snapshot = WindowsMachineIdentity.ReadSmbios();
         return ValueTask.FromResult(new AllyIdentityState
         {
             Snapshot = snapshot,
             Model = AllyModels.Match(snapshot),
-            OnAcPower = IsOnAcPower()
+            OnAcPower = WindowsMachineIdentity.OnAcPower()
         });
-    }
-
-    private static string? Read(RegistryKey? key, string name)
-    {
-        return key?.GetValue(name) is string value ? IdentityText.Normalize(value) : null;
-    }
-
-    private static bool IsOnAcPower()
-    {
-        // An unknown line status is treated as AC: no capability here is restricted to battery.
-        return !GetSystemPowerStatus(out var status) || status.ACLineStatus != 0;
-    }
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetSystemPowerStatus(out SystemPowerStatus status);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SystemPowerStatus
-    {
-        public byte ACLineStatus;
-        public byte BatteryFlag;
-        public byte BatteryLifePercent;
-        public byte SystemStatusFlag;
-        public int BatteryLifeTime;
-        public int BatteryFullLifeTime;
     }
 }

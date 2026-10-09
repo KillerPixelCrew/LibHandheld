@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: MIT
-
 using System.ComponentModel;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -325,9 +325,9 @@ internal sealed class WindowsAllyAuraHid(IReadOnlyCollection<ushort> productIds)
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var lamp = HidDevices.Enumerate(AllyModels.AsusVendorId, _productIds)
-                .Where(endpoint => endpoint is { UsagePage: 0x0059, Usage: 0x0001 })
-                .FirstOrDefault(endpoint => endpoint.FeatureLength >= 2 || endpoint.OutputLength >= 2);
+            var lamp = HidDevices.Unique(HidDevices.Enumerate(AllyModels.AsusVendorId, _productIds),
+                endpoint => endpoint is { UsagePage: 0x0059, Usage: 0x0001 }
+                            && (endpoint.FeatureLength >= 2 || endpoint.OutputLength >= 2));
             if (lamp is null)
             {
                 return false;

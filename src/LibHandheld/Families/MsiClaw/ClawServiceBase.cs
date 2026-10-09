@@ -1,6 +1,6 @@
-using LibHandheld.Internal.Capabilities;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -11,9 +11,8 @@ internal abstract class ClawJournalledService(string serviceId) : DeviceService<
 {
     /// <summary>Writes a pending original back. A restore is complete once its writes went through.</summary>
     /// <remarks>
-    ///     Only a pending entry is written: one an earlier restore left unverified or failed waits for an
-    ///     explicit command. A release without the time to write leaves its entry pending for the next
-    ///     start, and a restore that throws records the failure so nothing writes it again automatically.
+    ///     Captured originals remain available after a failed restore. A release without the time to write
+    ///     leaves its original for the next start. Recovery bookkeeping never blocks the next explicit command.
     /// </remarks>
     /// <typeparam name="TSnapshot">Capability-specific original-state representation.</typeparam>
     /// <param name="context">Current identity and deadline; restoration requires the captured firmware binding.</param>
@@ -28,23 +27,18 @@ internal abstract class ClawJournalledService(string serviceId) : DeviceService<
     ///     failed.
     /// </param>
     /// <returns>The service state after restoration, skipping, or insufficient-budget release.</returns>
-    /// <remarks>Transport, cancellation, and journal failures propagate; failed attempts are not automatically replayed.</remarks>
+    /// <remarks>Transport and cancellation failures propagate; journal storage failures are logged.</remarks>
     protected async ValueTask<DeviceServiceResult> RestoreJournalledAsync<TSnapshot>(
         DeviceCycleContext<ClawIdentityState> context,
-        ClawRecoveryJournal journal,
+        DeviceRecoveryJournal journal,
         Func<ClawRecoveryState?, TSnapshot?> readSnapshot,
         Func<TSnapshot, CancellationToken, ValueTask> restoreAsync,
         CancellationToken cancellationToken)
         where TSnapshot : class
     {
-        if (ReconciliationBlockReason is not null)
-        {
-            return Set(DeviceServiceState.Faulted, ReconciliationBlockReason);
-        }
-
         // Only on the BIOS the original was captured under: an entry a start could not compare waits.
         if (State is not DeviceServiceState.Owned
-            || journal.EntryFor(ServiceId) is not { Status: DeviceRecoveryStatus.Pending } entry
+            || journal.EntryFor<ClawRecoveryState>(ServiceId) is not { } entry
             || !string.Equals(entry.FirmwareIdentity, context.Identity.RecoveryBinding, StringComparison.Ordinal)
             || readSnapshot(entry.OriginalState) is not { } restoreSnapshot)
         {
@@ -128,36 +122,5 @@ internal static class ClawFirmwareIdentities
     public static string Bios(string biosVersion)
     {
         return "bios:" + biosVersion;
-    }
-
-    /// <summary>True for a power or fan binding as this build writes it: <c>bios:&lt;version&gt;</c>.</summary>
-    /// <param name="identity">Non-null saved firmware binding.</param>
-    /// <returns>True for an ordinal bios: prefix without a legacy MSI_ACPI suffix.</returns>
-    public static bool IsBios(string identity)
-    {
-        return identity.StartsWith("bios:", StringComparison.Ordinal) && !IsLegacy(identity);
-    }
-
-    /// <summary>
-    ///     True for a power or fan binding an earlier build wrote: <c>ec:&lt;version&gt;</c> or
-    ///     <c>bios:&lt;version&gt;</c> then <c>;msi-acpi:&lt;major.minor&gt;</c>. The reference unit's reads
-    ///     <c>ec:1T52EMS1.109;msi-acpi:8.0</c>. Such an entry is restored once when this start reads the same
-    ///     binding, and discarded otherwise.
-    /// </summary>
-    /// <param name="identity">Non-null saved firmware binding.</param>
-    /// <returns>True for an ec:/bios: binding carrying the legacy ;msi-acpi: marker.</returns>
-    public static bool IsLegacy(string identity)
-    {
-        return (identity.StartsWith("ec:", StringComparison.Ordinal)
-                || identity.StartsWith("bios:", StringComparison.Ordinal))
-               && identity.Contains(";msi-acpi:", StringComparison.Ordinal);
-    }
-
-    /// <summary>True for a legacy binding without an EC or BIOS version, which cannot tell two firmwares apart.</summary>
-    /// <param name="identity">Non-null legacy firmware binding.</param>
-    /// <returns>True when it begins with the exact ec:unknown; sentinel.</returns>
-    public static bool IsUnknownEc(string identity)
-    {
-        return identity.StartsWith("ec:unknown;", StringComparison.Ordinal);
     }
 }

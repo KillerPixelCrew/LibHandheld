@@ -4,10 +4,9 @@ using System.Globalization;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Security;
-using System.Text;
 using System.Text.RegularExpressions;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
+using LibHandheld.Internal.Windows;
 using Microsoft.Win32;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -201,7 +200,7 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
             input["Data"] = package;
         }
 
-        using var output = instance.InvokeMethod(methodName, input, null)
+        using var output = WmiProvider.Invoke(instance, methodName, input)
                            ?? throw new IOException($"{methodName} returned no response.");
         if (output["Data"] is not ManagementBaseObject returned)
         {
@@ -285,11 +284,7 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
             fixedInstance.Dispose();
         }
 
-        using ManagementObjectSearcher searcher = new(
-            "root\\WMI",
-            "SELECT * FROM MSI_ACPI WHERE Active = TRUE");
-        using var candidates = searcher.Get();
-        return candidates.Cast<ManagementObject>().FirstOrDefault();
+        return WmiProvider.TryOpen("root\\WMI", "SELECT * FROM MSI_ACPI WHERE Active = TRUE");
     }
 
     private static byte[] CreatePackage(byte selector)
@@ -300,187 +295,22 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
     }
 }
 
-internal sealed partial class WindowsClawIdentityReader : IClawIdentityReader
+internal sealed partial class WindowsClawIdentityReader(Func<bool>? readOnAcPower = null) : IClawIdentityReader
 {
-    private readonly Func<DeviceIdentitySnapshot> _readBaseIdentity;
-    private readonly Func<IReadOnlyList<UsbEndpointObservation>> _readControllerEndpoints;
-    private readonly Func<ushort?> _readMcuRelease;
-    private readonly Func<bool> _readOnAcPower;
-    private readonly IMsiWmiTransport _wmi;
-
-    public WindowsClawIdentityReader(IMsiWmiTransport wmi)
-        : this(wmi, ReadBaseMachineIdentity, ReadControllerEndpoints, ReadLineStatus, ReadMcuRelease)
-    {
-    }
-
-    internal WindowsClawIdentityReader(
-        IMsiWmiTransport wmi,
-        Func<DeviceIdentitySnapshot> readBaseIdentity,
-        Func<IReadOnlyList<UsbEndpointObservation>> readControllerEndpoints,
-        Func<bool> readOnAcPower,
-        Func<ushort?> readMcuRelease)
-    {
-        _wmi = wmi ?? throw new ArgumentNullException(nameof(wmi));
-        _readBaseIdentity = readBaseIdentity ?? throw new ArgumentNullException(nameof(readBaseIdentity));
-        _readControllerEndpoints = readControllerEndpoints
-                                   ?? throw new ArgumentNullException(nameof(readControllerEndpoints));
-        _readOnAcPower = readOnAcPower ?? throw new ArgumentNullException(nameof(readOnAcPower));
-        _readMcuRelease = readMcuRelease ?? throw new ArgumentNullException(nameof(readMcuRelease));
-    }
-
-    /// <inheritdoc />
-    public async ValueTask<ClawIdentityState> ReadAsync(CancellationToken cancellationToken)
-    {
-        var snapshot = await Task.Run(_readBaseIdentity, CancellationToken.None)
-            .WaitAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        // This is the admission boundary. MSI's WMI provider reaches the embedded controller, and
-        // the controller inventory reaches HID/PnP. Neither is even queried until SMBIOS names MSI
-        // and a baseboard in the model table, the switch HC's IDevice.GetCurrent makes. StartAsync
-        // repeats this check, so an incorrectly constructed start context still fails before a
-        // transport is touched.
-        var model = ClawModels.Find(snapshot);
-        if (model is null)
-        {
-            return new ClawIdentityState
-            {
-                Snapshot = snapshot,
-                ExactMachineMatch = false,
-                OnAcPower = false
-            };
-        }
-
-        // Recorded for diagnostics only; the MCU revision comes from the HID collection below.
-        var controllerEndpoints = await Task.Run(
-                _readControllerEndpoints,
-                CancellationToken.None)
-            .WaitAsync(cancellationToken)
-            .ConfigureAwait(false);
-        snapshot = snapshot with { UsbEndpoints = controllerEndpoints };
-
-        var wmiAvailable = false;
-        string? ecFirmware = null;
-        string? legacyBinding = null;
-        string? interfaceVersion = null;
-        try
-        {
-            if (await _wmi.IsProviderAvailableAsync(cancellationToken).ConfigureAwait(false))
-            {
-                wmiAvailable = true;
-
-                // HC calls Get_WMI (block 1) and ignores the answer, and never calls Get_EC. Both are
-                // read here for diagnostics and to migrate journal entries earlier builds bound to them:
-                // a refusal of either leaves the provider available, as HC would still write.
-                var wmiVersion = await TryGetAsync("Get_WMI", 1, cancellationToken).ConfigureAwait(false);
-                var ec = await TryGetAsync("Get_EC", 0, cancellationToken).ConfigureAwait(false);
-                ecFirmware = ec is null ? null : DecodeEcFirmware(ec);
-
-                // The EC returns its version with its build stamp appended and no separator, so the
-                // field reads "1T52EMS1.1091204202509:10:47" (device-observed on the reference Claw,
-                // 2026-08-29; the raw response is in docs/device-integration.md). The legacy binding
-                // used the version alone, or the BIOS version where the EC's could not be decoded; the
-                // snapshot keeps the whole field for remote diagnosis.
-                interfaceVersion = wmiVersion is { Length: > 3 } ? $"{wmiVersion[2]}.{wmiVersion[3]}" : "unknown";
-                var firmware = EcFirmwareVersion(ecFirmware) is { } ecVersion
-                    ? $"ec:{ecVersion}"
-                    : snapshot.BiosVersion is { Length: > 0 } bios
-                        ? $"bios:{bios}"
-                        : "ec:unknown";
-                legacyBinding = $"{firmware};msi-acpi:{interfaceVersion}";
-            }
-        }
-        // InvalidDataException is in this list because this class throws it: an invalid Package_32
-        // response, a bad status byte, and more than one active MSI_ACPI instance all raise it.
-        // Leaving it out meant a malformed provider response escaped WindowsClawIdentityReader,
-        // failed plugin startup and eventually faulted all of Device Integration (controller,
-        // motion and OEM services included, none of which need WMI) instead of degrading the
-        // WMI-backed power and fan capabilities alone.
-        catch (Exception ex) when (ex is ManagementException or IOException
-                                       or InvalidDataException or UnauthorizedAccessException
-                                   || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
-        {
-            // A permissions refusal, a missing instance and a malformed response all became this
-            // one flag, and all three reached the user as the same partially-available device.
-            DeviceTrace.Failure("wmi", "MSI_ACPI provider probe failed", ex);
-            wmiAvailable = false;
-            legacyBinding = null;
-            interfaceVersion = null;
-        }
-
-        // The MCU revision is recorded for diagnostics and picks HC's nearest-firmware row; it is never
-        // gated on. It was gated to exactly 0229 until MSI shipped 0230 through the controller firmware
-        // updater on 2026-09-18, which refused controller ownership and lighting on every updated unit
-        // even though nothing the plugin sends had changed. HC reads it as the HID collection's
-        // Attributes.Version, as this does.
-        string? mcuFirmware = null;
-        try
-        {
-            mcuFirmware = await Task.Run(_readMcuRelease, CancellationToken.None)
-                .WaitAsync(cancellationToken)
-                .ConfigureAwait(false) is { } release
-                ? release.ToString("X4", CultureInfo.InvariantCulture)
-                : null;
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-        {
-            DeviceTrace.Failure("mcu", "The MCU revision could not be read; HC's reference row applies", ex);
-        }
-
-        snapshot = snapshot with
-        {
-            EcFirmwareVersion = ecFirmware,
-            McuFirmwareVersion = mcuFirmware,
-            WmiProviderSignatures = wmiAvailable
-                ? ["root\\WMI:MSI_ACPI", "root\\WMI:MSI_ACPI.Get_WMI:" + interfaceVersion]
-                : []
-        };
-
-        var onAcPower = await Task.Run(ReadOnAcPower, CancellationToken.None)
-            .WaitAsync(cancellationToken).ConfigureAwait(false);
-        return new ClawIdentityState
-        {
-            Snapshot = snapshot,
-            ExactMachineMatch = true,
-            Model = model,
-            WmiAvailable = wmiAvailable,
-            LegacyRecoveryBinding = legacyBinding,
-            OnAcPower = onAcPower
-        };
-    }
-
-    /// <inheritdoc />
     public bool ReadOnAcPower()
     {
         try
         {
-            return _readOnAcPower();
+            return (readOnAcPower ?? WindowsMachineIdentity.OnAcPower)();
         }
-        catch (Exception ex) when (ex is ManagementException or IOException
-                                       or InvalidDataException or UnauthorizedAccessException or COMException
-                                       or Win32Exception)
+        catch (Exception ex) when (ex is ManagementException or IOException or InvalidDataException
+                                       or UnauthorizedAccessException or COMException or Win32Exception)
         {
             DeviceTrace.Failure("power", "AC-power observation failed", ex);
             return false;
         }
     }
 
-    private async ValueTask<byte[]?> TryGetAsync(string method, byte selector, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await _wmi.InvokeGetterAsync(method, selector, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-        {
-            DeviceTrace.Failure("wmi", $"{method} did not answer; recorded as unknown", ex);
-            return null;
-        }
-    }
-
-    /// <summary>The EC version without the build stamp the firmware appends (MMddyyyyHH:mm:ss).</summary>
-    /// <param name="field">Raw EC version field, or null when the diagnostic read was unavailable.</param>
-    /// <returns>The prefix before a recognized trailing build stamp, the original text without one, or null.</returns>
     internal static string? EcFirmwareVersion(string? field)
     {
         if (field is null)
@@ -494,149 +324,6 @@ internal sealed partial class WindowsClawIdentityReader : IClawIdentityReader
 
     [GeneratedRegex(@"\d{10}:\d{2}:\d{2}$", RegexOptions.CultureInvariant)]
     private static partial Regex EcBuildStamp();
-
-    private static DeviceIdentitySnapshot ReadBaseMachineIdentity()
-    {
-        using var system = QuerySingle(
-            "root\\CIMV2",
-            "SELECT Manufacturer, Model, SystemSKUNumber, SystemFamily FROM Win32_ComputerSystem");
-        using var board = QuerySingle(
-            "root\\CIMV2",
-            "SELECT Manufacturer, Product, Version FROM Win32_BaseBoard");
-        using var bios = QuerySingle(
-            "root\\CIMV2",
-            "SELECT SMBIOSBIOSVersion FROM Win32_BIOS");
-
-        return new DeviceIdentitySnapshot
-        {
-            SystemManufacturer = Normalize(system["Manufacturer"]),
-            SystemProduct = Normalize(system["Model"]),
-            SystemSku = Normalize(system["SystemSKUNumber"]),
-            SystemFamily = Normalize(system["SystemFamily"]),
-            BaseboardManufacturer = Normalize(board["Manufacturer"]),
-            BaseboardProduct = Normalize(board["Product"]),
-            BaseboardVersion = Normalize(board["Version"]),
-            BiosVersion = Normalize(bios["SMBIOSBIOSVersion"]),
-            UsbEndpoints = []
-        };
-    }
-
-    private static IReadOnlyList<UsbEndpointObservation> ReadControllerEndpoints()
-    {
-        var endpoints = new List<UsbEndpointObservation>();
-        using ManagementObjectSearcher searcher = new(
-            @"root\CIMV2",
-            @"SELECT DeviceID, HardwareID FROM Win32_PnPEntity WHERE DeviceID LIKE 'USB\\VID_0DB0&PID_19%' ");
-        using var candidates = searcher.Get();
-        foreach (var item in candidates.Cast<ManagementObject>())
-        {
-            using (item)
-            {
-                var id = Convert.ToString(item["DeviceID"], CultureInfo.InvariantCulture) ?? string.Empty;
-                var vendorId = ExtractHex(id, "VID_");
-                var productId = ExtractHex(id, "PID_");
-                var release = (item["HardwareID"] as string[])
-                    ?.Select(value => ExtractHex(value, "REV_"))
-                    .FirstOrDefault(value => value is not null);
-                if (vendorId is null || productId is null || !IsControllerProduct(productId))
-                {
-                    continue;
-                }
-
-                endpoints.Add(new UsbEndpointObservation
-                {
-                    VendorId = vendorId,
-                    ProductId = productId,
-                    DeviceRelease = release
-                });
-            }
-        }
-
-        return endpoints;
-    }
-
-    private static ManagementObject QuerySingle(string scope, string query)
-    {
-        using ManagementObjectSearcher searcher = new(scope, query);
-        using var candidates = searcher.Get();
-        return candidates.Cast<ManagementObject>().FirstOrDefault()
-               ?? throw new FileNotFoundException($"Inventory query returned no rows: {query}");
-    }
-
-    /// <summary>The AC line status, as the Ally reads it; cheap enough to read before every command.</summary>
-    /// <remarks>An unknown line status counts as AC, as a machine without a battery reported before.</remarks>
-    private static bool ReadLineStatus()
-    {
-        if (!GetSystemPowerStatus(out var status))
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
-        }
-
-        return status.AcLineStatus != 0;
-    }
-
-    /// <summary>The MCU collection's HID release number, HC's <c>Attributes.Version</c>.</summary>
-    private static ushort? ReadMcuRelease()
-    {
-        return HidEndpointEnumerator.FindMcu()?.ReleaseNumber;
-    }
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetSystemPowerStatus(out SystemPowerStatus status);
-
-    private static string? Normalize(object? value)
-    {
-        var text = Convert.ToString(value, CultureInfo.InvariantCulture)?.Trim();
-        return string.IsNullOrEmpty(text) ? null : text;
-    }
-
-    private static string? ExtractHex(string value, string marker)
-    {
-        var start = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        if (start < 0 || value.Length < start + marker.Length + 4)
-        {
-            return null;
-        }
-
-        var result = value.Substring(start + marker.Length, 4);
-        return result.All(Uri.IsHexDigit) ? result.ToUpperInvariant() : null;
-    }
-
-    private static bool IsControllerProduct(string value)
-    {
-        return ushort.TryParse(value, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var id)
-               && id is ClawHardwareFacts.XInputProductId or ClawHardwareFacts.DirectInputProductId;
-    }
-
-    private static string? DecodeEcFirmware(byte[] response)
-    {
-        var marker = Array.IndexOf(response, (byte)0x81, 1);
-        if (marker < 0 || marker + 1 >= response.Length)
-        {
-            return null;
-        }
-
-        var end = Array.IndexOf(response, (byte)0, marker + 1);
-        if (end < 0)
-        {
-            end = response.Length;
-        }
-
-        var value = Encoding.ASCII.GetString(response, marker + 1, end - marker - 1).Trim();
-        return string.IsNullOrEmpty(value) ? null : value;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SystemPowerStatus
-    {
-        public byte AcLineStatus;
-        public byte BatteryFlag;
-        public byte BatteryLifePercent;
-        public byte SystemStatusFlag;
-        public int BatteryLifeTime;
-        public int BatteryFullLifeTime;
-    }
 }
 
 internal sealed class MsiOemEventSource : IMsiOemEventSource

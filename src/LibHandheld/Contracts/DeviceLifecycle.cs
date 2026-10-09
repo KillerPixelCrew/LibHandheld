@@ -1,5 +1,15 @@
 namespace LibHandheld.Contracts;
 
+/// <summary>Consumer-supplied locations of separately deployed native hardware helpers.</summary>
+public sealed record HandheldResources
+{
+    /// <summary>The pinned Intel power helper, or null when it was not deployed.</summary>
+    public string? IntelKxPath { get; init; }
+
+    /// <summary>The pinned InpOut library, or null when it was not deployed.</summary>
+    public string? InpOutPath { get; init; }
+}
+
 /// <summary>A supported exact model and its stable family and glyph identities.</summary>
 /// <param name="Id">Stable model definition identity.</param>
 /// <param name="FamilyId">Stable family identity, also identifying existing recovery state.</param>
@@ -7,6 +17,20 @@ namespace LibHandheld.Contracts;
 /// <param name="GlyphProfileId">Authored controller glyph profile identity.</param>
 public sealed record HandheldDefinition(string Id, string FamilyId, string Name, string GlyphProfileId)
 {
+    /// <summary>Whether this exact model has a recorded hardware validation pass.</summary>
+    public bool HardwareVerified { get; init; }
+
+    /// <summary>Semantic roles actually supplied by this model and its optional accessory services.</summary>
+    public IReadOnlyList<CapabilityRole> DeclaredRoles
+    {
+        get;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            field = Array.AsReadOnly(value.Distinct().ToArray());
+        }
+    } = [];
+
     /// <summary>Whether this implementation can acquire the model's physical controller.</summary>
     public bool HasController { get; init; } = true;
 
@@ -66,34 +90,6 @@ public enum DeviceStopStatus
 /// <param name="Status">Restoration evidence.</param>
 /// <param name="Reason">Optional diagnostic explanation.</param>
 public sealed record DeviceStopResult(DeviceStopStatus Status, CapabilityReason? Reason);
-
-/// <summary>Reason for ending a device cycle.</summary>
-public enum DeviceStopReason
-{
-    /// <summary>The consumer is exiting.</summary>
-    Exiting,
-
-    /// <summary>Device integration disabled.</summary>
-    IntegrationDisabled,
-
-    /// <summary>The consumer is updating.</summary>
-    Updating,
-
-    /// <summary>The interactive session ends.</summary>
-    SessionEnding,
-
-    /// <summary>The consumer is uninstalling.</summary>
-    Uninstalling,
-
-    /// <summary>Startup owner cancelled.</summary>
-    StartCanceled,
-
-    /// <summary>Startup failed.</summary>
-    StartFailed,
-
-    /// <summary>A native background service failed.</summary>
-    RuntimeFault
-}
 
 /// <summary>Diagnostic importance.</summary>
 public enum DeviceLogLevel

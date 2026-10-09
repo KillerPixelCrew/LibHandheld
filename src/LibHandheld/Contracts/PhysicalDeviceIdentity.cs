@@ -1,6 +1,6 @@
 namespace LibHandheld.Contracts;
 
-/// <summary>A physical input device owned by a device engine and eligible for the consumer's HidHide transaction.</summary>
+/// <summary>A physical input device owned by a plugin and eligible for WSGM's HidHide transaction.</summary>
 public sealed record PhysicalDeviceIdentity
 {
     /// <summary>The device instance path, used verbatim as the HidHide entry.</summary>

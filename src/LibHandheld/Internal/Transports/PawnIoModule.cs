@@ -3,7 +3,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
-using LibreHardwareMonitor.Hardware;
+using LibHandheld.Internal.Windows;
 using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Internal.Transports;
@@ -14,7 +14,7 @@ internal interface IPawnIoModule : IDisposable
 }
 
 // The two documented PawnIO operations. Signed modules constrain the permitted hardware accesses;
-// a failed/short IOCTL is an error, never a successful read of a fabricated zero.
+// A successful IOCTL may return fewer words than requested, as HC's PawnIO client accepts.
 internal sealed class PawnIoModule : IPawnIoModule
 {
     private const uint LoadCode = (41394u << 16) | (0x821 << 2);
@@ -43,20 +43,15 @@ internal sealed class PawnIoModule : IPawnIoModule
             Encoding.ASCII.GetBytes(function, request);
             Buffer.BlockCopy(input, 0, request, 32, input.Length * sizeof(long));
             var response = new byte[checked(outputWords * sizeof(long))];
-            if (!DeviceIoControl(_handle, ExecuteCode, request, (uint)request.Length, response,
+            if (!NativeDevice.DeviceIoControl(_handle, ExecuteCode, request, (uint)request.Length, response,
                     (uint)response.Length, out var returned, IntPtr.Zero))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error(), $"PawnIO {function} failed.");
             }
 
-            if (returned != response.Length)
-            {
-                throw new InvalidDataException(
-                    $"PawnIO {function} returned {returned} bytes; expected {response.Length}.");
-            }
-
             var words = new long[outputWords];
-            Buffer.BlockCopy(response, 0, words, 0, response.Length);
+            var returnedWords = Math.Min(returned / sizeof(long), (uint)outputWords);
+            Buffer.BlockCopy(response, 0, words, 0, checked((int)returnedWords * sizeof(long)));
             return words;
         }
     }
@@ -69,14 +64,21 @@ internal sealed class PawnIoModule : IPawnIoModule
         }
     }
 
-    internal static PawnIoModule OpenLhm(string module)
+    internal static PawnIoModule OpenModule(string module)
     {
         if (module is not ("LpcIO" or "LpcACPIEC" or "IntelMSR"))
         {
             throw new ArgumentOutOfRangeException(nameof(module));
         }
 
-        return OpenResource(typeof(Computer).Assembly, $"LibreHardwareMonitor.Resources.PawnIo.{module}.bin", null);
+        var digest = module switch
+        {
+            "LpcIO" => "B3896A1CAB0D808FCA31FE2EBCAE045D59DAC690DA87B17C858BB8DA357EB45E",
+            "LpcACPIEC" => "C38FD116E7AFF4D1FDB0A494E296BE0A6708E5A22FC72F14587442FB7F8F7906",
+            "IntelMSR" => "D6ED85D65AB17A22F813EF98207D6D537155EE2DED5976A21CB48413C9B92E5F",
+            _ => throw new ArgumentOutOfRangeException(nameof(module))
+        };
+        return OpenResource(typeof(PawnIoModule).Assembly, $"LibHandheld.PawnIO.{module}.bin", digest);
     }
 
     internal static PawnIoModule OpenRyzen()
@@ -102,7 +104,8 @@ internal sealed class PawnIoModule : IPawnIoModule
             throw new InvalidDataException($"PawnIO module {name} does not match the pinned release.");
         }
 
-        var handle = CreateFileW(@"\\?\GLOBALROOT\Device\PawnIO", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        var handle = NativeDevice.CreateFile(@"\\?\GLOBALROOT\Device\PawnIO", 0xC0000000, 3, IntPtr.Zero, 3, 0,
+            IntPtr.Zero);
         if (handle.IsInvalid)
         {
             var error = Marshal.GetLastWin32Error();
@@ -110,7 +113,7 @@ internal sealed class PawnIoModule : IPawnIoModule
             throw new Win32Exception(error, "The installed PawnIO driver could not be opened.");
         }
 
-        if (!DeviceIoControl(handle, LoadCode, bytes, (uint)bytes.Length, [], 0, out _, IntPtr.Zero))
+        if (!NativeDevice.DeviceIoControl(handle, LoadCode, bytes, (uint)bytes.Length, [], 0, out _, IntPtr.Zero))
         {
             var error = Marshal.GetLastWin32Error();
             handle.Dispose();
@@ -119,13 +122,4 @@ internal sealed class PawnIoModule : IPawnIoModule
 
         return new PawnIoModule(handle);
     }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security,
-        uint disposition, uint flags, IntPtr template);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, byte[] input, uint inputBytes,
-        byte[] output, uint outputBytes, out uint returned, IntPtr overlapped);
 }

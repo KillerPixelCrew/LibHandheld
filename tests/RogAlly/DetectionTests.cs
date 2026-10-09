@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-using LibHandheld.Families.RogAlly.Tests.Fakes;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Plugin;
-
 namespace LibHandheld.Families.RogAlly.Tests;
 
 public sealed class DetectionTests
@@ -15,14 +11,12 @@ public sealed class DetectionTests
     [InlineData("RC73YA", "rc73ya")]
     [InlineData("RC73XA", "rc73xa")]
     [InlineData(" rc73xa ", "rc73xa")]
-    public async Task EachAllyBoardMatchesItsOwnDefinition(string product, string definition)
+    public void EachAllyBoardMatchesItsOwnDefinition(string product, string definition)
     {
-        await using var plugin = new AllyFakesPlugin().Plugin;
-        var result = await plugin.DetectAsync(Context("ASUSTeK COMPUTER INC.", product), CancellationToken.None);
+        var result = AllyModels.Match(Context("ASUSTeK COMPUTER INC.", product));
 
-        Assert.True(result.Matched);
-        Assert.Equal(definition, result.DeviceDefinitionId);
-        Assert.Null(result.Reason);
+        Assert.NotNull(result);
+        Assert.Equal(definition, result.DefinitionId);
     }
 
     [Theory]
@@ -34,14 +28,11 @@ public sealed class DetectionTests
     [InlineData("Micro-Star International Co., Ltd.", "RC71L")] // right board name, wrong maker
     [InlineData("LENOVO", "RC72LA")]
     [InlineData("", "RC72LA")]
-    public async Task EverythingElseIsDeclined(string manufacturer, string product)
+    public void EverythingElseIsDeclined(string manufacturer, string product)
     {
-        await using var plugin = new AllyFakesPlugin().Plugin;
-        var result = await plugin.DetectAsync(Context(manufacturer, product), CancellationToken.None);
+        var result = AllyModels.Match(Context(manufacturer, product));
 
-        Assert.False(result.Matched);
-        Assert.Null(result.DeviceDefinitionId);
-        Assert.NotNull(result.Reason);
+        Assert.Null(result);
     }
 
     [Fact]
@@ -54,20 +45,12 @@ public sealed class DetectionTests
         Assert.Equal(AllyModels.All.Count, AllyModels.All.Select(model => model.DefinitionId).Distinct().Count());
     }
 
-    private static PluginDetectionContext Context(string manufacturer, string product)
+    private static DeviceIdentitySnapshot Context(string manufacturer, string product)
     {
-        return new PluginDetectionContext
+        return new DeviceIdentitySnapshot
         {
-            Identity = new DeviceIdentitySnapshot
-            {
-                BaseboardManufacturer = manufacturer,
-                BaseboardProduct = product
-            }
+            BaseboardManufacturer = manufacturer,
+            BaseboardProduct = product
         };
-    }
-
-    private sealed class AllyFakesPlugin
-    {
-        public AllyDeviceEngine Plugin { get; } = new AllyFakeHardware().CreatePlugin();
     }
 }

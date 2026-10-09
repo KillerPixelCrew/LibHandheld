@@ -9,8 +9,8 @@ using LibHandheld.Families.RogAlly;
 using LibHandheld.Families.SteamDeck;
 using LibHandheld.Families.Zotac;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Plugin;
-using NativeIdentity = LibHandheld.Internal.Identity.DeviceIdentitySnapshot;
+using LibHandheld.Internal.Runtime;
+using NativeIdentity = LibHandheld.Contracts.DeviceIdentitySnapshot;
 
 namespace LibHandheld.Internal;
 
@@ -19,7 +19,7 @@ internal sealed record DeviceFamily(
     string Id,
     IReadOnlyList<HandheldDefinition> Models,
     Func<NativeIdentity, string?> MatchModel,
-    Func<HandheldDefinition, IDeviceEngine> CreateEngine);
+    Func<HandheldDefinition, NativeEngine> CreateEngine);
 
 /// <summary>Routes model selection to a family without exposing protocols to consumers.</summary>
 internal static class DeviceFamilies
@@ -30,22 +30,55 @@ internal static class DeviceFamilies
     [
         new DeviceFamily(ClawHardwareFacts.PackageId,
             Array.AsReadOnly(ClawModels.All.Select(model => new HandheldDefinition(model.DefinitionId,
-                ClawHardwareFacts.PackageId, model.DisplayName, "msi-claw")).ToArray()),
+                ClawHardwareFacts.PackageId, model.DisplayName, "msi-claw")
+            {
+                HardwareVerified = model.HardwareVerified,
+                DeclaredRoles = Array.AsReadOnly([
+                    CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ChargeLimit,
+                    CapabilityRole.ScenarioMode, CapabilityRole.FanMode, CapabilityRole.FanDuty,
+                    CapabilityRole.LightingBrightness, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
+                    CapabilityRole.HapticSink, CapabilityRole.Telemetry, CapabilityRole.FanMeasuredRpm,
+                    CapabilityRole.FanCurve, CapabilityRole.LightingZoneColor
+                ])
+            }).ToArray()),
             identity => ClawModels.Find(identity)?.DefinitionId,
-            _ => new ClawDeviceEngine()),
+            definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
+                [context => new ClawDeviceEngine(context)]))),
         new DeviceFamily(AllyModels.PackageId,
             Array.AsReadOnly(AllyModels.All.Select(model => new HandheldDefinition(model.DefinitionId,
-                AllyModels.PackageId, model.DisplayName, model.GlyphProfileId)).ToArray()),
+                AllyModels.PackageId, model.DisplayName, model.GlyphProfileId)
+            {
+                DeclaredRoles = Array.AsReadOnly([
+                    CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
+                    CapabilityRole.ChargeLimit, CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanCurve,
+                    CapabilityRole.Telemetry, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
+                    CapabilityRole.LightingEffectSpeed, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
+                    CapabilityRole.HapticSink, CapabilityRole.LightingZoneColor
+                ])
+            }).ToArray()),
             identity => AllyModels.Match(identity)?.DefinitionId,
-            _ => new AllyDeviceEngine()),
+            definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
+                [context => new AllyDeviceEngine(context)]))),
         new DeviceFamily(LegionGoModels.PackageId,
             Array.AsReadOnly(LegionGoModels.All.Select(model => new HandheldDefinition(model.DefinitionId,
                 LegionGoModels.PackageId, model.DisplayName, model.GlyphProfileId)
             {
+                DeclaredRoles =
+                [
+                    CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
+                    CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.ChargeProtectionMode,
+                    CapabilityRole.FanMeasuredRpm, CapabilityRole.Telemetry, CapabilityRole.LightingPower,
+                    CapabilityRole.LightingBrightness, CapabilityRole.LightingEffectSpeed,
+                    CapabilityRole.LightingEffect, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
+                    CapabilityRole.HapticSink, CapabilityRole.GenericToggle, CapabilityRole.GenericAction,
+                    CapabilityRole.LightingZoneColor, .. !model.EcFan ? new[] { CapabilityRole.FanCurve } : [],
+                    .. !model.Slim ? new[] { CapabilityRole.GenericChoice } : []
+                ],
                 HardwareAccess = model.EcFan ? DeviceHardwareAccess.PawnIo : DeviceHardwareAccess.None
             }).ToArray()),
             identity => LegionGoModels.Match(identity)?.DefinitionId,
-            _ => new LegionGoDeviceEngine()),
+            definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
+                [context => new LegionGoDeviceEngine(context)]))),
         new DeviceFamily(GpdModels.FamilyId, GpdModels.GetDefinitions(),
             identity => GpdModels.Match(identity)?.Definition.Id, GpdModels.CreateEngine),
         new DeviceFamily(AyaneoModels.FamilyId, AyaneoModels.Definitions, AyaneoModels.Match,
@@ -58,7 +91,14 @@ internal static class DeviceFamilies
             SteamDeckModels.Match, SteamDeckModels.CreateEngine),
         new DeviceFamily(GenericModels.FamilyId, GenericModels.GetDefinitions(),
             identity => GenericModels.Match(identity)?.Definition.Id, GenericModels.CreateEngine)
-    ]);
+    ]).Select(family => family with
+    {
+        Models = Array.AsReadOnly(family.Models.Select(model => model with
+        {
+            // An approved USB accessory may add these controls to any exact supported model.
+            DeclaredRoles = model.DeclaredRoles.Concat(GenericAsusService.AccessoryRoles).Distinct().ToArray()
+        }).ToArray())
+    }).ToArray();
 
     internal static IReadOnlyList<HandheldDefinition> Models { get; } = Array.AsReadOnly(
         Families.SelectMany(family => family.Models).ToArray());
@@ -76,20 +116,10 @@ internal static class DeviceFamilies
         return null;
     }
 
-    internal static IDeviceEngine Create(HandheldDefinition model)
+    internal static NativeEngine Create(HandheldDefinition model)
     {
-        var family = Families.SingleOrDefault(candidate => candidate.Id == model.FamilyId)
+        var family = Families.SingleOrDefault(candidate => candidate.Models.Contains(model))
                      ?? throw new ArgumentException("Unknown handheld protocol family.", nameof(model));
-        if (!family.Models.Contains(model))
-        {
-            throw new ArgumentException("The model is not declared by its protocol family.", nameof(model));
-        }
-
-        var engine = family.CreateEngine(model);
-        // ASUS firmware profiles already own their USB lighting module. Other machines may also
-        // attach an XG Mobile or Aura keyboard, without changing their CPU or physical input backend.
-        return model.FamilyId == GenericModels.FamilyId && model.Id.StartsWith("asus-", StringComparison.Ordinal)
-            ? engine
-            : new AsusAuraDeviceEngine(engine);
+        return family.CreateEngine(model);
     }
 }

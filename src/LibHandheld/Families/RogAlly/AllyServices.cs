@@ -1,10 +1,11 @@
-// SPDX-License-Identifier: MIT
-
 using System.ComponentModel;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -30,7 +31,7 @@ internal static class AllyServiceIds
 internal sealed class PowerService(
     IAsusAcpi acpi,
     Func<TimeSpan, CancellationToken, Task> delay,
-    AllyRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Power)
+    DeviceRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Power)
 {
     public AllyPowerCapability? Capability { get; private set; }
 
@@ -41,10 +42,7 @@ internal sealed class PowerService(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ReconciliationBlockReason is not null)
-        {
-            return ValueTask.FromResult(Set(DeviceServiceState.Faulted, ReconciliationBlockReason));
-        }
+
 
         if (context.Identity.Model is not { } model)
         {
@@ -68,7 +66,7 @@ internal sealed class PowerService(
 
     public void Refresh()
     {
-        LastObserved = Capability?.Effective();
+        LastObserved = Capability?.Read();
     }
 
     /// <summary>Journals the original state before the first write of this cycle, when it can be read.</summary>
@@ -84,39 +82,24 @@ internal sealed class PowerService(
     /// </returns>
     public async ValueTask PrepareWriteAsync(AllyIdentityState identity, CancellationToken cancellationToken)
     {
-        if (journal.HoldsOriginal(ServiceId, identity.FirmwareIdentity))
+        await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
         {
-            return;
-        }
-
-        var original = Capability!.Read();
-        if (!original.LimitsReadable || original.Mode is null)
-        {
-            DeviceTrace.Change("power", "journal",
-                "The firmware does not report its power limits and mode; writing without a restore point.");
-            return;
-        }
-
-        _ = await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, AllyRecoveryState.Power(original),
-            cancellationToken).ConfigureAwait(false);
+            var original = Capability!.Read();
+            return original.LimitsReadable && original.Mode is not null ? AllyRecoveryState.Power(original) : null;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(
         DeviceCycleContext<AllyIdentityState> context,
         CancellationToken cancellationToken)
     {
-        if (ReconciliationBlockReason is not null)
-        {
-            return Set(DeviceServiceState.Faulted, ReconciliationBlockReason);
-        }
-
         // A faulted service may still hold captured state; stop is its restore point.
         if (State is not (DeviceServiceState.Owned or DeviceServiceState.Faulted) || Capability is null)
         {
             return Set(DeviceServiceState.Idle);
         }
 
-        if (journal.PendingOriginalFor(ServiceId)?.ToPower() is { } original)
+        if (journal.PendingOriginalFor<AllyRecoveryState>(ServiceId)?.ToPower() is { } original)
         {
             if (!DeviceWriteBudget.IsAvailable(context.Deadline))
             {
@@ -156,7 +139,7 @@ internal sealed class PowerService(
 internal sealed class FanService(
     IAsusAcpi acpi,
     Func<TimeSpan, CancellationToken, Task> delay,
-    AllyRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Fans)
+    DeviceRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Fans)
 {
     public AllyFanCapability? Capability { get; private set; }
 
@@ -164,17 +147,14 @@ internal sealed class FanService(
 
     public (int? Cpu, int? Gpu) LastFans { get; private set; }
 
-    public AllyFanSnapshot? Original => journal.OriginalStateFor(ServiceId)?.ToFans();
+    public AllyFanSnapshot? Original => journal.OriginalStateFor<AllyRecoveryState>(ServiceId)?.ToFans();
 
     public override ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<AllyIdentityState> context,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ReconciliationBlockReason is not null)
-        {
-            return ValueTask.FromResult(Set(DeviceServiceState.Faulted, ReconciliationBlockReason));
-        }
+
 
         if (!context.Identity.ExactMachineMatch)
         {
@@ -220,38 +200,25 @@ internal sealed class FanService(
     /// </returns>
     public async ValueTask PrepareWriteAsync(AllyIdentityState identity, CancellationToken cancellationToken)
     {
-        if (journal.HoldsOriginal(ServiceId, identity.FirmwareIdentity))
+        await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
         {
-            return;
-        }
-
-        var original = Capability!.Read();
-        if (!original.Readable || original.Mode is null || (Capability.HasMidFan && original.Mid is null))
-        {
-            DeviceTrace.Change("fans", "journal",
-                "The firmware does not report its fan curves; stop will write HC's factory tables.");
-            return;
-        }
-
-        _ = await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, AllyRecoveryState.Fans(original),
-            cancellationToken).ConfigureAwait(false);
+            var original = Capability!.Read();
+            return original.Readable && original.Mode is not null && (!Capability.HasMidFan || original.Mid is not null)
+                ? AllyRecoveryState.Fans(original)
+                : null;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(
         DeviceCycleContext<AllyIdentityState> context,
         CancellationToken cancellationToken)
     {
-        if (ReconciliationBlockReason is not null)
-        {
-            return Set(DeviceServiceState.Faulted, ReconciliationBlockReason);
-        }
-
         if (State is not (DeviceServiceState.Owned or DeviceServiceState.Faulted) || Capability is null)
         {
             return Set(DeviceServiceState.Idle);
         }
 
-        if (journal.PendingOriginalFor(ServiceId)?.ToFans() is not { } original)
+        if (journal.PendingOriginalFor<AllyRecoveryState>(ServiceId)?.ToFans() is not { } original)
         {
             return await ReleaseToFactoryAsync(context, cancellationToken).ConfigureAwait(false);
         }
@@ -282,8 +249,7 @@ internal sealed class FanService(
         DeviceCycleContext<AllyIdentityState> context,
         CancellationToken cancellationToken)
     {
-        if (Capability!.WrittenCpu is not { } written
-            || written.AsSpan().SequenceEqual(AllyFanCapability.DefaultCpuCurve))
+        if (Capability?.HasCustomWrite != true)
         {
             return Set(DeviceServiceState.Idle);
         }
@@ -445,11 +411,11 @@ internal sealed class LightingService(IAllyAuraHid aura) : DeviceService<AllyIde
             DeviceTrace.Failure("lighting", "Aura write failed", ex);
             // The previous intent is kept: nothing reads Aura back, so the device state is unknown.
             return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                DiagnosticText.FromException("The Aura write failed", ex), RollbackResult.NotRequired);
+                DiagnosticText.FromException("The Aura write failed", ex));
         }
 
         Desired = wanted;
-        return CommandResults.Unverified(command);
+        return CommandResults.Applied(command);
     }
 
     /// <summary>The reports one lighting state needs, in HC's order.</summary>

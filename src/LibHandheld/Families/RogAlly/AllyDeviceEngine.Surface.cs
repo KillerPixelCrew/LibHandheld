@@ -1,36 +1,14 @@
-// SPDX-License-Identifier: MIT
-
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Settings;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
 // The capability surface: overlay sections, descriptors and the published states.
 internal sealed partial class AllyDeviceEngine
 {
-    private static readonly IReadOnlyList<CapabilitySection> OverlaySections =
-    [
-        DeviceSections.Power with
-        {
-            Categories =
-            [
-                Category(CategoryIds.Limits, "Limits", 0),
-                Category(CategoryIds.Charging, "Charging", 1),
-                Category(CategoryIds.Fans, "Fans", 2)
-            ]
-        },
-        DeviceSections.Rgb with { Categories = [Category(CategoryIds.Zones, "Zones", 0)] },
-        DeviceSections.Info with
-        {
-            Categories =
-            [
-                Category(CategoryIds.Ownership, "Plugin ownership", 0),
-                Category(CategoryIds.Readings, "Readings", 1)
-            ]
-        }
-    ];
-
     private void BuildCapabilitySurface()
     {
         var model = _model ?? throw new InvalidOperationException("No model is selected.");
@@ -41,9 +19,7 @@ internal sealed partial class AllyDeviceEngine
                     CategoryIds.Limits, 0) with
                 {
                     PowerPresets = AllyModels.PowerPresets(model),
-                    PairedPowerLimitId = CapabilityIds.PowerBoost,
-                    Prominence = CapabilityProminence.Primary,
-                    LayoutPair = new CapabilityLayoutPair(CapabilityIds.PowerBoost)
+                    PairedPowerLimitId = CapabilityIds.PowerBoost
                 },
             Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit, DisplayKey.BoostPowerLimit,
                 model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, SectionIds.Power,
@@ -64,9 +40,8 @@ internal sealed partial class AllyDeviceEngine
             {
                 CapabilityId = CapabilityIds.FanCurve,
                 Role = CapabilityRole.FanCurve,
-                SectionId = SectionIds.Power,
-                CategoryId = CategoryIds.Fans,
-                SortOrder = 1,
+
+
                 ValueKind = CapabilityValueKind.Curve,
                 Display = new CapabilityDisplay { Key = DisplayKey.FanCurve },
                 Minimum = 0,
@@ -76,17 +51,22 @@ internal sealed partial class AllyDeviceEngine
                 SupportsWrite = true,
                 Persistence = CapabilityPersistence.Volatile
             },
+            Integer("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100, CapabilityUnit.Percent,
+                    true, SectionIds.Power, CategoryIds.Fans, 2) with
+                {
+                    SupportsRead = false
+                },
             Integer(CapabilityIds.FanReading, CapabilityRole.Telemetry, DisplayKey.Custom, 0, 100,
                     CapabilityUnit.Percent, false, SectionIds.Info, CategoryIds.Readings, 0,
                     CapabilityInstances.Cpu) with
                 {
-                    Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = "CPU fan" }
+                    Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "CPU fan" }
                 },
             Integer(CapabilityIds.FanReading, CapabilityRole.Telemetry, DisplayKey.Custom, 0, 100,
                     CapabilityUnit.Percent, false, SectionIds.Info, CategoryIds.Readings, 1,
                     CapabilityInstances.Gpu) with
                 {
-                    Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = "GPU fan" }
+                    Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "GPU fan" }
                 },
             // Aura is write-only (HC and HHD both only write it), so none of these declare a read.
             Integer(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness, DisplayKey.Brightness, 0, 100,
@@ -117,9 +97,8 @@ internal sealed partial class AllyDeviceEngine
             {
                 CapabilityId = CapabilityIds.Rumble,
                 Role = CapabilityRole.HapticSink,
-                SectionId = SectionIds.Info,
-                CategoryId = CategoryIds.Ownership,
-                SortOrder = 2,
+
+
                 ValueKind = CapabilityValueKind.None,
                 Display = new CapabilityDisplay { Key = DisplayKey.Rumble },
                 SupportsAction = true,
@@ -129,9 +108,6 @@ internal sealed partial class AllyDeviceEngine
 
         _descriptorSet = new CapabilityDescriptorSet
         {
-            Generation = 1,
-            CycleGeneration = _cycleGeneration,
-            Sections = OverlaySections,
             Descriptors = descriptors
         };
     }
@@ -151,12 +127,9 @@ internal sealed partial class AllyDeviceEngine
                 continue;
             }
 
-            // Power keeps its own written state, which a mode change clears (AllyPowerCapability.Effective).
-            var value = (service is PowerService || descriptor.CapabilityId == CapabilityIds.FanCurve
-                            ? null
-                            : _written.GetValueOrDefault((descriptor.CapabilityId, descriptor.InstanceId)))
-                        ?? (descriptor.SupportsRead ? CurrentState(descriptor) : null)
-                        ?? Fallback(descriptor);
+            _observedValues.Read(descriptor.CapabilityId, descriptor.SupportsRead ? CurrentState(descriptor) : null,
+                descriptor.InstanceId);
+            var value = _observedValues.Value(descriptor.CapabilityId, descriptor.InstanceId);
             await _host.PublishCapabilityStateAsync(new CapabilityState
             {
                 CapabilityId = descriptor.CapabilityId,
@@ -167,9 +140,7 @@ internal sealed partial class AllyDeviceEngine
                     : service.Reason ?? DeviceServiceLifecycle.ReasonFor(service.State),
                 ObservedValue = value,
                 Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                ObservedAt = value is null ? null : DateTimeOffset.UtcNow,
-                DescriptorGeneration = _descriptorSet.Generation,
-                CycleGeneration = _cycleGeneration
+                ObservedAt = value is null ? null : _observedValues.Time(descriptor.CapabilityId, descriptor.InstanceId)
             }, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -196,7 +167,7 @@ internal sealed partial class AllyDeviceEngine
                     ? CapabilityValue.Integer(percent)
                     : null;
             case CapabilityIds.FanCurve:
-                return (_fans?.Capability?.WrittenCpu ?? _fans?.LastObserved?.Cpu) is { } curve
+                return _fans?.LastObserved?.Cpu is { } curve
                     ? CapabilityValue.Curve(AllyFanCapability.Decode(curve))
                     : null;
             case CapabilityIds.FanReading:
@@ -215,37 +186,9 @@ internal sealed partial class AllyDeviceEngine
         }
     }
 
-    /// <summary>What the device is known to be doing before anything was written this cycle.</summary>
-    /// <remarks>
-    ///     The fans run HC's factory tables under firmware control until a curve is sent, so that is
-    ///     what the fan controls show on a firmware that refuses the curve query.
-    /// </remarks>
-    private CapabilityValue? Fallback(CapabilityDescriptor descriptor)
-    {
-        return descriptor.CapabilityId switch
-        {
-            CapabilityIds.FanMode when _fans?.State is DeviceServiceState.Owned =>
-                CapabilityValue.Choice(FanModes.Automatic),
-            CapabilityIds.FanCurve when _fans?.Capability is { } fans =>
-                CapabilityValue.Curve(AllyFanCapability.Decode(fans.WrittenCpu ?? AllyFanCapability.DefaultCpuCurve)),
-            _ => null
-        };
-    }
-
     private static bool InRange(int value, CapabilityDescriptor descriptor)
     {
         return value >= descriptor.Minimum && value <= descriptor.Maximum;
-    }
-
-    private static CapabilityCategory Category(string id, string title, int order)
-    {
-        return new CapabilityCategory
-        {
-            CategoryId = id,
-            Key = SettingSectionKey.Custom,
-            CustomTitle = title,
-            SortOrder = order
-        };
     }
 
     private static CapabilityDescriptor Integer(
@@ -266,13 +209,11 @@ internal sealed partial class AllyDeviceEngine
             CapabilityId = id,
             InstanceId = instance,
             Role = role,
-            SectionId = section,
-            CategoryId = category,
-            SortOrder = order,
-            Prominence = writable ? CapabilityProminence.Normal : CapabilityProminence.Compact,
+
+
             ValueKind = CapabilityValueKind.Integer,
             Display = display is DisplayKey.Custom
-                ? new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = id }
+                ? new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = id }
                 : new CapabilityDisplay { Key = display },
             SupportsRead = true,
             SupportsWrite = writable,
@@ -299,9 +240,8 @@ internal sealed partial class AllyDeviceEngine
         {
             CapabilityId = id,
             Role = role,
-            SectionId = section,
-            CategoryId = category,
-            SortOrder = order,
+
+
             ValueKind = CapabilityValueKind.Choice,
             Display = new CapabilityDisplay { Key = display },
             SupportsRead = readable,
@@ -309,7 +249,7 @@ internal sealed partial class AllyDeviceEngine
             Choices =
             [
                 .. choices.Select(choice => new CapabilityChoice(choice,
-                    new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = Label(choice) }))
+                    new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = Label(choice) }))
             ],
             Persistence = CapabilityPersistence.Volatile
         };
@@ -322,11 +262,10 @@ internal sealed partial class AllyDeviceEngine
             CapabilityId = CapabilityIds.LightingColor,
             InstanceId = instance,
             Role = CapabilityRole.LightingZoneColor,
-            SectionId = SectionIds.Lighting,
-            CategoryId = CategoryIds.Zones,
-            SortOrder = order,
+
+
             ValueKind = CapabilityValueKind.Color,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = label },
+            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
             SupportsRead = false,
             SupportsWrite = true,
             Persistence = CapabilityPersistence.Unknown
@@ -347,7 +286,7 @@ internal sealed partial class AllyDeviceEngine
             Effects.ColorCycle => "Colour cycle",
             Effects.Rainbow => "Rainbow",
             SourceOwnership.Device => "Device",
-            SourceOwnership.Plugin => "Plugin",
+            SourceOwnership.Managed => "Plugin",
             SourceOwnership.Unavailable => "Unavailable",
             _ => choice
         };

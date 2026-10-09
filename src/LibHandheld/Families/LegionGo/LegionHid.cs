@@ -1,6 +1,5 @@
-using System.Globalization;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
 using Microsoft.Win32.SafeHandles;
 
@@ -44,6 +43,7 @@ internal sealed class WindowsLegionHid : ILegionHid
     private FileStream? _input;
     private LegionGoModel? _model;
     private volatile bool _nativeTouchpad;
+    private long _nextSlotDiscovery;
     private ushort _oem;
     private long _pressSequence;
     private Task? _reader;
@@ -87,7 +87,7 @@ internal sealed class WindowsLegionHid : ILegionHid
         var commands = candidates.Where(c => model.Slim
             ? c.InputLength == 65 && c.OutputLength == 65
             : c.UsagePage == 0xFFA0 && c.Usage == 1 && c.OutputLength >= 13).ToArray();
-        _commandCollection = commands.FirstOrDefault();
+        _commandCollection = HidDevices.Unique(commands, _ => true);
         if (_commandCollection is null || string.IsNullOrWhiteSpace(_commandCollection.PhysicalLocation) ||
             commands.Any(c =>
                 !HidDevices.SamePhysicalLocation(c.PhysicalLocation, _commandCollection.PhysicalLocation)))
@@ -154,7 +154,7 @@ internal sealed class WindowsLegionHid : ILegionHid
             {
                 try
                 {
-                    if (_model is not null && LegionXInput.Matches(_slot, _model))
+                    if (_model is not null && _slot >= 0)
                     {
                         LegionXInput.Rumble(_slot, HapticOutputFrame.Stop(DateTimeOffset.UtcNow));
                     }
@@ -206,9 +206,17 @@ internal sealed class WindowsLegionHid : ILegionHid
         lock (_output)
         {
             if (_readerCancellation?.IsCancellationRequested == false && Reading && _model is not null &&
-                LegionXInput.Matches(_slot, _model))
+                _slot >= 0)
             {
-                LegionXInput.Rumble(_slot, output);
+                try
+                {
+                    LegionXInput.Rumble(_slot, output);
+                }
+                catch
+                {
+                    _slot = -1;
+                    throw;
+                }
             }
         }
 
@@ -231,12 +239,12 @@ internal sealed class WindowsLegionHid : ILegionHid
         }
 
         var candidates = HidDevices.Enumerate(model.VendorId, model.ProductIds.ToArray());
-        var source = candidates.FirstOrDefault(c => (model.Slim
-                                                        ? c.InputLength == 33
-                                                        : c.UsagePage == 0xFFA0 && c.Usage == 1 &&
-                                                          c.InputLength >= 60) &&
-                                                    HidDevices.SamePhysicalLocation(c.PhysicalLocation,
-                                                        _commandCollection!.PhysicalLocation));
+        var source = HidDevices.Unique(candidates, c => (model.Slim
+                                                            ? c.InputLength == 33
+                                                            : c.UsagePage == 0xFFA0 && c.Usage == 1 &&
+                                                              c.InputLength >= 60) &&
+                                                        HidDevices.SamePhysicalLocation(c.PhysicalLocation,
+                                                            _commandCollection!.PhysicalLocation));
         if (source is null)
         {
             throw new IOException("The Lenovo controller report collection is unavailable.");
@@ -257,13 +265,17 @@ internal sealed class WindowsLegionHid : ILegionHid
         }
 
         _forward = forward;
-        _slot = forward ? LegionXInput.Find(model) : -1;
+        lock (_output)
+        {
+            _slot = forward ? LegionXInput.Find(model) : -1;
+        }
+
         // The separate Generic Desktop collection is decoded using Windows' descriptor parser.
         var gamepad = forward && _slot < 0
-            ? candidates.FirstOrDefault(c => c.UsagePage == 1 && c.Usage is 4 or 5 &&
-                                             !string.IsNullOrWhiteSpace(c.PhysicalLocation) &&
-                                             HidDevices.SamePhysicalLocation(c.PhysicalLocation,
-                                                 source.PhysicalLocation))
+            ? HidDevices.Unique(candidates, c => c.UsagePage == 1 && c.Usage is 4 or 5 &&
+                                                 !string.IsNullOrWhiteSpace(c.PhysicalLocation) &&
+                                                 HidDevices.SamePhysicalLocation(c.PhysicalLocation,
+                                                     source.PhysicalLocation))
             : null;
         if (gamepad is not null)
         {
@@ -282,22 +294,12 @@ internal sealed class WindowsLegionHid : ILegionHid
                                      n.InstancePath.Contains("&IG_", StringComparison.OrdinalIgnoreCase) &&
                                      !string.IsNullOrWhiteSpace(n.PhysicalLocation) &&
                                      HidDevices.SamePhysicalLocation(n.PhysicalLocation, source.PhysicalLocation)))
-            .Select(n => new PhysicalDeviceIdentity
-            {
-                InstancePath = n.InstancePath, LocationPath = n.PhysicalLocation,
-                VendorId = model.VendorId.ToString("X4", CultureInfo.InvariantCulture),
-                ProductId = source.ProductId.ToString("X4", CultureInfo.InvariantCulture), RequiresHiding = true
-            }).ToArray();
+            .Select(PhysicalIdentities.FromNode).ToArray();
         if (gamepad is not null)
         {
             identities =
             [
-                .. identities, new PhysicalDeviceIdentity
-                {
-                    InstancePath = gamepad.InstancePath, LocationPath = gamepad.PhysicalLocation,
-                    VendorId = model.VendorId.ToString("X4", CultureInfo.InvariantCulture),
-                    ProductId = gamepad.ProductId.ToString("X4", CultureInfo.InvariantCulture), RequiresHiding = true
-                }
+                .. identities, PhysicalIdentities.FromCollection(gamepad)
             ];
         }
 
@@ -339,6 +341,26 @@ internal sealed class WindowsLegionHid : ILegionHid
         _readerCancellation = null;
     }
 
+    private bool TryReadXInput(LegionGoModel model, DateTimeOffset now, out CanonicalControllerSample sample)
+    {
+        if (LegionXInput.TryRead(_slot, now, out sample))
+        {
+            return true;
+        }
+
+        // A slot is validated once on acquisition. Only a failed/missing read asks discovery again,
+        // throttled while the device's XInput interface is absent.
+        var tick = Environment.TickCount64;
+        if (tick < _nextSlotDiscovery)
+        {
+            return false;
+        }
+
+        _nextSlotDiscovery = tick + 500;
+        _slot = LegionXInput.Find(model);
+        return LegionXInput.TryRead(_slot, now, out sample);
+    }
+
     private async Task ReadAsync(LegionGoModel model, HidCollection source, IDeviceSink sink, CancellationToken token)
     {
         var report = new byte[source.InputLength];
@@ -374,7 +396,7 @@ internal sealed class WindowsLegionHid : ILegionHid
                 }
 
                 var sample = decoded.Sample;
-                if (LegionXInput.Matches(_slot, model) && LegionXInput.TryRead(_slot, now, out var xinput))
+                if (_forward && TryReadXInput(model, now, out var xinput))
                 {
                     sample = LegionInputCodec.Merge(xinput, sample);
                 }
@@ -431,7 +453,7 @@ internal sealed class WindowsLegionHid : ILegionHid
         {
             if (!token.IsCancellationRequested)
             {
-                sink.Trace(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
                 // A disconnect is a resource degradation; the owning observation turn performs a fresh acquisition.
             }
         }
@@ -443,7 +465,7 @@ internal sealed class WindowsLegionHid : ILegionHid
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                sink.Trace(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
             }
 
             try
@@ -453,7 +475,7 @@ internal sealed class WindowsLegionHid : ILegionHid
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                sink.Trace(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
             }
 
             try
@@ -462,7 +484,7 @@ internal sealed class WindowsLegionHid : ILegionHid
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                sink.Trace(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
             }
 
             if (nativeDisconnected && !token.IsCancellationRequested)

@@ -1,6 +1,7 @@
 using System.Text;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Services;
 
@@ -180,8 +181,6 @@ internal static class DeviceServiceLifecycle
             await TryRetractAsync("capability descriptors", () => host.PublishDescriptorsAsync(
                 new CapabilityDescriptorSet
                 {
-                    Generation = checked(published.Generation + 1),
-                    CycleGeneration = published.CycleGeneration,
                     Descriptors = []
                 },
                 bounded.Token)).ConfigureAwait(false);
@@ -194,7 +193,7 @@ internal static class DeviceServiceLifecycle
     /// <param name="noServiceDetail">The reason given when no required service is owned.</param>
     /// <param name="host">Receives the trace line; null skips it.</param>
     /// <returns>Active when every required service is owned, Passive when none is, otherwise Degraded.</returns>
-    public static PluginStartResult StartResult(
+    public static EngineStartResult StartResult(
         IReadOnlyList<DeviceServiceStatus> services,
         Func<DeviceServiceStatus, bool> required,
         string noServiceDetail,
@@ -205,13 +204,13 @@ internal static class DeviceServiceLifecycle
         var counted = services.Where(required).ToArray();
         var owned = counted.Count(service => service.State is DeviceServiceState.Owned);
         var firstUnhealthy = counted.FirstOrDefault(service => service.State is not DeviceServiceState.Owned);
-        PluginStartResult result = new()
+        EngineStartResult result = new()
         {
             State = owned == 0
-                ? PluginOperationalState.Passive
+                ? EngineOperationalState.Passive
                 : firstUnhealthy is null
-                    ? PluginOperationalState.Active
-                    : PluginOperationalState.Degraded,
+                    ? EngineOperationalState.Active
+                    : EngineOperationalState.Degraded,
             Reason = firstUnhealthy?.Reason ?? (owned == 0
                 ? new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing, noServiceDetail)
                 : null)
@@ -247,8 +246,8 @@ internal static class DeviceServiceLifecycle
             detail.Append(')');
         }
 
-        host.Trace(
-            result.State is PluginOperationalState.Active ? DeviceTraceLevel.Info : DeviceTraceLevel.Warn,
+        DeviceTrace.Write(
+            result.State is EngineOperationalState.Active ? DeviceTraceLevel.Info : DeviceTraceLevel.Warn,
             "lifecycle",
             $"start state {result.State}: {detail}");
         return result;
@@ -257,14 +256,14 @@ internal static class DeviceServiceLifecycle
     /// <summary>The stop result: failed if any service faulted, unverified if any release was, else clean.</summary>
     /// <param name="services">Every service of the cycle.</param>
     /// <returns>The stop result.</returns>
-    public static PluginStopResult StopResult(IReadOnlyList<DeviceServiceStatus> services)
+    public static EngineStopResult StopResult(IReadOnlyList<DeviceServiceStatus> services)
     {
         ArgumentNullException.ThrowIfNull(services);
         if (services.FirstOrDefault(service => service.State is DeviceServiceState.Faulted) is { } failed)
         {
-            return new PluginStopResult
+            return new EngineStopResult
             {
-                Status = PluginStopStatus.Failed,
+                Status = EngineStopStatus.Failed,
                 Reason = failed.Reason ?? new CapabilityReason(
                     CapabilityReasonCode.TransportFaulted,
                     $"Service '{failed.ServiceId}' cleanup failed.")
@@ -273,14 +272,14 @@ internal static class DeviceServiceLifecycle
 
         return services.FirstOrDefault(service => service.State is DeviceServiceState.ReleasedUnverified) is
             { } unverified
-            ? new PluginStopResult
+            ? new EngineStopResult
             {
-                Status = PluginStopStatus.Unverified,
+                Status = EngineStopStatus.Unverified,
                 Reason = unverified.Reason ?? new CapabilityReason(
                     CapabilityReasonCode.TransportFaulted,
                     $"Service '{unverified.ServiceId}' cleanup was not verified.")
             }
-            : new PluginStopResult { Status = PluginStopStatus.Clean };
+            : new EngineStopResult { Status = EngineStopStatus.Clean };
     }
 
     /// <summary>The reason a capability state carries for a service that set none of its own.</summary>
@@ -314,7 +313,7 @@ internal static class DeviceServiceLifecycle
     {
         return state switch
         {
-            DeviceServiceState.Owned or DeviceServiceState.Releasing => SourceOwnership.Plugin,
+            DeviceServiceState.Owned or DeviceServiceState.Releasing => SourceOwnership.Managed,
             DeviceServiceState.Idle or DeviceServiceState.Passive or DeviceServiceState.Acquiring =>
                 SourceOwnership.Device,
             _ => SourceOwnership.Unavailable

@@ -1,25 +1,25 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Services;
 
 /// <summary>
-///     Runs a plugin's commands, lifecycle transitions and periodic observation one at a time, so a refresh
+///     Runs a device's commands, lifecycle transitions and periodic observation one at a time, so a refresh
 ///     never interleaves with a hardware write.
 /// </summary>
 /// <remarks>
-///     The plugin keeps its own cycle state and supplies three hooks: the descriptor set commands run
+///     The device keeps its own lifetime state and supplies three hooks: the descriptor set commands run
 ///     against while the cycle accepts them, a refresh that re-reads what one capability observes (every
-///     capability when the id is null), and a publication of every current capability state. A plugin that
+///     capability when the id is null), and a publication of every current capability state. A device that
 ///     begins to suspend or stop marks itself quiescing, calls <see cref="StopObservation" />, and then runs
 ///     the transition through <see cref="RunAsync" />, so a command or refresh already in flight finishes
 ///     first and nothing new starts.
 /// </remarks>
 internal sealed class DeviceCommandSerializer : IDisposable
 {
-    /// <summary>How often the observation loop re-reads and republishes what the plugin observes.</summary>
-    /// <remarks>Ten seconds keeps successful publications within WSGM's thirty-second freshness window.</remarks>
+    /// <summary>How often the observation loop re-reads and republishes what the device observes.</summary>
+    /// <remarks>Ten seconds bounds routine observation traffic between explicit commands.</remarks>
     private static readonly TimeSpan ObservationInterval = TimeSpan.FromSeconds(10);
 
     /// <summary>How long a pass waits for an in-flight command before skipping; the command republishes.</summary>
@@ -33,6 +33,7 @@ internal sealed class DeviceCommandSerializer : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Func<CancellationToken, ValueTask> _publish;
     private readonly Func<string?, CancellationToken, ValueTask> _refresh;
+    private readonly SemaphoreSlim _refreshRequested = new(0, 1);
     private CancellationTokenSource? _observation;
     private CancellationToken _observationToken;
 
@@ -107,21 +108,19 @@ internal sealed class DeviceCommandSerializer : IDisposable
     /// <summary>Admits a command, runs it in its serialized turn, and republishes what it changed.</summary>
     /// <param name="command">The command.</param>
     /// <param name="execute">
-    ///     Revalidates identity, generations, deadline, value and service availability, then returns a truthful
+    ///     Revalidates deadline, value and service availability, then returns a truthful
     ///     result. The serializer does not impose these checks or translate exceptions from this callback.
     /// </param>
     /// <param name="cancellationToken">Cancels gate acquisition and is passed to execution and publication.</param>
     /// <returns>
     ///     Rejected if quiescing or canceled before gate acquisition; otherwise the callback's result, except
-    ///     an applied scenario becomes indeterminate when resulting state cannot be republished.
+    ///     publication failure is diagnosed without changing an accepted native write outcome.
     /// </returns>
     /// <remarks>
     ///     A command is refused while the cycle is inactive or quiescing, both before and after it waits for
     ///     its turn. After an applied write every state is refreshed and republished within the command's
-    ///     deadline, at most two seconds, so adjacent rows such as a paired power limit or fan telemetry follow
-    ///     at once. Losing that publication does not change the result, with one exception: a scenario change
-    ///     resets the power limits, and a host must see them before it orders its next watt writes, so a
-    ///     scenario whose resulting limits could not be published is indeterminate.
+    ///     deadline, at most two seconds, so adjacent rows follow promptly. Publication failure is
+    ///     logged and never changes an acknowledged hardware result.
     /// </remarks>
     public async ValueTask<CapabilityCommandResult> ExecuteAsync(
         CapabilityCommand command,
@@ -152,7 +151,7 @@ internal sealed class DeviceCommandSerializer : IDisposable
 
         try
         {
-            if (_acceptingSurface() is not { } surface)
+            if (_acceptingSurface() is null)
             {
                 return CommandResults.Rejected(
                     command,
@@ -161,23 +160,12 @@ internal sealed class DeviceCommandSerializer : IDisposable
             }
 
             var result = await execute(cancellationToken).ConfigureAwait(false);
-            if (result.Outcome is not (CommandOutcome.AppliedVerified or CommandOutcome.AppliedUnverified)
-                || await RepublishAsync(command, cancellationToken).ConfigureAwait(false)
-                || !surface.Descriptors.Any(descriptor =>
-                    descriptor.CapabilityId == command.CapabilityId && descriptor.Role is CapabilityRole.ScenarioMode))
+            if (result.Outcome == CommandOutcome.Applied)
             {
-                return result;
+                await RepublishAsync(command, cancellationToken).ConfigureAwait(false);
             }
 
-            return result with
-            {
-                Outcome = CommandOutcome.Indeterminate,
-                ReadbackValue = null,
-                Rollback = RollbackResult.NotRequired,
-                Reason = new CapabilityReason(
-                    CapabilityReasonCode.HostUnavailable,
-                    "The scenario was written, but its resulting power limits could not be published.")
-            };
+            return result;
         }
         finally
         {
@@ -193,6 +181,20 @@ internal sealed class DeviceCommandSerializer : IDisposable
         _observation = loop;
         _observationToken = loop.Token;
         _ = Task.Run(() => ObserveAsync(loop.Token), loop.Token);
+    }
+
+    internal void RequestObservation()
+    {
+        try
+        {
+            _refreshRequested.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     /// <summary>Requests cancellation of periodic refresh and any post-command publication without joining them.</summary>
@@ -226,15 +228,20 @@ internal sealed class DeviceCommandSerializer : IDisposable
     /// </remarks>
     private async Task ObserveAsync(CancellationToken cancellationToken)
     {
-        using PeriodicTimer timer = new(ObservationInterval);
         try
         {
-            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            while (!cancellationToken.IsCancellationRequested)
             {
-                if (_acceptingSurface() is null
-                    || !await _gate.WaitAsync(ObservationCommandWait, cancellationToken).ConfigureAwait(false))
+                await _refreshRequested.WaitAsync(ObservationInterval, cancellationToken).ConfigureAwait(false);
+                if (_acceptingSurface() is null)
                 {
-                    // Inactive, or a command is in flight and republishes on its own.
+                    continue;
+                }
+
+                if (!await _gate.WaitAsync(ObservationCommandWait, cancellationToken).ConfigureAwait(false))
+                {
+                    RequestObservation();
+                    await Task.Delay(ObservationCommandWait, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 

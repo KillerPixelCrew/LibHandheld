@@ -1,8 +1,9 @@
+using System.Collections.Concurrent;
+using LibHandheld.Contracts;
+using LibHandheld.Families.Generic;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Internal.Windows;
@@ -10,28 +11,30 @@ using LibHandheld.Internal.Windows;
 namespace LibHandheld.Internal.Devices;
 
 /// <summary>A model profile selects codecs; this engine owns the common lifecycle and semantic operations.</summary>
-internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
+internal sealed partial class ProfiledDeviceEngine : NativeEngine
 {
+    private readonly ConcurrentDictionary<string, bool> _accessoryChanges = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HidCollection> _accessoryCollections = new(StringComparer.OrdinalIgnoreCase);
     private readonly DeviceCommandSerializer _commands;
     private readonly Lock _inputGate = new();
+    private readonly List<ProfiledFeatureService> _nativeServices = [];
     private readonly Dictionary<string, CanonicalButtons> _oemHeld = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _oemPressIds = new(StringComparer.Ordinal);
     private readonly Func<EcFanProfile, IEmbeddedController> _openEc;
-    private readonly Func<ICpuPowerTransport> _openPower;
+    private readonly Func<ICpuPowerTransport>? _openPower;
     private readonly ProfiledDeviceModel _profile;
     private readonly List<DeviceService<ProfiledCycleIdentity>> _services = [];
+    private HidInterfaceNotifications? _accessoryNotifications;
     private CanonicalButtons _buttons;
     private ProfiledControllerService? _controller;
-    private long _cycle;
     private ProfiledCycleIdentity _cycleIdentity = new("unknown");
     private ProfiledFanService? _fan;
-    private long _generation;
+    private ProfiledFeatureContext? _featureContext;
     private DeviceIdentitySnapshot? _identity;
-    private ProfiledRecoveryJournal? _journal;
+    private DeviceRecoveryJournal? _journal;
     private bool _manageController;
     private StandardMotionSource? _motion;
-    private ProfiledFeatureService? _native;
-    private long _nativeDescriptorGeneration;
+    private Task _oemPublication = Task.CompletedTask;
     private long _oemSequence;
     private ProfiledPowerService? _power;
     private volatile bool _quiescing = true;
@@ -40,12 +43,12 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
     private StandardControllerTouchpad? _touchpad;
 
     internal ProfiledDeviceEngine(ProfiledDeviceModel profile)
-        : this(profile, () => profile.Cpu == CpuPowerKind.Amd ? AmdSmuTransport.Open() : IntelPowerTransport.Open(),
+        : this(profile, null,
             fan => PawnIoEmbeddedController.OpenIndexed(fan.IndexPort, fan.DataPort))
     {
     }
 
-    internal ProfiledDeviceEngine(ProfiledDeviceModel profile, Func<ICpuPowerTransport> openPower,
+    internal ProfiledDeviceEngine(ProfiledDeviceModel profile, Func<ICpuPowerTransport>? openPower,
         Func<EcFanProfile, IEmbeddedController> openEc)
     {
         _profile = profile;
@@ -55,32 +58,21 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
             RefreshAsync, PublishAsync);
     }
 
-    public string PackageId => _profile.Definition.FamilyId;
 
-    public ValueTask<PluginDetectionResult> DetectAsync(PluginDetectionContext context, CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested();
-        var matched = _profile.Matches(context.Identity);
-        _identity = matched ? context.Identity : null;
-        return ValueTask.FromResult(new PluginDetectionResult
-        {
-            Matched = matched,
-            DeviceDefinitionId = matched ? _profile.Definition.Id : null
-        });
-    }
-
-    public ValueTask<PluginStartResult> StartAsync(PluginStartContext context, CancellationToken token)
+    public ValueTask<EngineStartResult> StartAsync(EngineStartContext context, CancellationToken token)
     {
         return _commands.RunAsync(async () =>
         {
-            if (_identity is null || context.DeviceDefinitionId != _profile.Definition.Id)
+            _identity = context.Identity;
+            if (context.DeviceDefinitionId != _profile.Definition.Id)
             {
                 throw new InvalidOperationException(
                     "An exact device identity must be selected before native acquisition.");
             }
 
             _sink = context.Host;
-            _cycle = context.CycleGeneration;
+            _services.Clear();
+
             _manageController = context.ControllerManagementEnabled;
             lock (_inputGate)
             {
@@ -90,21 +82,69 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
 
             _cycleIdentity = new ProfiledCycleIdentity(string.Join("|", _profile.Definition.Id,
                 _identity.BiosVersion ?? "unknown-bios", _identity.EcFirmwareVersion ?? "unknown-ec"));
-            _journal = await ProfiledRecoveryJournal.Open(context.StateDirectory, token).ConfigureAwait(false);
-            _power = new ProfiledPowerService(_openPower, _journal);
-            _services.Add(_power);
-            if (_profile.Fan is { } fan)
+            _journal = context.Journal;
+            var featureContext =
+                new ProfiledFeatureContext(context.StateDirectory, _cycleIdentity.Firmware, context.Host)
+                {
+                    Journal = context.Journal, Resources = context.Resources,
+                    ControllerManagementEnabled = _manageController, Identity = context.Identity,
+                    DeviceDefinitionId = context.DeviceDefinitionId
+                };
+            _featureContext = featureContext;
+            try
             {
-                _fan = new ProfiledFanService(fan, () => _openEc(fan), _journal);
-                _services.Add(_fan);
+                _accessoryNotifications = new HidInterfaceNotifications(AsusAuraProtocol.Vendor,
+                    AsusAuraTransport.Products, (path, arrived) =>
+                    {
+                        _accessoryChanges[path] = arrived;
+                        _commands.RequestObservation();
+                    });
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                DeviceTrace.Warn("asus-accessories", exception.Message);
             }
 
-            if (_profile.CreateNativeService is { } native)
+            if (_profile.UseStandardServices)
             {
-                _native = native(
-                    new ProfiledFeatureContext(context.StateDirectory, _cycleIdentity.Firmware, context.Host)
-                        { ControllerManagementEnabled = _manageController });
-                _services.Add(_native);
+                _power = new ProfiledPowerService(() => OpenPower(featureContext), _journal, _profile);
+                _services.Add(_power);
+                if (_profile.Fan is { } fan)
+                {
+                    _fan = new ProfiledFanService(fan, () => _openEc(fan), _journal);
+                    _services.Add(_fan);
+                }
+            }
+
+            _nativeServices.Clear();
+            foreach (var factory in _profile.ServiceFactories)
+            {
+                var service = factory(featureContext);
+                _nativeServices.Add(service);
+                _services.Add(service);
+            }
+
+            _accessoryCollections.Clear();
+            if (GenericAsusService.MatchesAccessoryIdentity(context.Identity))
+            {
+                foreach (var collection in AsusAuraTransport.DiscoverCollections())
+                {
+                    _accessoryCollections[collection.DevicePath] = collection;
+                }
+            }
+
+            foreach (var asus in _nativeServices.OfType<GenericAsusService>())
+            {
+                asus.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
+            }
+
+            if (!_nativeServices.Any(service => service is GenericAsusService)
+                && GenericAsusService.MatchesAccessoryIdentity(context.Identity))
+            {
+                var accessories = new GenericAsusService(featureContext, firmwareControls: false);
+                accessories.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
+                _nativeServices.Add(accessories);
+                _services.Add(accessories);
             }
 
             if (_profile.Motion is { } motion)
@@ -155,7 +195,6 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
                 await DeviceServiceLifecycle
                     .RollBackStartAsync(_services, Context(Deadline.After(TimeSpan.FromSeconds(5))), _sink, _surface)
                     .ConfigureAwait(false);
-                _services.Clear();
                 throw;
             }
         }, token);
@@ -173,12 +212,6 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
                     "This model has no writable capability with that identity.");
             }
 
-            if (command.ExpectedCycleGeneration != _cycle ||
-                command.ExpectedDescriptorGeneration != _surface!.Generation)
-            {
-                return CommandResults.Rejected(command, CapabilityReasonCode.GenerationChanged,
-                    "The device generation changed.");
-            }
 
             if (!DeviceWriteBudget.IsAvailable(command.Deadline) || cancellation.IsCancellationRequested)
             {
@@ -186,81 +219,19 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
                     "The device command has expired.");
             }
 
-            var value = command.RequestedValue;
-            if (value is null
-                    ? !descriptor.SupportsAction
-                    : !descriptor.SupportsWrite || !CapabilityValueValidation.ValueMatches(value, descriptor, out _))
+            if (CommandAdmission.Validate(command, descriptor, _surface!.Descriptors) is { } invalid)
             {
-                return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
-                    "The value does not fit the selected model's capability.");
+                return CommandResults.Rejected(command, invalid);
             }
 
-            if (_native is not null && _native.Descriptors.Any(item =>
-                    item.CapabilityId == command.CapabilityId && item.InstanceId == command.InstanceId))
-            {
-                return await _native.ExecuteAsync(command, _cycleIdentity.Firmware, cancellation).ConfigureAwait(false);
-            }
-
-            if (value is null)
-            {
-                return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
-                    "This action is handled by the physical output stream.");
-            }
-
-            var dispatched = false;
-            try
-            {
-                switch (descriptor.Role)
-                {
-                    case CapabilityRole.PowerSustainedLimit:
-                    case CapabilityRole.PowerSlowLimit:
-                        if (_power?.State != DeviceServiceState.Owned)
-                        {
-                            return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
-                                "CPU power access is unavailable.");
-                        }
-
-                        if (!DevicePowerPair.TryResolve(command, _surface.Descriptors, out var sustained, out var boost,
-                                out var error))
-                        {
-                            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
-                        }
-
-                        await _power.WriteAsync(new CpuPowerLimits(sustained, boost, boost), _cycleIdentity.Firmware,
-                            cancellation,
-                            () => dispatched = true).ConfigureAwait(false);
-                        break;
-                    case CapabilityRole.FanMode:
-                    case CapabilityRole.FanDuty:
-                        if (_fan?.State != DeviceServiceState.Owned)
-                        {
-                            return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
-                                "The model's EC fan access is unavailable.");
-                        }
-
-                        await _fan.WriteAsync(descriptor.Role == CapabilityRole.FanMode ? value.ChoiceValue! : "custom",
-                            descriptor.Role == CapabilityRole.FanDuty ? value.IntegerValue : null,
-                            _cycleIdentity.Firmware, cancellation,
-                            () => dispatched = true).ConfigureAwait(false);
-                        break;
-                    default:
-                        return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
-                            "The capability is observed through its native service.");
-                }
-
-                return CommandResults.Unverified(command);
-            }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
-            {
-                return dispatched
-                    ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                        exception.Message, RollbackResult.NotRequired)
-                    : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
-            }
+            return _controlOwners.TryGetValue((command.CapabilityId, command.InstanceId), out var owner)
+                ? await owner.ExecuteAsync(command, _cycleIdentity.Firmware, cancellation).ConfigureAwait(false)
+                : CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
+                    "The native service no longer owns this control.");
         }, token);
     }
 
-    public ValueTask SuspendAsync(PluginQuiesceContext context, CancellationToken token)
+    public ValueTask SuspendAsync(EngineQuiesceContext context, CancellationToken token)
     {
         _quiescing = true;
         _commands.StopObservation();
@@ -276,11 +247,10 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
         }, token);
     }
 
-    public ValueTask<PluginStartResult> ResumeAsync(PluginResumeContext context, CancellationToken token)
+    public ValueTask<EngineStartResult> ResumeAsync(EngineResumeContext context, CancellationToken token)
     {
         return _commands.RunAsync(async () =>
         {
-            _cycle = context.CycleGeneration;
             await DeviceServiceLifecycle.AcquireAllAsync(WantedServices(), Context(context.Deadline), token)
                 .ConfigureAwait(false);
             _quiescing = false;
@@ -293,12 +263,12 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
         }, token);
     }
 
-    public ValueTask ReleaseControllerAsync(PluginControllerReleaseContext context, CancellationToken token)
+    public ValueTask ReleaseControllerAsync(EngineControllerReleaseContext context, CancellationToken token)
     {
-        return SetControllerManagementAsync(new PluginControllerManagementContext(false, context.Deadline), token);
+        return SetControllerManagementAsync(new EngineControllerManagementContext(false, context.Deadline), token);
     }
 
-    public ValueTask SetControllerManagementAsync(PluginControllerManagementContext context, CancellationToken token)
+    public ValueTask SetControllerManagementAsync(EngineControllerManagementContext context, CancellationToken token)
     {
         return _commands.RunAsync(async () =>
         {
@@ -307,7 +277,8 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
                 return;
             }
 
-            foreach (var service in _services.Where(service => service.ServiceId is "controller" or "oem" or "touchpad")
+            foreach (var service in _services
+                         .Where(service => service.RequiresControllerOwnership || service is ProfiledOemService)
                          .Reverse())
             {
                 await DeviceServiceLifecycle.ReleaseAsync(service, Context(context.Deadline), token)
@@ -315,7 +286,7 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
             }
 
             if (_services.Any(service =>
-                    (service.ServiceId is "controller" or "oem" or "touchpad") &&
+                    (service.RequiresControllerOwnership || service is ProfiledOemService) &&
                     service.State != DeviceServiceState.Idle))
             {
                 throw new InvalidOperationException(
@@ -329,13 +300,13 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
                 _oemHeld.Clear();
             }
 
-            if (_native is not null)
+            foreach (var native in _nativeServices)
             {
-                await _native.SetControllerManagementAsync(context.Enabled, token).ConfigureAwait(false);
+                await native.SetControllerManagementAsync(context.Enabled, token).ConfigureAwait(false);
             }
 
             foreach (var service in WantedServices()
-                         .Where(service => service.ServiceId is "controller" or "oem" or "touchpad"))
+                         .Where(service => service.RequiresControllerOwnership || service is ProfiledOemService))
             {
                 await DeviceServiceLifecycle.AcquireAsync(service, Context(context.Deadline), token)
                     .ConfigureAwait(false);
@@ -346,28 +317,26 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
         }, token);
     }
 
-    public ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken token)
+    public async ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         if (!_quiescing && _manageController)
         {
-            _controller?.Rumble(frame);
+            foreach (var service in _services)
+            {
+                await service.ApplyHapticOutputAsync(frame, token).ConfigureAwait(false);
+            }
         }
-
-        return ValueTask.CompletedTask;
     }
 
-    public ValueTask<PluginDiagnostics> GetDiagnosticsAsync(CancellationToken token)
+    public ValueTask<IReadOnlyDictionary<string, string>> GetDiagnosticsAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(new PluginDiagnostics
-        {
-            Values = _services.ToDictionary(service => service.ServiceId,
-                service => service.State.ToString(), StringComparer.Ordinal)
-        });
+        return ValueTask.FromResult<IReadOnlyDictionary<string, string>>(_services.ToDictionary(
+            service => service.ServiceId, service => service.State.ToString(), StringComparer.Ordinal));
     }
 
-    public ValueTask<PluginStopResult> StopAsync(PluginStopContext context, CancellationToken token)
+    public ValueTask<EngineStopResult> StopAsync(EngineStopContext context, CancellationToken token)
     {
         _quiescing = true;
         _commands.StopObservation();
@@ -389,30 +358,57 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
                 await _sink.PublishOemControlsAsync([], CancellationToken.None).ConfigureAwait(false);
             }
 
-            if (!failed && !unverified)
-            {
-                _services.Clear();
-            }
-
             _surface = null;
-            return new PluginStopResult
+            return new EngineStopResult
             {
-                Status = failed ? PluginStopStatus.Failed :
-                    unverified ? PluginStopStatus.Unverified : PluginStopStatus.Clean
+                Status = failed ? EngineStopStatus.Failed :
+                    unverified ? EngineStopStatus.Unverified : EngineStopStatus.Clean
             };
         }, token);
     }
 
     public async ValueTask DisposeAsync()
     {
-        await StopAsync(new PluginStopContext(PluginStopReason.WsgmExiting, Deadline.Never), CancellationToken.None)
-            .ConfigureAwait(false);
+        _quiescing = true;
+        _accessoryNotifications?.Dispose();
+        _accessoryNotifications = null;
+        _commands.StopObservation();
+        await _commands.RunAsync(async () =>
+        {
+            foreach (var service in _services.AsEnumerable().Reverse())
+            {
+                await service.DisposeAsync().ConfigureAwait(false);
+            }
+
+            await _oemPublication.ConfigureAwait(false);
+            _services.Clear();
+        }, CancellationToken.None).ConfigureAwait(false);
         _commands.Dispose();
+    }
+
+    private ICpuPowerTransport OpenPower(ProfiledFeatureContext context)
+    {
+        if (_openPower is not null)
+        {
+            return _openPower();
+        }
+
+        if (_profile.OpenPower is not null)
+        {
+            return _profile.OpenPower(context);
+        }
+
+        if (_profile.Cpu == CpuPowerKind.Amd)
+        {
+            return AmdSmuTransport.Open();
+        }
+
+        return IntelPowerTransport.Open(context.Resources.IntelKxPath);
     }
 
     private DeviceCycleContext<ProfiledCycleIdentity> Context(Deadline deadline)
     {
-        return new DeviceCycleContext<ProfiledCycleIdentity>(_cycle, deadline, _cycleIdentity);
+        return new DeviceCycleContext<ProfiledCycleIdentity>(deadline, _cycleIdentity);
     }
 
     private IEnumerable<DeviceService<ProfiledCycleIdentity>> WantedServices()
@@ -422,16 +418,13 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
 
     private bool IsWanted(DeviceServiceStatus service)
     {
-        return _manageController || (service.ServiceId switch
+        return _manageController || service is not DeviceService<ProfiledCycleIdentity>
         {
-            "controller" or "touchpad" => false,
-            "oem" => _profile.KeyboardChords.Any(chord => !chord.RequiresController) ||
-                     !_profile.NativeOemRequiresController,
-            _ => true
-        });
+            RequiresControllerOwnership: true
+        };
     }
 
-    private PluginStartResult Result()
+    private EngineStartResult Result()
     {
         return DeviceServiceLifecycle.StartResult(_services,
             IsWanted, "No model service could be acquired.", _sink);
@@ -459,31 +452,64 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
 
             if (down || !_oemPressIds.TryGetValue(id, out pressId!))
             {
-                pressId = $"{_cycle}:{id}:{++_oemSequence}";
+                pressId = $"{id}:{++_oemSequence}";
                 _oemPressIds[id] = pressId;
             }
         }
 
         if (_sink is { } sink && !_quiescing)
         {
-            sink.PublishOemEventAsync(new OemControlEvent(id, OemPressKind.Short, DateTimeOffset.UtcNow,
-                    pressId, down ? OemControlEdge.Pressed : OemControlEdge.Released), CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
+            var input = new OemControlEvent(id, OemPressKind.Short, DateTimeOffset.UtcNow,
+                pressId, down ? OemControlEdge.Pressed : OemControlEdge.Released);
+            lock (_inputGate)
+            {
+                if (!_oemPublication.IsCompletedSuccessfully)
+                {
+                    _oemPublication = PublishOemAfterAsync(_oemPublication, sink, input);
+                    return;
+                }
+
+                var publication = sink.PublishOemEventAsync(input, CancellationToken.None);
+                if (publication.IsCompletedSuccessfully)
+                {
+                    publication.GetAwaiter().GetResult();
+                }
+                else
+                {
+                    _oemPublication = FinishOemPublicationAsync(publication);
+                }
+            }
+        }
+    }
+
+    private static async Task PublishOemAfterAsync(Task previous, IDeviceSink sink, OemControlEvent input)
+    {
+        await previous.ConfigureAwait(false);
+        await FinishOemPublicationAsync(sink.PublishOemEventAsync(input, CancellationToken.None)).ConfigureAwait(false);
+    }
+
+    private static async Task FinishOemPublicationAsync(ValueTask publication)
+    {
+        try
+        {
+            await publication.ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            DeviceTrace.Change("oem", "publication", exception.Message, DeviceTraceLevel.Warn);
         }
     }
 
     private async ValueTask RefreshAsync(string? id, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _power?.Refresh();
-        _fan?.Refresh();
-        if (_native is not null)
+        await ObserveAccessoriesAsync(token).ConfigureAwait(false);
+        foreach (var service in _services)
         {
-            await _native.RefreshAsync(token).ConfigureAwait(false);
+            await service.RefreshAsync(token).ConfigureAwait(false);
         }
 
-        if (_native is not null && _nativeDescriptorGeneration != _native.DescriptorGeneration)
+        if (_nativeServices.Any(service => service.DescriptorsChanged))
         {
             BuildSurface();
             await _sink!.PublishDescriptorsAsync(_surface!, token).ConfigureAwait(false);
@@ -504,17 +530,65 @@ internal sealed partial class ProfiledDeviceEngine : IDeviceEngine
         }
     }
 
+    private async ValueTask ObserveAccessoriesAsync(CancellationToken token)
+    {
+        if (_accessoryChanges.IsEmpty || _featureContext is null)
+        {
+            return;
+        }
+
+        foreach (var change in _accessoryChanges)
+        {
+            if (!_accessoryChanges.TryRemove(change.Key, out var arrived))
+            {
+                continue;
+            }
+
+            if (!arrived)
+            {
+                _accessoryCollections.Remove(change.Key);
+                continue;
+            }
+
+            var collection = HidDevices.DescribePath(change.Key);
+            if (collection is not null && collection.VendorId == AsusAuraProtocol.Vendor
+                                       && AsusAuraTransport.Products.Contains(collection.ProductId)
+                                       && !string.IsNullOrWhiteSpace(collection.PhysicalLocation))
+            {
+                _accessoryCollections[change.Key] = collection;
+            }
+        }
+
+        var asus = _nativeServices.OfType<GenericAsusService>().SingleOrDefault();
+        if (asus is null && _accessoryCollections.Count > 0)
+        {
+            asus = new GenericAsusService(_featureContext, firmwareControls: false);
+            _nativeServices.Add(asus);
+            _services.Add(asus);
+            asus.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
+            await DeviceServiceLifecycle.AcquireAsync(asus, Context(Deadline.After(TimeSpan.FromSeconds(2))), token)
+                .ConfigureAwait(false);
+            BuildSurface();
+            await _sink!.PublishDescriptorsAsync(_surface!, token).ConfigureAwait(false);
+        }
+        else
+        {
+            asus?.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
+        }
+    }
+
     private ValueTask PublishOemDescriptorsAsync(CancellationToken token)
     {
         return _sink!.PublishOemControlsAsync(
             Array.AsReadOnly(_profile.OemControls
                 .Where(control => _manageController || !control.RequiresControllerAcquisition)
+                .Concat(_nativeServices.SelectMany(service => service.OemControls))
                 .Concat(_profile.KeyboardChords.Where(chord => _manageController || !chord.RequiresController)
                     .GroupBy(chord => chord.Id, StringComparer.Ordinal).Select(group => group.First()).Select(chord =>
                         new OemControlDescriptor
                         {
                             ControlId = chord.Id,
-                            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = chord.Label },
+                            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = chord.Label },
                             Placement = chord.Button is CanonicalButtons.RearPaddle1 or CanonicalButtons.RearPaddle2
                                 or CanonicalButtons.RearPaddle3 or CanonicalButtons.RearPaddle4
                                 ? OemControlPlacement.Rear

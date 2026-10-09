@@ -89,6 +89,121 @@ internal static partial class HidDevices
         PropertyId = 37
     };
 
+    internal static HidCollection? Unique(IEnumerable<HidCollection> collections, Func<HidCollection, bool> matches)
+    {
+        HidCollection? result = null;
+        foreach (var collection in collections)
+        {
+            if (!matches(collection))
+            {
+                continue;
+            }
+
+            if (result is not null)
+            {
+                return null;
+            }
+
+            result = collection;
+        }
+
+        return result;
+    }
+
+    internal static HidCollection? DescribePath(string path)
+    {
+        var set = SetupDiCreateDeviceInfoList(0, 0);
+        if (set == InvalidHandleValue)
+        {
+            return null;
+        }
+
+        try
+        {
+            DeviceInterfaceData entry = new() { Size = (uint)Marshal.SizeOf<DeviceInterfaceData>() };
+            if (!SetupDiOpenDeviceInterface(set, path, 0, ref entry))
+            {
+                return null;
+            }
+
+            _ = SetupDiGetDeviceInterfaceDetail(set, ref entry, 0, 0, out var required, 0);
+            if (required == 0)
+            {
+                return null;
+            }
+
+            var detail = Marshal.AllocHGlobal(checked((int)required));
+            try
+            {
+                Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);
+                DeviceInfoData info = new() { Size = (uint)Marshal.SizeOf<DeviceInfoData>() };
+                return SetupDiGetDeviceInterfaceDetail(set, ref entry, detail, required, out _, ref info)
+                    ? TryDescribe(path, set, info, static _ => true, out _)
+                    : null;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(detail);
+            }
+        }
+        finally
+        {
+            _ = SetupDiDestroyDeviceInfoList(set);
+        }
+    }
+
+    internal static async ValueTask<byte[]> ReadMatchingAsync(FileStream stream, int reportLength,
+        Func<byte[], bool> matches, CancellationToken token)
+    {
+        var report = new byte[reportLength];
+        while (true)
+        {
+            var offset = 0;
+            while (offset < report.Length)
+            {
+                var count = await stream.ReadAsync(report.AsMemory(offset), token).ConfigureAwait(false);
+                if (count == 0)
+                {
+                    throw new EndOfStreamException("The HID collection closed before its reply.");
+                }
+
+                offset += count;
+            }
+
+            if (matches(report))
+            {
+                return report;
+            }
+        }
+    }
+
+    internal static bool GetFeature(SafeFileHandle handle, byte[] report)
+    {
+        return NativeHid.HidD_GetFeature(handle, report, report.Length);
+    }
+
+    internal static bool GetInputReport(SafeFileHandle handle, byte[] report)
+    {
+        return NativeHid.HidD_GetInputReport(handle, report, report.Length);
+    }
+
+    internal static async ValueTask<byte[]> ExchangeAsync(FileStream stream, ReadOnlyMemory<byte> request,
+        int responseLength, Func<byte[], bool> matches, TimeSpan timeout, CancellationToken token,
+        TimeSpan settle = default)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(token);
+        bounded.CancelAfter(timeout);
+        // Submit once. Unrelated queued reports are read without resending the command.
+        await stream.WriteAsync(request, bounded.Token).ConfigureAwait(false);
+        await stream.FlushAsync(bounded.Token).ConfigureAwait(false);
+        if (settle > TimeSpan.Zero)
+        {
+            await Task.Delay(settle, bounded.Token).ConfigureAwait(false);
+        }
+
+        return await ReadMatchingAsync(stream, responseLength, matches, bounded.Token).ConfigureAwait(false);
+    }
+
     /// <summary>Whether an interface or instance path belongs to one of the given products.</summary>
     /// <param name="path">The path.</param>
     /// <param name="vendorId">The USB vendor ID.</param>
@@ -98,9 +213,8 @@ internal static partial class HidDevices
     {
         ArgumentNullException.ThrowIfNull(path);
         ArgumentNullException.ThrowIfNull(productIds);
-        return productIds.Any(product => path.Contains(
-            string.Create(CultureInfo.InvariantCulture, $"VID_{vendorId:X4}&PID_{product:X4}"),
-            StringComparison.OrdinalIgnoreCase));
+        return UsbIds.Parse(path, "VID_") == vendorId && UsbIds.Parse(path, "PID_") is { } product
+                                                      && productIds.Contains(product);
     }
 
     /// <summary>Every present HID collection of the given products.</summary>
@@ -143,38 +257,55 @@ internal static partial class HidDevices
     public static IReadOnlyList<DeviceNode> PresentNodes(ushort vendorId, IReadOnlyCollection<ushort> productIds)
     {
         ArgumentNullException.ThrowIfNull(productIds);
-        var set = SetupDiGetClassDevsAll(0, null, 0, DigcfPresent | DigcfAllClasses);
-        if (set == InvalidHandleValue)
-        {
-            return [];
-        }
-
+        var prefixes = productIds.Select(product => $"VID_{vendorId:X4}&PID_{product:X4}").ToArray();
+        var buffer = new StringBuilder(1024);
         List<DeviceNode> nodes = [];
-        try
+        foreach (var enumerator in new[] { "USB", "HID" })
         {
-            for (uint index = 0;; index++)
+            var set = SetupDiGetClassDevsAll(0, enumerator, 0, DigcfPresent | DigcfAllClasses);
+            if (set == InvalidHandleValue)
             {
-                DeviceInfoData info = new() { Size = (uint)Marshal.SizeOf<DeviceInfoData>() };
-                if (!SetupDiEnumDeviceInfo(set, index, ref info))
+                continue;
+            }
+
+            try
+            {
+                for (uint index = 0;; index++)
                 {
-                    if (Marshal.GetLastPInvokeError() == ErrorNoMoreItems)
+                    DeviceInfoData info = new() { Size = (uint)Marshal.SizeOf<DeviceInfoData>() };
+                    if (!SetupDiEnumDeviceInfo(set, index, ref info))
                     {
-                        break;
+                        if (Marshal.GetLastPInvokeError() == ErrorNoMoreItems)
+                        {
+                            break;
+                        }
+
+                        continue;
                     }
 
-                    continue;
-                }
+                    buffer.Clear();
+                    if (!SetupDiGetDeviceInstanceId(set, ref info, buffer, buffer.Capacity, out _))
+                    {
+                        continue;
+                    }
 
-                var instance = ReadInstancePath(set, info);
-                if (MatchesProduct(instance, vendorId, productIds))
-                {
-                    nodes.Add(new DeviceNode(instance, info.ClassGuid, ReadPhysicalLocation(info.DeviceInstance)));
+                    var instance = buffer.ToString();
+                    var matches = false;
+                    foreach (var prefix in prefixes)
+                    {
+                        matches |= instance.Contains(prefix, StringComparison.OrdinalIgnoreCase);
+                    }
+
+                    if (matches)
+                    {
+                        nodes.Add(new DeviceNode(instance, info.ClassGuid, ReadPhysicalLocation(info.DeviceInstance)));
+                    }
                 }
             }
-        }
-        finally
-        {
-            _ = SetupDiDestroyDeviceInfoList(set);
+            finally
+            {
+                _ = SetupDiDestroyDeviceInfoList(set);
+            }
         }
 
         return nodes;
@@ -198,7 +329,8 @@ internal static partial class HidDevices
     public static SafeFileHandle Open(HidCollection collection, bool overlapped)
     {
         ArgumentNullException.ThrowIfNull(collection);
-        var handle = CreateFile(collection.DevicePath, GenericRead | GenericWrite, FileShareRead | FileShareWrite, 0,
+        var handle = NativeDevice.CreateFile(collection.DevicePath, GenericRead | GenericWrite,
+            FileShareRead | FileShareWrite, 0,
             OpenExisting, overlapped ? FileFlagOverlapped : 0, 0);
         if (!handle.IsInvalid)
         {
@@ -241,7 +373,7 @@ internal static partial class HidDevices
             using var handle = Open(collection, false);
             var buffer = new byte[collection.FeatureLength];
             buffer[0] = reportId;
-            return HidD_GetFeature(handle, buffer, buffer.Length);
+            return NativeHid.HidD_GetFeature(handle, buffer, buffer.Length);
         }
         catch (Win32Exception)
         {
@@ -266,7 +398,7 @@ internal static partial class HidDevices
 
         var buffer = new byte[collection.FeatureLength];
         report.CopyTo(buffer);
-        if (!HidD_SetFeature(handle, buffer, buffer.Length))
+        if (!NativeHid.HidD_SetFeature(handle, buffer, buffer.Length))
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError(), "HidD_SetFeature failed; effect unknown.");
         }
@@ -298,11 +430,11 @@ internal static partial class HidDevices
     // The one SetupDi walk behind both enumerations. Null, with the Windows error, when the list cannot be made.
     private static List<HidCollection>? Walk(
         Func<string, bool> acceptsPath,
-        Func<HidAttributes, bool> acceptsAttributes,
+        Func<NativeHid.HidAttributes, bool> acceptsAttributes,
         Action<string, string>? unreadable,
         out int listError)
     {
-        HidD_GetHidGuid(out var hidGuid);
+        NativeHid.HidD_GetHidGuid(out var hidGuid);
         var set = SetupDiGetClassDevs(ref hidGuid, null, 0, DigcfPresent | DigcfDeviceInterface);
         if (set == InvalidHandleValue)
         {
@@ -379,18 +511,18 @@ internal static partial class HidDevices
         string path,
         nint set,
         DeviceInfoData info,
-        Func<HidAttributes, bool> acceptsAttributes,
+        Func<NativeHid.HidAttributes, bool> acceptsAttributes,
         out string? problem)
     {
-        using var handle = CreateFile(path, 0, FileShareRead | FileShareWrite, 0, OpenExisting, 0, 0);
+        using var handle = NativeDevice.CreateFile(path, 0, FileShareRead | FileShareWrite, 0, OpenExisting, 0, 0);
         if (handle.IsInvalid)
         {
             problem = $"could not be opened (error {Marshal.GetLastPInvokeError()})";
             return null;
         }
 
-        HidAttributes attributes = new() { Size = Marshal.SizeOf<HidAttributes>() };
-        if (!HidD_GetAttributes(handle, ref attributes))
+        NativeHid.HidAttributes attributes = new() { Size = Marshal.SizeOf<NativeHid.HidAttributes>() };
+        if (!NativeHid.HidD_GetAttributes(handle, ref attributes))
         {
             problem = "its attributes could not be read";
             return null;
@@ -402,16 +534,16 @@ internal static partial class HidDevices
             return null;
         }
 
-        if (!HidD_GetPreparsedData(handle, out var preparsed))
+        if (!NativeHid.HidD_GetPreparsedData(handle, out var preparsed))
         {
             problem = "no report descriptor";
             return null;
         }
 
-        HidCaps caps;
+        NativeHid.HidCaps caps;
         try
         {
-            if (HidP_GetCaps(preparsed, out caps) != HidpStatusSuccess)
+            if (NativeHid.HidP_GetCaps(preparsed, out caps) != HidpStatusSuccess)
             {
                 problem = "its capabilities could not be read";
                 return null;
@@ -419,7 +551,7 @@ internal static partial class HidDevices
         }
         finally
         {
-            _ = HidD_FreePreparsedData(preparsed);
+            _ = NativeHid.HidD_FreePreparsedData(preparsed);
         }
 
         return new HidCollection
@@ -484,31 +616,6 @@ internal static partial class HidDevices
         return interfaceComponent < 0 ? location : location[..interfaceComponent];
     }
 
-    [LibraryImport("hid.dll")]
-    private static partial void HidD_GetHidGuid(out Guid hidGuid);
-
-    [LibraryImport("hid.dll")]
-    [return: MarshalAs(UnmanagedType.U1)]
-    private static partial bool HidD_GetAttributes(SafeFileHandle device, ref HidAttributes attributes);
-
-    [LibraryImport("hid.dll")]
-    [return: MarshalAs(UnmanagedType.U1)]
-    private static partial bool HidD_GetPreparsedData(SafeFileHandle device, out nint preparsedData);
-
-    [LibraryImport("hid.dll")]
-    [return: MarshalAs(UnmanagedType.U1)]
-    private static partial bool HidD_FreePreparsedData(nint preparsedData);
-
-    [LibraryImport("hid.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.U1)]
-    private static partial bool HidD_SetFeature(SafeFileHandle device, [In] byte[] buffer, int length);
-
-    [LibraryImport("hid.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.U1)]
-    private static partial bool HidD_GetFeature(SafeFileHandle device, [In] [Out] byte[] buffer, int length);
-
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetCaps(nint preparsedData, out HidCaps capabilities);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -518,6 +625,16 @@ internal static partial class HidDevices
     [LibraryImport("setupapi.dll", EntryPoint = "SetupDiGetClassDevsW", StringMarshalling = StringMarshalling.Utf16,
         SetLastError = true)]
     private static partial nint SetupDiGetClassDevs(ref Guid classGuid, string? enumerator, nint parent, uint flags);
+
+    [LibraryImport("setupapi.dll", SetLastError = true)]
+    private static partial nint SetupDiCreateDeviceInfoList(nint classGuid, nint parent);
+
+    [LibraryImport("setupapi.dll", EntryPoint = "SetupDiOpenDeviceInterfaceW",
+        StringMarshalling = StringMarshalling.Utf16,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetupDiOpenDeviceInterface(nint set, string path, uint flags,
+        ref DeviceInterfaceData entry);
 
     [LibraryImport("setupapi.dll", EntryPoint = "SetupDiGetClassDevsW", StringMarshalling = StringMarshalling.Utf16,
         SetLastError = true)]
@@ -560,10 +677,6 @@ internal static partial class HidDevices
     private static partial int CM_Get_DevNode_Property(uint deviceInstance, ref DevPropKey propertyKey,
         out uint propertyType, [Out] byte[] buffer, ref uint bufferLength, uint flags);
 
-    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16,
-        SetLastError = true)]
-    private static partial SafeFileHandle CreateFile(string fileName, uint desiredAccess, uint shareMode,
-        nint securityAttributes, uint creationDisposition, uint flagsAndAttributes, nint templateFile);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct DeviceInterfaceData
@@ -583,38 +696,6 @@ internal static partial class HidDevices
         public nuint Reserved;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct HidAttributes
-    {
-        public int Size;
-        public ushort VendorId;
-        public ushort ProductId;
-        public ushort VersionNumber;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct HidCaps
-    {
-        public ushort Usage;
-        public ushort UsagePage;
-        public ushort InputReportByteLength;
-        public ushort OutputReportByteLength;
-        public ushort FeatureReportByteLength;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 17)]
-        public ushort[] Reserved;
-
-        public ushort NumberLinkCollectionNodes;
-        public ushort NumberInputButtonCaps;
-        public ushort NumberInputValueCaps;
-        public ushort NumberInputDataIndices;
-        public ushort NumberOutputButtonCaps;
-        public ushort NumberOutputValueCaps;
-        public ushort NumberOutputDataIndices;
-        public ushort NumberFeatureButtonCaps;
-        public ushort NumberFeatureValueCaps;
-        public ushort NumberFeatureDataIndices;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct DevPropKey

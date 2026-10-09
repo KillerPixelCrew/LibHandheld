@@ -1,6 +1,6 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Windows;
 
@@ -311,7 +311,7 @@ internal sealed partial class LegacyMotionSensors : IDisposable
     ///     The key is the hardware counter when supported, otherwise the sensor timestamp.
     ///     A present accelerometer that fails to read makes the whole poll fail.
     /// </returns>
-    public MotionSensorReadResult TryRead(out MotionSensorReading reading, out string? error)
+    public MotionSensorReadResult TryRead(out MotionSensorReading reading, out MotionSensorReadError? error)
     {
         lock (_gate)
         {
@@ -319,7 +319,7 @@ internal sealed partial class LegacyMotionSensors : IDisposable
             error = null;
             if (_gyrometer is not { } gyrometer)
             {
-                error = "the IMU handles are closed";
+                error = new MotionSensorReadError(MotionSensorErrorKind.Closed);
                 return MotionSensorReadResult.Failed;
             }
 
@@ -467,19 +467,20 @@ internal sealed partial class LegacyMotionSensors : IDisposable
         out Vector3 angularVelocity,
         out DateTimeOffset timestamp,
         out ulong reportKey,
-        out string? error)
+        out MotionSensorReadError? error)
     {
         angularVelocity = default;
         timestamp = default;
         reportKey = 0;
         error = null;
-        ISensorDataReport? report = null;
+        nint reportPointer = 0;
         try
         {
-            var result = sensor.GetData(out report);
-            if (result < 0 || report is null)
+            var result = sensor.GetData(out reportPointer);
+            var report = new SensorReport(reportPointer);
+            if (result < 0 || reportPointer == 0)
             {
-                error = $"Physical Gyrometer GetData returned 0x{result:X8}";
+                error = new MotionSensorReadError(MotionSensorErrorKind.GyrometerData, result);
                 return MotionSensorReadResult.Failed;
             }
 
@@ -511,12 +512,15 @@ internal sealed partial class LegacyMotionSensors : IDisposable
         }
         catch (Exception ex) when (ex is COMException or InvalidOperationException)
         {
-            error = $"{ex.GetType().Name}: {ex.Message}";
+            error = new MotionSensorReadError(MotionSensorErrorKind.NativeFailure, ex.HResult);
             return MotionSensorReadResult.Failed;
         }
         finally
         {
-            Release(report);
+            if (reportPointer != 0)
+            {
+                Marshal.Release(reportPointer);
+            }
         }
     }
 
@@ -525,10 +529,10 @@ internal sealed partial class LegacyMotionSensors : IDisposable
     ///     otherwise the report timestamp, which is then already read.
     /// </summary>
     private bool TryReadReportKey(
-        ISensorDataReport report,
+        SensorReport report,
         out ulong key,
         out DateTimeOffset timestamp,
-        out string? error)
+        out MotionSensorReadError? error)
     {
         timestamp = default;
         if (_profile.HasCounter)
@@ -548,7 +552,7 @@ internal sealed partial class LegacyMotionSensors : IDisposable
         return true;
     }
 
-    private bool TryReadTimestamp(ISensorDataReport report, out DateTimeOffset timestamp, out string? error)
+    private bool TryReadTimestamp(SensorReport report, out DateTimeOffset timestamp, out MotionSensorReadError? error)
     {
         error = null;
         var result = report.GetTimestamp(out var systemTime);
@@ -558,44 +562,47 @@ internal sealed partial class LegacyMotionSensors : IDisposable
         }
 
         timestamp = default;
-        error = result < 0
-            ? $"{_profile.GyrometerName} timestamp returned 0x{result:X8}"
-            : $"{_profile.GyrometerName} returned an invalid SYSTEMTIME";
+        error = new MotionSensorReadError(MotionSensorErrorKind.Timestamp, result);
         return false;
     }
 
-    private static bool TryReadVector(ISensor sensor, PropertyKey[] axes, out Vector3 value, out string? error)
+    private static bool TryReadVector(ISensor sensor, PropertyKey[] axes, out Vector3 value,
+        out MotionSensorReadError? error)
     {
         value = default;
         error = null;
-        ISensorDataReport? report = null;
+        nint reportPointer = 0;
         try
         {
-            var result = sensor.GetData(out report);
-            if (result >= 0 && report is not null)
+            var result = sensor.GetData(out reportPointer);
+            var report = new SensorReport(reportPointer);
+            if (result >= 0 && reportPointer != 0)
             {
                 return TryReadVector(report, axes, out value, out error);
             }
 
-            error = $"Accelerometer GetData returned 0x{result:X8}";
+            error = new MotionSensorReadError(MotionSensorErrorKind.AccelerometerData, result);
             return false;
         }
         catch (Exception ex) when (ex is COMException or InvalidOperationException)
         {
-            error = $"{ex.GetType().Name}: {ex.Message}";
+            error = new MotionSensorReadError(MotionSensorErrorKind.NativeFailure, ex.HResult);
             return false;
         }
         finally
         {
-            Release(report);
+            if (reportPointer != 0)
+            {
+                Marshal.Release(reportPointer);
+            }
         }
     }
 
     private static bool TryReadVector(
-        ISensorDataReport report,
+        SensorReport report,
         PropertyKey[] axes,
         out Vector3 value,
-        out string? error)
+        out MotionSensorReadError? error)
     {
         value = default;
         if (!TryReadNumericValue(report, axes[0], out var x, out error)
@@ -693,17 +700,17 @@ internal sealed partial class LegacyMotionSensors : IDisposable
     }
 
     private static bool TryReadNumericValue(
-        ISensorDataReport report,
+        SensorReport report,
         PropertyKey key,
         out float value,
-        out string? error)
+        out MotionSensorReadError? error)
     {
         value = 0;
         error = null;
         var result = report.GetSensorValue(ref key, out var variant);
         if (result < 0)
         {
-            error = $"custom field {key.PropertyId} returned 0x{result:X8}";
+            error = new MotionSensorReadError(MotionSensorErrorKind.Field, result, key.PropertyId);
             return false;
         }
 
@@ -719,7 +726,8 @@ internal sealed partial class LegacyMotionSensors : IDisposable
             };
             if (numeric is not { } present || !double.IsFinite(present))
             {
-                error = $"custom field {key.PropertyId} had non-numeric variant type {variant.VariantType}";
+                error = new MotionSensorReadError(MotionSensorErrorKind.VariantType, PropertyId: key.PropertyId,
+                    VariantType: variant.VariantType);
                 return false;
             }
 
@@ -729,7 +737,7 @@ internal sealed partial class LegacyMotionSensors : IDisposable
                 return true;
             }
 
-            error = $"custom field {key.PropertyId} exceeded the finite single-precision range";
+            error = new MotionSensorReadError(MotionSensorErrorKind.NonFiniteValue, PropertyId: key.PropertyId);
             return false;
         }
         finally
@@ -739,17 +747,17 @@ internal sealed partial class LegacyMotionSensors : IDisposable
     }
 
     private static bool TryReadUnsignedValue(
-        ISensorDataReport report,
+        SensorReport report,
         PropertyKey key,
         out uint value,
-        out string? error)
+        out MotionSensorReadError? error)
     {
         value = 0;
         error = null;
         var result = report.GetSensorValue(ref key, out var variant);
         if (result < 0)
         {
-            error = $"custom field {key.PropertyId} returned 0x{result:X8}";
+            error = new MotionSensorReadError(MotionSensorErrorKind.Field, result, key.PropertyId);
             return false;
         }
 
@@ -757,7 +765,8 @@ internal sealed partial class LegacyMotionSensors : IDisposable
         {
             if (variant.VariantType != 19)
             {
-                error = $"custom field {key.PropertyId} had variant type {variant.VariantType}, not VT_UI4";
+                error = new MotionSensorReadError(MotionSensorErrorKind.VariantType, PropertyId: key.PropertyId,
+                    VariantType: variant.VariantType);
                 return false;
             }
 
@@ -823,24 +832,16 @@ internal sealed partial class LegacyMotionSensors : IDisposable
 
         public readonly bool TryToUtc(out DateTimeOffset timestamp)
         {
-            try
+            timestamp = default;
+            if (Year is < 1 or > 9999 || Month is < 1 or > 12 || Day < 1
+                || Day > DateTime.DaysInMonth(Year, Month) || Hour > 23 || Minute > 59 || Second > 59 ||
+                Milliseconds > 999)
             {
-                timestamp = new DateTimeOffset(
-                    Year,
-                    Month,
-                    Day,
-                    Hour,
-                    Minute,
-                    Second,
-                    Milliseconds,
-                    TimeSpan.Zero);
-                return true;
-            }
-            catch (ArgumentOutOfRangeException)
-            {
-                timestamp = default;
                 return false;
             }
+
+            timestamp = new DateTimeOffset(Year, Month, Day, Hour, Minute, Second, Milliseconds, TimeSpan.Zero);
+            return true;
         }
     }
 
@@ -925,7 +926,7 @@ internal sealed partial class LegacyMotionSensors : IDisposable
         int GetState(out int state);
 
         [PreserveSig]
-        int GetData(out ISensorDataReport? report);
+        int GetData(out nint report);
 
         [PreserveSig]
         int SupportsEvent([In] ref Guid eventGuid, out short supported);
@@ -940,20 +941,32 @@ internal sealed partial class LegacyMotionSensors : IDisposable
         int SetEventSink(nint events);
     }
 
-    [ComImport]
-    [Guid("0AB9DF9B-C4B5-4796-8898-0470706A2E1D")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface ISensorDataReport
+    // ISensorDataReport's two consumed IUnknown slots. Report pointers remain borrowed in events
+    // and are released once after GetData; no per-report runtime callable wrapper is created.
+    private readonly unsafe struct SensorReport(nint pointer)
     {
-        [PreserveSig]
-        int GetTimestamp(out SystemTime time);
+        internal int GetTimestamp(out SystemTime value)
+        {
+            value = default;
+            var method = (delegate* unmanaged[Stdcall]<nint, SystemTime*, int>)(*(nint**)pointer)[3];
+            fixed (SystemTime* target = &value)
+            {
+                return method(pointer, target);
+            }
+        }
 
-        [PreserveSig]
-        int GetSensorValue([In] ref PropertyKey key, out PropVariant value);
-
-        [PreserveSig]
-        int GetSensorValues(nint keys, out nint values);
+        internal int GetSensorValue(ref PropertyKey key, out PropVariant value)
+        {
+            value = default;
+            var method = (delegate* unmanaged[Stdcall]<nint, PropertyKey*, PropVariant*, int>)(*(nint**)pointer)[4];
+            fixed (PropertyKey* property = &key)
+            fixed (PropVariant* target = &value)
+            {
+                return method(pointer, property, target);
+            }
+        }
     }
+
 
     [ComImport]
     [Guid("6848F6F2-3155-4F86-B6F5-263EEEAB3143")]

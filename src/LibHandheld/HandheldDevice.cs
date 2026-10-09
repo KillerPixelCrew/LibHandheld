@@ -1,520 +1,392 @@
-using System.Collections.ObjectModel;
 using LibHandheld.Contracts;
 using LibHandheld.Internal;
-using LibHandheld.Internal.Settings;
-using N = LibHandheld.Internal.Plugin;
-using NC = LibHandheld.Internal.Capabilities;
-using NI = LibHandheld.Internal.Input;
-using NL = LibHandheld.Internal.Lifecycle;
+using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Runtime;
+using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Windows;
 
 namespace LibHandheld;
 
-/// <summary>Direct typed access to native handheld services, independent of application policy.</summary>
-/// <remarks>
-///     Consumers can own cycle generations explicitly or use the convenience lifecycle overloads. Await native completion
-///     before disposal; cancellation
-///     requests cooperation and does not prove a dispatched write stopped. No physical resource is opened by detection or
-///     construction.
-/// </remarks>
-public sealed partial class HandheldDevice : IAsyncDisposable, N.IDeviceSink
+/// <summary>Owns one exact handheld's native services and semantic controls.</summary>
+public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
 {
+    private readonly HashSet<(string Id, string? Instance)> _controlIds = [];
     private readonly Action<DeviceLogEntry>? _diagnostics;
-    private readonly N.IDeviceEngine _engine;
-    private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private readonly NativeEngine _engine;
+    private readonly DeviceIdentitySnapshot _identity;
     private readonly Lock _operations = new();
-    private readonly Func<DeviceIdentitySnapshot> _readIdentity;
+    private readonly SemaphoreSlim _owner = new(1, 1);
+    private readonly HandheldResources _resources;
     private readonly string _stateDirectory;
-    private bool _acceptPublications;
-    private long _cycleGeneration;
-    private Task? _disposeTask;
-    private bool _disposing;
-    private TaskCompletionSource? _drained;
-    private int _inFlight;
-    private bool? _ownsCycleGeneration;
-    private bool _startAttempted;
+    private volatile bool _active;
+    private bool _disposed;
     private bool _started;
     private DeviceStopResult? _stopResult;
-    private bool _stopped;
     private bool _suspended;
 
-    private HandheldDevice(HandheldDefinition definition, string stateDirectory, Action<DeviceLogEntry>? diagnostics)
-        : this(definition, stateDirectory, diagnostics, DeviceFamilies.Create(definition))
-    {
-    }
-
-    internal HandheldDevice(HandheldDefinition definition, string stateDirectory, Action<DeviceLogEntry>? diagnostics,
-        N.IDeviceEngine engine, Func<DeviceIdentitySnapshot>? readIdentity = null)
+    internal HandheldDevice(HandheldDefinition definition, DeviceIdentitySnapshot identity, string stateDirectory,
+        Action<DeviceLogEntry>? diagnostics, NativeEngine engine, HandheldResources? resources = null)
     {
         Definition = definition;
+        _identity = identity;
         _stateDirectory = stateDirectory;
         _diagnostics = diagnostics;
         _engine = engine;
-        _readIdentity = readIdentity ?? ReadCurrentIdentity;
+        _resources = resources ?? new HandheldResources();
     }
 
-    /// <summary>All currently implemented exact models. Additional families are added through their native implementations.</summary>
+    /// <summary>Every supported exact model.</summary>
     public static IReadOnlyList<HandheldDefinition> Definitions => DeviceFamilies.Models;
 
-    /// <summary>Exact immutable model selected for this instance.</summary>
+    /// <summary>The exact model selected from the supplied identity.</summary>
     public HandheldDefinition Definition { get; }
 
-    /// <summary>Borrowed typed publication observer. The device never disposes this consumer.</summary>
+    /// <summary>Borrowed publication observer, never disposed by the device.</summary>
     public IHandheldObserver? Observer { get; set; }
 
-    /// <summary>
-    ///     Joins outstanding native calls, restores owned temporary state and disposes resources. Call StopAsync first
-    ///     to receive the restoration result; disposal is the final cleanup boundary.
-    /// </summary>
-    public ValueTask DisposeAsync()
+    /// <summary>Releases handles only. StopAsync owns hardware restoration.</summary>
+    public async ValueTask DisposeAsync()
     {
-        lock (_operations)
-        {
-            if (_disposeTask is not null)
-            {
-                return new ValueTask(_disposeTask);
-            }
-
-            _disposing = true;
-            _acceptPublications = false;
-            _descriptors = null;
-            _states.Clear();
-            var pending = _inFlight == 0
-                ? Task.CompletedTask
-                : (_drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).Task;
-            _disposeTask = Task.Run(async () =>
-            {
-                await pending.ConfigureAwait(false);
-                try
-                {
-                    await _engine.DisposeAsync().ConfigureAwait(false);
-                }
-                finally
-                {
-                    _commands.Dispose();
-                    _lifecycle.Dispose();
-                }
-            });
-            return new ValueTask(_disposeTask);
-        }
-    }
-
-    /// <summary>Current consumer-owned native cycle generation.</summary>
-    public long CycleGeneration => Interlocked.Read(ref _cycleGeneration);
-
-    ValueTask N.IDeviceSink.PublishDescriptorsAsync(NC.CapabilityDescriptorSet descriptors,
-        CancellationToken cancellationToken)
-    {
-        var published = HandheldConversions.ToPublic(descriptors);
-        lock (_operations)
-        {
-            if (!_acceptPublications || published.CycleGeneration != _cycleGeneration || _disposing ||
-                (_descriptors is { } current && published.Generation <= current.Generation))
-            {
-                return ValueTask.CompletedTask;
-            }
-
-            _descriptors = published;
-            _states.Clear();
-        }
-
-        return Observer?.DescriptorsChangedAsync(published, cancellationToken) ??
-               ValueTask.CompletedTask;
-    }
-
-    ValueTask N.IDeviceSink.PublishCapabilityStateAsync(NC.CapabilityState state, CancellationToken cancellationToken)
-    {
-        var published = HandheldConversions.ToPublic(state);
-        lock (_operations)
-        {
-            if (!_acceptPublications || _disposing || _descriptors is not { } descriptors ||
-                published.CycleGeneration != _cycleGeneration ||
-                published.DescriptorGeneration != descriptors.Generation ||
-                !descriptors.Descriptors.Any(descriptor => descriptor.CapabilityId == published.CapabilityId &&
-                                                           descriptor.InstanceId == published.InstanceId))
-            {
-                return ValueTask.CompletedTask;
-            }
-
-            _states[(published.CapabilityId, published.InstanceId)] = published;
-        }
-
-        return Observer?.StateChangedAsync(published, cancellationToken) ??
-               ValueTask.CompletedTask;
-    }
-
-    ValueTask N.IDeviceSink.PublishPhysicalDevicesAsync(IReadOnlyList<NI.PhysicalDeviceIdentity> devices,
-        NI.HapticCapabilities? output, CancellationToken cancellationToken)
-    {
-        return Observer?.PhysicalDevicesChangedAsync(
-            Array.AsReadOnly(devices.Select(HandheldConversions.ToPublic).ToArray()),
-            output is null ? null : HandheldConversions.ToPublic(output), cancellationToken) ?? ValueTask.CompletedTask;
-    }
-
-    ValueTask N.IDeviceSink.PublishControllerSampleAsync(NI.CanonicalControllerSample sample,
-        CancellationToken cancellationToken)
-    {
-        return Observer?.ControllerSampleAsync(HandheldConversions.ToPublic(sample), cancellationToken) ??
-               ValueTask.CompletedTask;
-    }
-
-    ValueTask N.IDeviceSink.PublishOemControlsAsync(IReadOnlyList<NI.OemControlDescriptor> controls,
-        CancellationToken cancellationToken)
-    {
-        return Observer?.OemControlsChangedAsync(
-                   Array.AsReadOnly(controls.Select(HandheldConversions.ToPublic).ToArray()), cancellationToken) ??
-               ValueTask.CompletedTask;
-    }
-
-    ValueTask N.IDeviceSink.PublishOemEventAsync(NI.OemControlEvent controlEvent, CancellationToken cancellationToken)
-    {
-        return Observer?.OemEventAsync(HandheldConversions.ToPublic(controlEvent), cancellationToken) ??
-               ValueTask.CompletedTask;
-    }
-
-    ValueTask N.IDeviceSink.PublishSettingsManifestAsync(PluginSettingsManifest manifest,
-        CancellationToken cancellationToken)
-    {
-        if (manifest.Settings.Count != 0)
-        {
-            throw new NotSupportedException("A native preference contract must accompany nonempty preferences.");
-        }
-
-        return ValueTask.CompletedTask;
-    }
-
-    void N.IDeviceSink.Trace(N.DeviceTraceLevel level, string scope, string message)
-    {
-        _diagnostics?.Invoke(new DeviceLogEntry((DeviceLogLevel)level, scope, message));
-    }
-
-    void N.IDeviceSink.TraceChange(N.DeviceTraceLevel level, string scope, string key, string message)
-    {
-        _diagnostics?.Invoke(new DeviceLogEntry((DeviceLogLevel)level, scope, message, key));
-    }
-
-    void N.IDeviceSink.ReportFault(string scope, string message)
-    {
-        ClearControls();
-        Observer?.Faulted(scope, message);
-    }
-
-    /// <summary>Matches only supplied normalized identity; does not enumerate or open hardware.</summary>
-    /// <param name="identity">Normalized machine observations.</param>
-    /// <returns>The exact definition, or null when no native implementation matches.</returns>
-    public static HandheldDefinition? Detect(DeviceIdentitySnapshot identity)
-    {
-        ArgumentNullException.ThrowIfNull(identity);
-        return DeviceFamilies.Detect(HandheldConversions.ToNative(identity));
-    }
-
-    /// <summary>Creates a native engine without acquiring hardware.</summary>
-    /// <param name="definition">Exact supported definition returned by detection or Definitions.</param>
-    /// <param name="stateDirectory">Existing family-owned recovery state directory.</param>
-    /// <param name="diagnostics">Optional transition diagnostics callback, which must not throw.</param>
-    /// <returns>A direct native device instance.</returns>
-    public static HandheldDevice Create(HandheldDefinition definition, string stateDirectory,
-        Action<DeviceLogEntry>? diagnostics = null)
-    {
-        ArgumentNullException.ThrowIfNull(definition);
-        ArgumentException.ThrowIfNullOrWhiteSpace(stateDirectory);
-        var canonical = Definitions.SingleOrDefault(d => d == definition) ??
-                        throw new ArgumentException("Unknown handheld definition.", nameof(definition));
-        return new HandheldDevice(canonical, stateDirectory, diagnostics);
-    }
-
-    /// <summary>Starts native services inside the supplied cycle; controller acquisition is independently optional.</summary>
-    public async ValueTask<DeviceStartResult> StartAsync(long cycleGeneration, bool controllerManagementEnabled,
-        CancellationToken cancellationToken = default)
-    {
-        return await StartCoreAsync(cycleGeneration, controllerManagementEnabled, cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    /// <summary>Starts services with a library-owned fresh generation, optionally acquiring controller ownership.</summary>
-    /// <remarks>Do not mix this overload with consumer-owned generation overloads on the same instance.</remarks>
-    public ValueTask<DeviceStartResult> StartAsync(bool controllerManagementEnabled = true,
-        CancellationToken cancellationToken = default)
-    {
-        return StartCoreAsync(null, controllerManagementEnabled, cancellationToken);
-    }
-
-    private async ValueTask<DeviceStartResult> StartCoreAsync(long? cycleGeneration,
-        bool controllerManagementEnabled, CancellationToken cancellationToken)
-    {
-        using var operation = Enter();
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _owner.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_startAttempted || _stopped)
-            {
-                throw new InvalidOperationException("This device instance has already begun its native lifetime. "
-                                                    + "Resume a suspended cycle, or create a new instance after stopping.");
-            }
-
-            var detection = await _engine.DetectAsync(new N.PluginDetectionContext
-            {
-                Identity = HandheldConversions.ToNative(_readIdentity())
-            }, cancellationToken).ConfigureAwait(false);
-            if (!detection.Matched || detection.DeviceDefinitionId != Definition.Id)
-            {
-                throw new NotSupportedException("The selected model does not match the current machine identity.");
-            }
-
-            var cycle = BeginCycle(cycleGeneration);
-            _startAttempted = true;
-            var result = await _engine.StartAsync(new N.PluginStartContext
-            {
-                Host = this, CycleGeneration = cycle, DeviceDefinitionId = Definition.Id,
-                StateDirectory = _stateDirectory,
-                ControllerManagementEnabled = controllerManagementEnabled && Definition.HasController
-            }, cancellationToken).ConfigureAwait(false);
-            _started = true;
-            return StartResult(result);
-        }
-        finally
-        {
-            _lifecycle.Release();
-        }
-    }
-
-    /// <summary>Quiesces native services without terminating the device cycle.</summary>
-    public async ValueTask SuspendAsync(Deadline deadline, CancellationToken cancellationToken = default)
-    {
-        using var operation = Enter();
-        await WaitLifecycleAsync(deadline, cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (!_started || _stopped)
-            {
-                throw new InvalidOperationException("Only a running device cycle can be suspended.");
-            }
-
-            if (_suspended)
+            if (_disposed)
             {
                 return;
             }
 
-            await _engine.SuspendAsync(new N.PluginQuiesceContext(NativeDeadline(deadline)), cancellationToken)
-                .ConfigureAwait(false);
+            _disposed = true;
+            _active = false;
+            await _engine.DisposeAsync().ConfigureAwait(false);
+            ClearControls();
+            DeviceTrace.Install(null);
+            Observer = null;
+        }
+        finally
+        {
+            _owner.Release();
+        }
+    }
+
+    ValueTask IDeviceSink.PublishDescriptorsAsync(CapabilityDescriptorSet descriptors, CancellationToken token)
+    {
+        if (!_active || _disposed)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        lock (_operations)
+        {
+            _descriptors = descriptors;
+            _controlIds.Clear();
+            foreach (var item in descriptors.Descriptors)
+            {
+                _controlIds.Add((item.CapabilityId, item.InstanceId));
+            }
+
+            foreach (var key in _states.Keys.Where(key => !_controlIds.Contains(key)).ToArray())
+            {
+                _states.Remove(key);
+            }
+        }
+
+        return Observer?.DescriptorsChangedAsync(descriptors, token) ?? ValueTask.CompletedTask;
+    }
+
+    ValueTask IDeviceSink.PublishCapabilityStateAsync(CapabilityState state, CancellationToken token)
+    {
+        if (_disposed || (!_active && state.Available))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        lock (_operations)
+        {
+            if (!_controlIds.Contains((state.CapabilityId, state.InstanceId)))
+            {
+                return ValueTask.CompletedTask;
+            }
+
+            _states[(state.CapabilityId, state.InstanceId)] = state;
+        }
+
+        return Observer?.StateChangedAsync(state, token) ?? ValueTask.CompletedTask;
+    }
+
+    ValueTask IDeviceSink.PublishPhysicalDevicesAsync(IReadOnlyList<PhysicalDeviceIdentity> devices,
+        HapticCapabilities? output, CancellationToken token)
+    {
+        return !_disposed && (_active || devices.Count == 0)
+            ? Observer?.PhysicalDevicesChangedAsync(devices, output, token) ?? ValueTask.CompletedTask
+            : ValueTask.CompletedTask;
+    }
+
+    ValueTask IDeviceSink.PublishControllerSampleAsync(CanonicalControllerSample sample, CancellationToken token)
+    {
+        return _active && !_disposed
+            ? Observer?.ControllerSampleAsync(sample, token) ?? ValueTask.CompletedTask
+            : ValueTask.CompletedTask;
+    }
+
+    ValueTask IDeviceSink.PublishOemControlsAsync(IReadOnlyList<OemControlDescriptor> controls, CancellationToken token)
+    {
+        return !_disposed && (_active || controls.Count == 0)
+            ? Observer?.OemControlsChangedAsync(controls, token) ?? ValueTask.CompletedTask
+            : ValueTask.CompletedTask;
+    }
+
+    ValueTask IDeviceSink.PublishOemEventAsync(OemControlEvent controlEvent, CancellationToken token)
+    {
+        return _active && !_disposed
+            ? Observer?.OemEventAsync(controlEvent, token) ?? ValueTask.CompletedTask
+            : ValueTask.CompletedTask;
+    }
+
+    void IDeviceSink.ReportFault(string scope, string message)
+    {
+        _active = false;
+        Observer?.Faulted(scope, message);
+    }
+
+    /// <summary>Captures Windows registry identity, processor facts and read-only USB interface observations once.</summary>
+    /// <remarks>
+    ///     No firmware commands, feature-report probes or privileged drivers are used; absent EC and MCU facts remain
+    ///     unknown.
+    /// </remarks>
+    public static DeviceIdentitySnapshot ReadIdentity()
+    {
+        return WindowsMachineIdentity.Read();
+    }
+
+    /// <summary>Matches supplied observations without opening a transport or reading the machine again.</summary>
+    public static HandheldDefinition? Detect(DeviceIdentitySnapshot identity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        return DeviceFamilies.Detect(identity);
+    }
+
+    /// <summary>Creates services for a matched exact model; acquisition begins at StartAsync.</summary>
+    public static HandheldDevice Create(HandheldDefinition definition, DeviceIdentitySnapshot identity,
+        string stateDirectory, Action<DeviceLogEntry>? diagnostics = null, HandheldResources? resources = null)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateDirectory);
+        if (Detect(identity) != definition)
+        {
+            throw new ArgumentException("The definition does not match the supplied machine identity.",
+                nameof(definition));
+        }
+
+        return new HandheldDevice(definition, identity, stateDirectory, diagnostics, DeviceFamilies.Create(definition),
+            resources);
+    }
+
+    /// <summary>Acquires native services; physical controller ownership is independently optional.</summary>
+    public async ValueTask<DeviceStartResult> StartAsync(bool controllerManagementEnabled = true,
+        CancellationToken cancellationToken = default)
+    {
+        await _owner.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_started)
+            {
+                throw new InvalidOperationException("This device has already started.");
+            }
+
+            DeviceTrace.Install(_diagnostics);
+            _active = true;
+            _started = true;
+            var result = await _engine.StartAsync(new EngineStartContext
+            {
+                Host = this, Identity = _identity, Resources = _resources, DeviceDefinitionId = Definition.Id,
+                StateDirectory = _stateDirectory,
+                Journal = await DeviceRecoveryJournal.OpenAsync(_stateDirectory, cancellationToken)
+                    .ConfigureAwait(false),
+                ControllerManagementEnabled = controllerManagementEnabled && Definition.HasController
+            }, cancellationToken).ConfigureAwait(false);
+            return new DeviceStartResult((DeviceOperationalState)result.State, result.Reason);
+        }
+        catch
+        {
+            _active = false;
+            throw;
+        }
+        finally
+        {
+            _owner.Release();
+        }
+    }
+
+    /// <summary>Quiesces native services for suspend.</summary>
+    public async ValueTask SuspendAsync(Deadline deadline, CancellationToken cancellationToken = default)
+    {
+        await _owner.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_active || _suspended)
+            {
+                return;
+            }
+
+            _active = false;
+            await _engine.SuspendAsync(new EngineQuiesceContext(deadline), cancellationToken).ConfigureAwait(false);
             _suspended = true;
             ClearControls();
         }
         finally
         {
-            _lifecycle.Release();
+            _owner.Release();
         }
     }
 
-    /// <summary>Revalidates and reacquires services into a fresh consumer-owned cycle.</summary>
-    public async ValueTask<DeviceStartResult> ResumeAsync(long cycleGeneration, Deadline deadline,
+    /// <summary>Reacquires services using the original exact identity snapshot.</summary>
+    public async ValueTask<DeviceStartResult> ResumeAsync(Deadline deadline,
         CancellationToken cancellationToken = default)
     {
-        return await ResumeCoreAsync(cycleGeneration, deadline, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>Reacquires services with a library-owned fresh generation.</summary>
-    /// <remarks>Do not mix this overload with consumer-owned generation overloads on the same instance.</remarks>
-    public ValueTask<DeviceStartResult> ResumeAsync(Deadline deadline, CancellationToken cancellationToken = default)
-    {
-        return ResumeCoreAsync(null, deadline, cancellationToken);
-    }
-
-    private async ValueTask<DeviceStartResult> ResumeCoreAsync(long? cycleGeneration, Deadline deadline,
-        CancellationToken cancellationToken)
-    {
-        using var operation = Enter();
-        await WaitLifecycleAsync(deadline, cancellationToken).ConfigureAwait(false);
+        await _owner.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!_started || !_suspended || _stopped)
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_suspended)
             {
-                throw new InvalidOperationException("Only a successfully suspended device cycle can be resumed.");
+                throw new InvalidOperationException("Only a suspended device can resume.");
             }
 
-            var cycle = BeginCycle(cycleGeneration);
+            _active = true;
+            var result = await _engine.ResumeAsync(new EngineResumeContext(deadline), cancellationToken)
+                .ConfigureAwait(false);
             _suspended = false;
-            return StartResult(await _engine
-                .ResumeAsync(new N.PluginResumeContext(cycle, NativeDeadline(deadline)), cancellationToken)
-                .ConfigureAwait(false));
+            return new DeviceStartResult((DeviceOperationalState)result.State, result.Reason);
+        }
+        catch
+        {
+            _active = false;
+            throw;
         }
         finally
         {
-            _lifecycle.Release();
+            _owner.Release();
         }
     }
 
-    /// <summary>Dispatches one typed hardware command, retaining its native outcome and timestamp.</summary>
+    /// <summary>Executes a typed vendor control without an application-specific adapter.</summary>
     public async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command,
         CancellationToken cancellationToken = default)
     {
-        using var operation = Enter();
-        await _commands.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _owner.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
+                "Cancelled before native dispatch.");
+        }
+
         try
         {
             return await ExecuteCoreAsync(command, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            _commands.Release();
+            _owner.Release();
         }
     }
 
-    private async ValueTask<CapabilityCommandResult> ExecuteCoreAsync(CapabilityCommand command,
-        CancellationToken cancellationToken)
+    private ValueTask<CapabilityCommandResult> ExecuteCoreAsync(CapabilityCommand command, CancellationToken token)
     {
-        return HandheldConversions.ToPublic(await _engine
-            .ExecuteCommandAsync(HandheldConversions.ToNative(command), cancellationToken).ConfigureAwait(false));
+        if (!_active || _disposed || token.IsCancellationRequested)
+        {
+            return ValueTask.FromResult(CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
+                "The device is inactive or the request was cancelled before dispatch."));
+        }
+
+        return _engine.ExecuteCommandAsync(command, token);
     }
 
-    /// <summary>Changes physical controller ownership without stopping other services.</summary>
+    /// <summary>Changes physical input ownership while other hardware services continue.</summary>
     public async ValueTask SetControllerManagementAsync(bool enabled, Deadline deadline,
         CancellationToken cancellationToken = default)
     {
-        using var operation = Enter();
-        await _engine
-            .SetControllerManagementAsync(new N.PluginControllerManagementContext(enabled, NativeDeadline(deadline)),
-                cancellationToken).ConfigureAwait(false);
+        await _owner.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_active)
+            {
+                await _engine.SetControllerManagementAsync(new EngineControllerManagementContext(enabled, deadline),
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _owner.Release();
+        }
     }
 
-    /// <summary>Releases physical acquisition and writes the documented native baseline, without requiring readback.</summary>
-    public async ValueTask ReleaseControllerAsync(HandoffScope scope, Deadline deadline,
-        CancellationToken cancellationToken = default)
+    /// <summary>Releases physical input and restores the native controller baseline.</summary>
+    public ValueTask ReleaseControllerAsync(Deadline deadline, CancellationToken cancellationToken = default)
     {
-        using var operation = Enter();
-        await _engine
-            .ReleaseControllerAsync(
-                new N.PluginControllerReleaseContext((NL.HandoffScope)scope, NativeDeadline(deadline)),
-                cancellationToken).ConfigureAwait(false);
+        return SetControllerManagementAsync(false, deadline, cancellationToken);
     }
 
-    /// <summary>Delivers complete motor state. An explicit zero frame stops output.</summary>
-    public async ValueTask ApplyHapticsAsync(HapticOutputFrame frame, CancellationToken cancellationToken = default)
+    /// <summary>Delivers complete motor state; zero requests an explicit stop.</summary>
+    public ValueTask ApplyHapticsAsync(HapticOutputFrame frame, CancellationToken cancellationToken = default)
     {
-        using var operation = Enter();
-        await _engine.ApplyHapticOutputAsync(HandheldConversions.ToNative(frame), cancellationToken)
-            .ConfigureAwait(false);
+        return _active && !_disposed
+            ? _engine.ApplyHapticOutputAsync(frame, cancellationToken)
+            : ValueTask.CompletedTask;
     }
 
-    /// <summary>Returns detached bounded native service and recovery facts.</summary>
+    /// <summary>Returns current native diagnostics.</summary>
     public async ValueTask<IReadOnlyDictionary<string, string>> GetDiagnosticsAsync(
         CancellationToken cancellationToken = default)
     {
-        using var operation = Enter();
-        var facts = await _engine.GetDiagnosticsAsync(cancellationToken).ConfigureAwait(false);
-        return new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(facts.Values,
-            StringComparer.Ordinal));
-    }
-
-    /// <summary>Restores and releases all native resources, reporting actual cleanup evidence.</summary>
-    public async ValueTask<DeviceStopResult> StopAsync(DeviceStopReason reason, Deadline deadline,
-        CancellationToken cancellationToken = default)
-    {
-        using var operation = Enter();
-        await WaitLifecycleAsync(deadline, cancellationToken).ConfigureAwait(false);
+        await _owner.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_stopped)
+            return await _engine.GetDiagnosticsAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _owner.Release();
+        }
+    }
+
+    /// <summary>Restores captured originals and releases native ownership.</summary>
+    public async ValueTask<DeviceStopResult> StopAsync(Deadline deadline, CancellationToken cancellationToken = default)
+    {
+        await _owner.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_stopResult is not null)
             {
-                return _stopResult ?? new DeviceStopResult(DeviceStopStatus.Failed,
-                    new CapabilityReason(CapabilityReasonCode.TransportFaulted,
-                        "The first native stop did not complete."));
+                return _stopResult;
             }
 
-            _stopped = true;
-            ClearControls();
-            var result = await _engine
-                .StopAsync(new N.PluginStopContext((N.PluginStopReason)reason, NativeDeadline(deadline)),
-                    cancellationToken)
+            _active = false;
+            var result = await _engine.StopAsync(new EngineStopContext(deadline), cancellationToken)
                 .ConfigureAwait(false);
-            _stopResult = new DeviceStopResult((DeviceStopStatus)result.Status,
-                result.Reason is { } r ? HandheldConversions.ToPublic(r) : null);
+            _stopResult = new DeviceStopResult((DeviceStopStatus)result.Status, result.Reason);
+            ClearControls();
             return _stopResult;
         }
         finally
         {
-            _lifecycle.Release();
+            _owner.Release();
         }
-    }
-
-    private long BeginCycle(long? requested)
-    {
-        lock (_operations)
-        {
-            var ownsGeneration = requested is null;
-            if (_ownsCycleGeneration is { } established && established != ownsGeneration)
-            {
-                throw new InvalidOperationException("Do not mix library-owned and consumer-owned cycle generations.");
-            }
-
-            var cycle = requested ?? checked(_cycleGeneration + 1);
-            if (cycle <= _cycleGeneration)
-            {
-                throw new ArgumentOutOfRangeException(nameof(requested), "A new cycle must have a fresh generation.");
-            }
-
-            _ownsCycleGeneration = ownsGeneration;
-            _cycleGeneration = cycle;
-            _acceptPublications = true;
-            _descriptors = null;
-            _states.Clear();
-            return cycle;
-        }
-    }
-
-    private async ValueTask WaitLifecycleAsync(Deadline deadline, CancellationToken cancellationToken)
-    {
-        using var waiting = deadline.CreateCancellationSource(cancellationToken);
-        await _lifecycle.WaitAsync(waiting.Token).ConfigureAwait(false);
     }
 
     private void ClearControls()
     {
         lock (_operations)
         {
-            _acceptPublications = false;
             _descriptors = null;
             _states.Clear();
-        }
-    }
-
-    private Operation Enter()
-    {
-        lock (_operations)
-        {
-            ObjectDisposedException.ThrowIf(_disposing, this);
-            _inFlight++;
-            return new Operation(this);
-        }
-    }
-
-    private void Leave()
-    {
-        TaskCompletionSource? drained;
-        lock (_operations)
-        {
-            _inFlight--;
-            drained = _inFlight == 0 ? _drained : null;
-        }
-
-        drained?.TrySetResult();
-    }
-
-    private static NL.Deadline NativeDeadline(Deadline deadline)
-    {
-        return NL.Deadline.After(deadline.Remaining);
-    }
-
-    private static DeviceStartResult StartResult(N.PluginStartResult result)
-    {
-        return new DeviceStartResult((DeviceOperationalState)result.State,
-            result.Reason is { } r ? HandheldConversions.ToPublic(r) : null);
-    }
-
-    private readonly struct Operation(HandheldDevice owner) : IDisposable
-    {
-        public void Dispose()
-        {
-            owner.Leave();
+            _controlIds.Clear();
         }
     }
 }

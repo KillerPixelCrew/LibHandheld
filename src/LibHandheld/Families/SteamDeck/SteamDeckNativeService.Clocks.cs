@@ -1,5 +1,5 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.SteamDeck;
 
@@ -30,7 +30,7 @@ internal sealed partial class SteamDeckNativeService
 
         try
         {
-            _clocks = (openClocks ?? VangoghPower.Open)();
+            _clocks = openClocks is null ? VangoghPower.Open(context.Resources.InpOutPath) : openClocks();
             _clockReason = null;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -85,13 +85,7 @@ internal sealed partial class SteamDeckNativeService
         var dispatched = false;
         try
         {
-            var identity = context.Firmware + $"|ValveSMU:{_clocks.FirmwareVersion:X8}";
-            // The firmware exposes no original minimum/maximum getters. Retain that fact durably, never invent a baseline.
-            if (_journal.EntryFor("deck-clocks") is null)
-            {
-                await _journal.BeginAsync("deck-clocks", identity,
-                    new SteamDeckOriginal { ClockIds = [command.CapabilityId] }, token).ConfigureAwait(false);
-            }
+            // The firmware has no original clock getters, so there is no captured value to restore.
 
             token.ThrowIfCancellationRequested();
             var (message, value) =
@@ -100,16 +94,12 @@ internal sealed partial class SteamDeckNativeService
             _clocks.Exchange(message, value);
             _writtenClocks[(command.CapabilityId, command.InstanceId)] =
                 new ClockObservation(requested.IntegerValue.Value, DateTimeOffset.UtcNow);
-            await _journal
-                .SetStatusAsync("deck-clocks", DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
-                .ConfigureAwait(false);
-            return CommandResults.Unverified(command);
+            return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message,
-                    RollbackResult.NotRequired)
+                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message)
                 : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
         }
     }
@@ -150,8 +140,9 @@ internal sealed partial class SteamDeckNativeService
         {
             CapabilityId = id, InstanceId = instance, Role = CapabilityRole.GenericRange,
             ValueKind = CapabilityValueKind.Integer,
-            Display = Label(label), Minimum = min, Maximum = max, Step = 1, Unit = CapabilityUnit.Megahertz,
-            SectionId = DeviceSections.PowerId,
+            Display = CapabilityDescriptors.Label(label), Minimum = min, Maximum = max, Step = 1,
+            Unit = CapabilityUnit.Megahertz,
+
             SupportsWrite = true, SupportsRead = false, Persistence = CapabilityPersistence.Volatile
         };
     }
@@ -168,7 +159,7 @@ internal sealed partial class SteamDeckNativeService
                 CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
                 Available = _clocks is not null, Reason = _clockReason, ObservedValue = value,
                 Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                ObservedAt = value is null ? null : written.At, DescriptorGeneration = 0, CycleGeneration = 0
+                ObservedAt = value is null ? null : written.At
             };
         }
     }

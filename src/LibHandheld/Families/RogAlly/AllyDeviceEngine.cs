@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: MIT
-
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Devices;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Windows;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -17,6 +17,7 @@ namespace LibHandheld.Families.RogAlly;
 /// <param name="Motion">Factory for a model-mapped motion source.</param>
 /// <param name="Keyboard">Shared OEM-key hook owned by the plugin.</param>
 /// <param name="Delay">Cancellable timing dependency used for hardware write spacing.</param>
+/// <param name="OnAcPower">Optional read-only power-source callback for an injected hardware fixture.</param>
 internal sealed record AllyHardwareServices(
     IAllyIdentityReader Identity,
     IAsusAcpi Acpi,
@@ -25,7 +26,8 @@ internal sealed record AllyHardwareServices(
     Func<AllyModel, AllyOemButtonState, IAllyControllerSource> Controller,
     Func<AllyModel, IAllyMotionSource> Motion,
     IAllyKeyboardSource Keyboard,
-    Func<TimeSpan, CancellationToken, Task> Delay);
+    Func<TimeSpan, CancellationToken, Task> Delay,
+    Func<bool>? OnAcPower = null);
 
 /// <summary>The device plugin for the ASUS ROG Ally, Ally X, Xbox Ally and Xbox Ally X.</summary>
 /// <remarks>
@@ -35,26 +37,28 @@ internal sealed record AllyHardwareServices(
 ///     virtual targets and HidHide. Services degrade independently. Command and observation work is
 ///     serialized, and accepted writes remain observed when readback is unavailable.
 /// </remarks>
-internal sealed partial class AllyDeviceEngine : IDeviceEngine
+internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
 {
+    private readonly ProfiledFeatureContext _context;
     private readonly AllyHardwareServices _hardware;
-    private readonly DeviceCommandSerializer _serializer;
 
     /// <summary>Values this cycle wrote, keyed by capability and instance, for firmware without readback.</summary>
-    private readonly Dictionary<(string CapabilityId, string? InstanceId), CapabilityValue> _written = [];
+    private readonly ObservedValues _observedValues = new();
+
+    private readonly ServicePublications _publications;
 
     private bool _active;
     private IAllyAuraHid? _aura;
     private AllyOemButtonState? _buttons;
     private ChargeLimitService? _charge;
     private ControllerService? _controller;
-    private long _cycleGeneration;
     private AllyIdentityState? _cycleIdentity;
     private CapabilityDescriptorSet? _descriptorSet;
     private bool _disposed;
     private FanService? _fans;
     private IDeviceSink? _host;
-    private AllyRecoveryJournal? _journal;
+    private bool _initialized;
+    private DeviceRecoveryJournal? _journal;
     private KeyboardOemService? _keyboard;
     private LightingService? _lighting;
     private AllyModel? _model;
@@ -69,46 +73,30 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
 
     /// <summary>Creates the production plugin with Windows transports.</summary>
     // ReSharper disable once UnusedMember.Global
-    public AllyDeviceEngine()
-        : this(CreateWindowsServices())
+    internal AllyDeviceEngine(ProfiledFeatureContext context) : this(context, CreateWindowsServices())
     {
     }
 
-    internal AllyDeviceEngine(AllyHardwareServices hardware)
+    internal AllyDeviceEngine(ProfiledFeatureContext context, AllyHardwareServices services) : base("rogally-native")
     {
-        _hardware = hardware ?? throw new ArgumentNullException(nameof(hardware));
-        _serializer = new DeviceCommandSerializer(
-            "Ally",
-            () => _active && !_quiescing ? _descriptorSet : null,
-            RefreshAsync,
-            PublishStatesAsync);
+        _context = context;
+        _publications = new ServicePublications(context.Sink);
+        _hardware = services;
     }
 
-    /// <inheritdoc />
-    public string PackageId => AllyModels.PackageId;
+
+    public override bool Suspendable => true;
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptorSet?.Descriptors ?? [];
+    internal override IReadOnlyList<CapabilityState> States => _publications.States;
+    internal override IReadOnlyList<OemControlDescriptor> OemControls => _publications.OemControls;
+    internal override bool DescriptorsChanged => _publications.DescriptorsChanged;
+
 
     /// <inheritdoc />
-    public ValueTask<PluginDetectionResult> DetectAsync(
-        PluginDetectionContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        cancellationToken.ThrowIfCancellationRequested();
-        var model = AllyModels.Match(context.Identity);
-        return ValueTask.FromResult(new PluginDetectionResult
-        {
-            Matched = model is not null,
-            DeviceDefinitionId = model?.DefinitionId,
-            Reason = model is not null
-                ? null
-                : new CapabilityReason(CapabilityReasonCode.Unsupported,
-                    "This package requires an ASUSTeK baseboard RC71L, RC72LA, RC72L, RC73YA or RC73XA.")
-        });
-    }
-
     /// <inheritdoc />
-    public async ValueTask<PluginStartResult> StartAsync(
-        PluginStartContext context,
+    /// <inheritdoc />
+    private async ValueTask<EngineStartResult> InitializeAsync(
+        EngineStartContext context,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -123,15 +111,14 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
             throw new InvalidOperationException("WSGM supplied a device definition this package does not own.");
         }
 
-        if (context.CycleGeneration != context.Host.CycleGeneration)
+
+        DeviceTrace.Info("lifecycle", $"start: definition={definition.DefinitionId}.");
+
+        var identity = new AllyIdentityState
         {
-            throw new InvalidOperationException("WSGM supplied an inconsistent cycle generation.");
-        }
-
-        DeviceTrace.Install(context.Host);
-        DeviceTrace.Info("lifecycle", $"start: definition={definition.DefinitionId}, cycle={context.CycleGeneration}.");
-
-        var identity = await _hardware.Identity.ReadAsync(cancellationToken).ConfigureAwait(false);
+            Snapshot = context.Identity, Model = definition,
+            OnAcPower = _hardware.OnAcPower?.Invoke() ?? WindowsMachineIdentity.OnAcPower()
+        };
         if (identity.Model != definition)
         {
             DeviceTrace.Error("lifecycle",
@@ -141,14 +128,13 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
 
         _host = context.Host;
         _model = definition;
-        _cycleGeneration = context.CycleGeneration;
-        _written.Clear();
+
+        _observedValues.Clear();
         _cycleIdentity = identity;
         _quiescing = false;
         try
         {
-            _journal = await AllyRecoveryJournal.OpenAsync(context.StateDirectory, cancellationToken)
-                .ConfigureAwait(false);
+            _journal = context.Journal;
             _buttons = new AllyOemButtonState();
             _vendor = _hardware.Vendor(definition);
             _aura = _hardware.Aura(definition);
@@ -172,11 +158,6 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
             _services = [_vendorEvents, _keyboard, _power, _fans, _charge, _lighting, _motion, _controller];
             BuildCapabilitySurface();
 
-            if (_journal.FailureReason is { } journalFailure)
-            {
-                Block(journalFailure, _power, _fans, _controller);
-            }
-            else
             {
                 await ReconcileOutstandingAsync(identity, cancellationToken).ConfigureAwait(false);
             }
@@ -188,7 +169,6 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
                 cancellationToken).ConfigureAwait(false);
             _active = true;
             await PublishStatesAsync(cancellationToken).ConfigureAwait(false);
-            _serializer.StartObservation();
             return CurrentStartResult();
         }
         catch
@@ -200,69 +180,10 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
     }
 
     /// <inheritdoc />
-    public ValueTask<CapabilityCommandResult> ExecuteCommandAsync(
-        CapabilityCommand command,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(command);
-        return _serializer.ExecuteAsync(command, token => ExecuteBoundCommandAsync(command, token), cancellationToken);
-    }
-
     /// <inheritdoc />
-    public async ValueTask SuspendAsync(PluginQuiesceContext context, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        if (_services.Count == 0)
-        {
-            return;
-        }
-
-        _quiescing = true;
-        _serializer.StopObservation();
-        await _serializer.RunAsync(
-            () => DeviceServiceLifecycle.SuspendAllAsync(_services, Context(context.Deadline), cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-    }
-
     /// <inheritdoc />
-    public async ValueTask<PluginStartResult> ResumeAsync(
-        PluginResumeContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        if (_services.Count == 0 || _host is null)
-        {
-            return new PluginStartResult
-            {
-                State = PluginOperationalState.Passive,
-                Reason = new CapabilityReason(CapabilityReasonCode.ResourceReleased,
-                    "The Ally services have not been started.")
-            };
-        }
-
-        return await _serializer.RunAsync(async () =>
-        {
-            _cycleGeneration = context.CycleGeneration;
-            _written.Clear();
-            _cycleIdentity = await _hardware.Identity.ReadAsync(cancellationToken).ConfigureAwait(false);
-
-            // No journal probe here: a record refused after a wake is found by the command that needs
-            // it, which is rejected with nothing written, and the next command tries again.
-            await DeviceServiceLifecycle.AcquireAllAsync(
-                _services.Where(service => service.Suspendable || service.State is not DeviceServiceState.Owned),
-                Context(context.Deadline),
-                cancellationToken).ConfigureAwait(false);
-            BuildCapabilitySurface();
-            await _host.PublishDescriptorsAsync(_descriptorSet!, cancellationToken).ConfigureAwait(false);
-            _quiescing = false;
-            await PublishStatesAsync(cancellationToken).ConfigureAwait(false);
-            _serializer.StartObservation();
-            return CurrentStartResult();
-        }, cancellationToken).ConfigureAwait(false);
-    }
-
     /// <inheritdoc />
-    public ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken cancellationToken)
+    internal override ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken cancellationToken)
     {
         return _controller is null || _quiescing
             ? ValueTask.CompletedTask
@@ -270,95 +191,16 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
     }
 
     /// <inheritdoc />
-    public ValueTask<PluginDiagnostics> GetDiagnosticsAsync(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var values = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["model"] = _model?.DefinitionId ?? "none",
-            ["cycle"] = _disposed ? "disposed" : _active ? _quiescing ? "quiescing" : "started" : "stopped",
-            ["recovery"] = _journal?.DiagnosticState ?? "unavailable",
-            ["validation"] = "blind"
-        };
-        foreach (var service in _services)
-        {
-            values[service.ServiceId] = service.State.ToString();
-        }
-
-        return ValueTask.FromResult(new PluginDiagnostics { Values = values });
-    }
-
     /// <inheritdoc />
-    public ValueTask ReleaseControllerAsync(
-        PluginControllerReleaseContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        return _serializer.RunAsync(() => ReleaseControllerCoreAsync(context.Deadline, cancellationToken),
-            cancellationToken);
-    }
-
     /// <inheritdoc />
-    public ValueTask SetControllerManagementAsync(
-        PluginControllerManagementContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        return _serializer.RunAsync(async () =>
-        {
-            if (_controller is null)
-            {
-                return;
-            }
-
-            // The device cycle continues: only the controller is taken or let go.
-            _controller.Enabled = context.Enabled;
-            if (context.Enabled)
-            {
-                _cycleIdentity = await _hardware.Identity.ReadAsync(cancellationToken).ConfigureAwait(false);
-                await DeviceServiceLifecycle.AcquireAsync(_controller, Context(context.Deadline), cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                await ReleaseControllerCoreAsync(context.Deadline, cancellationToken).ConfigureAwait(false);
-            }
-
-            await PublishStatesAsync(cancellationToken).ConfigureAwait(false);
-        }, cancellationToken);
-    }
-
     /// <inheritdoc />
-    public async ValueTask<PluginStopResult> StopAsync(PluginStopContext context, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        _quiescing = true;
-        _serializer.StopObservation();
-        return await _serializer.RunAsync(async () =>
-        {
-            if (_services.Count > 0)
-            {
-                await DeviceServiceLifecycle.ReleaseAllAsync(_services, Context(context.Deadline), cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            var result = DeviceServiceLifecycle.StopResult(_services);
-            _active = false;
-            _descriptorSet = null;
-            _services = [];
-            await DisposeCycleTransportsAsync().ConfigureAwait(false);
-            _journal = null;
-            return result;
-        }, cancellationToken).ConfigureAwait(false);
-    }
-
     /// <inheritdoc />
     /// <remarks>
-    ///     The host awaits <see cref="StopAsync" /> first. Disposal only releases handles and never writes the
+    ///     The engine awaits <see cref="ReleaseAsync" /> first. Disposal only releases handles and never writes the
     ///     hardware: a cycle that was not stopped is restored from the journal at the next start. Every owner is
     ///     disposed even when an earlier one throws, and the failures are thrown together at the end.
     /// </remarks>
-    public async ValueTask DisposeAsync()
+    internal override async ValueTask DisposeAsync()
     {
         if (_disposed)
         {
@@ -366,7 +208,6 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
         }
 
         _disposed = true;
-        _serializer.StopObservation();
         List<Exception> failures = [];
         await Step("controller source", () => _source?.DisposeAsync() ?? ValueTask.CompletedTask)
             .ConfigureAwait(false);
@@ -382,11 +223,6 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
         await Step("ACPI", () =>
         {
             _hardware.Acpi.Dispose();
-            return ValueTask.CompletedTask;
-        }).ConfigureAwait(false);
-        await Step("serializer", () =>
-        {
-            _serializer.Dispose();
             return ValueTask.CompletedTask;
         }).ConfigureAwait(false);
         if (failures.Count != 0)
@@ -435,6 +271,87 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
         }
     }
 
+    internal override void AcknowledgeDescriptors()
+    {
+        _publications.AcknowledgeDescriptors();
+    }
+
+    public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+        CancellationToken token)
+    {
+        _quiescing = false;
+        if (!_initialized)
+        {
+            await InitializeAsync(new EngineStartContext
+            {
+                Host = _publications, Identity = _context.Identity, DeviceDefinitionId = _context.DeviceDefinitionId,
+                StateDirectory = _context.StateDirectory, Journal = _context.Journal, Resources = _context.Resources,
+                ControllerManagementEnabled = _context.ControllerManagementEnabled
+            }, token).ConfigureAwait(false);
+            _initialized = true;
+        }
+        else
+        {
+            await DeviceServiceLifecycle.AcquireAllAsync(_services, Context(cycle.Deadline), token)
+                .ConfigureAwait(false);
+            BuildCapabilitySurface();
+            await _publications.PublishDescriptorsAsync(_descriptorSet!, token).ConfigureAwait(false);
+            await PublishStatesAsync(token).ConfigureAwait(false);
+            _active = true;
+        }
+
+        var state = CurrentStartResult();
+        return Set(state.State == EngineOperationalState.Active ? DeviceServiceState.Owned :
+            state.State == EngineOperationalState.Degraded ? DeviceServiceState.Degraded : DeviceServiceState.Passive,
+            state.Reason);
+    }
+
+    public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+        CancellationToken token)
+    {
+        _quiescing = true;
+        await DeviceServiceLifecycle.ReleaseAllAsync(_services, Context(cycle.Deadline), token).ConfigureAwait(false);
+        _active = false;
+        _observedValues.Clear();
+        var result = DeviceServiceLifecycle.StopResult(_services);
+        return Set(result.Status == EngineStopStatus.Failed ? DeviceServiceState.Faulted :
+            result.Status == EngineStopStatus.Unverified ? DeviceServiceState.ReleasedUnverified :
+            DeviceServiceState.Idle, result.Reason);
+    }
+
+    internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
+        CancellationToken token)
+    {
+        return await ExecuteBoundCommandAsync(command, token).ConfigureAwait(false);
+    }
+
+    internal override async ValueTask RefreshAsync(CancellationToken token)
+    {
+        await RefreshAsync(null, token).ConfigureAwait(false);
+        await PublishStatesAsync(token).ConfigureAwait(false);
+    }
+
+    internal override async ValueTask SetControllerManagementAsync(bool enabled, CancellationToken token)
+    {
+        if (_controller is null)
+        {
+            return;
+        }
+
+        _controller.Enabled = enabled;
+        var deadline = Deadline.After(TimeSpan.FromSeconds(6));
+        if (enabled)
+        {
+            await DeviceServiceLifecycle.AcquireAsync(_controller, Context(deadline), token).ConfigureAwait(false);
+        }
+        else
+        {
+            await ReleaseControllerCoreAsync(deadline, token).ConfigureAwait(false);
+        }
+
+        await PublishStatesAsync(token).ConfigureAwait(false);
+    }
+
     private async ValueTask ReleaseControllerCoreAsync(
         Deadline deadline,
         CancellationToken cancellationToken)
@@ -447,7 +364,6 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
 
     private async ValueTask RollBackFailedStartAsync()
     {
-        _serializer.StopObservation();
         await DeviceServiceLifecycle.RollBackStartAsync(
             _services,
             Context(Deadline.After(TimeSpan.FromSeconds(12))),
@@ -462,11 +378,11 @@ internal sealed partial class AllyDeviceEngine : IDeviceEngine
 
     private DeviceCycleContext<AllyIdentityState> Context(Deadline deadline)
     {
-        return new DeviceCycleContext<AllyIdentityState>(_cycleGeneration, deadline,
+        return new DeviceCycleContext<AllyIdentityState>(deadline,
             _cycleIdentity ?? throw new InvalidOperationException("No cycle identity is available."));
     }
 
-    private PluginStartResult CurrentStartResult()
+    private EngineStartResult CurrentStartResult()
     {
         return DeviceServiceLifecycle.StartResult(
             _services,

@@ -1,6 +1,7 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -136,6 +137,10 @@ internal sealed partial class ClawDeviceEngine
                     journalCommand.RequestedValue!.ChoiceValue!,
                     token),
                 cancellationToken),
+            "fan.duty" => JournalCommandAsync(ServiceIds.Fans, binding, command,
+                async token => ClawRecoveryValues.Fans(await fans.ReadSnapshotAsync(token).ConfigureAwait(false)),
+                (request, token) => fans.ApplyDutyAsync(request, request.RequestedValue!.IntegerValue!.Value, token),
+                cancellationToken),
             CapabilityIds.FanCurve => ApplyFanCurveCommandAsync(command, fans, binding, cancellationToken),
             CapabilityIds.LightingBrightness => lighting.ApplyAsync(
                 command,
@@ -192,7 +197,7 @@ internal sealed partial class ClawDeviceEngine
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power,
             CapabilityIds.ChargeLimit => _chargeLimit,
-            CapabilityIds.FanMode or CapabilityIds.FanCurve => _fans,
+            CapabilityIds.FanMode or CapabilityIds.FanCurve or "fan.duty" => _fans,
             CapabilityIds.FanRpm or CapabilityIds.Temperature => _telemetry,
             CapabilityIds.LightingBrightness or CapabilityIds.LightingColor => _lighting,
             CapabilityIds.Controller or CapabilityIds.Rumble => _controller,
@@ -225,7 +230,7 @@ internal sealed partial class ClawDeviceEngine
         if (!identity.ExactMachineMatch)
         {
             return new CapabilityReason(
-                CapabilityReasonCode.GenerationChanged,
+                CapabilityReasonCode.Unsupported,
                 "Exact device identity no longer matches the Claw implementation.",
                 true);
         }
@@ -263,65 +268,9 @@ internal sealed partial class ClawDeviceEngine
         CapabilityDescriptor descriptor,
         bool onAcPower)
     {
-        if (_descriptorSet is null
-            || command.ExpectedDescriptorGeneration != _descriptorSet.Generation
-            || command.ExpectedCycleGeneration != _cycleGeneration)
-        {
-            return new CapabilityReason(
-                CapabilityReasonCode.GenerationChanged,
-                "Command targets a descriptor or device generation that is no longer current.",
-                true);
-        }
-
-        if (command.Deadline.HasExpired)
-        {
-            return new CapabilityReason(
-                CapabilityReasonCode.Quiescing,
-                "Command deadline passed before it could be applied.",
-                true);
-        }
-
-        if (onAcPower ? !descriptor.AvailableOnAc : !descriptor.AvailableOnDc)
-        {
-            return new CapabilityReason(
-                CapabilityReasonCode.UnavailableOnPowerSource,
-                onAcPower
-                    ? "Capability is unavailable on AC power."
-                    : "Capability is unavailable on battery power.");
-        }
-
-        if (command.RequestedValue is null)
-        {
-            return descriptor.SupportsAction
-                ? null
-                : new CapabilityReason(
-                    CapabilityReasonCode.Unsupported,
-                    "Capability does not support being invoked as an action.");
-        }
-
-        if (!descriptor.SupportsWrite)
-        {
-            return new CapabilityReason(CapabilityReasonCode.Unsupported, "Capability is read-only.");
-        }
-
-        var value = command.RequestedValue;
-        if (value.Kind != descriptor.ValueKind)
-        {
-            return new CapabilityReason(
-                CapabilityReasonCode.Unsupported,
-                $"Value kind {value.Kind} does not match descriptor kind {descriptor.ValueKind}.");
-        }
-
-        if (!CapabilityValueValidation.ValueMatches(value, descriptor, out var invalid))
-        {
-            return ValueOutOfRange(invalid!);
-        }
-
-        // WSGM decides both limits of the pair; a command that does not carry a valid one is refused.
-        return DevicePowerPair.Peer(_descriptorSet.Descriptors, command.CapabilityId) is not null
-               && !DevicePowerPair.TryResolve(command, _descriptorSet.Descriptors, out _, out _, out var pairError)
-            ? ValueOutOfRange(pairError!)
-            : null;
+        return _descriptorSet is null
+            ? new CapabilityReason(CapabilityReasonCode.HostUnavailable)
+            : CommandAdmission.Validate(command, descriptor, _descriptorSet.Descriptors, onAcPower);
     }
 
     private static CapabilityReason ValueOutOfRange(string detail)
@@ -342,77 +291,35 @@ internal sealed partial class ClawDeviceEngine
         ClawCommandHandler apply,
         CancellationToken cancellationToken)
     {
-        if (_journal is null)
-        {
-            return CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted,
-                "The recovery journal is unavailable; nothing was written.");
-        }
-
-        ClawRecoveryState? originalState = null;
-        if (binding is null)
-        {
-            // HC writes without capturing anything. Without a BIOS version there is no firmware to bind
-            // a restore point to, so the command is written the same way and there is nothing to restore.
-            DeviceTrace.Change(serviceId, "journal",
-                "The BIOS version is unknown, so the original has no binding; writing without a restore point.");
-        }
-        else
+        DeviceRecoveryOperation<ClawRecoveryState>? operation = null;
+        if (binding is not null && _journal is not null)
         {
             try
             {
-                originalState = await readOriginal(cancellationToken).ConfigureAwait(false);
+                operation = await _journal.BeginAsync<ClawRecoveryState>(serviceId, binding,
+                    async ct => await readOriginal(ct).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
             {
                 return ClawApplied.Refused(command, "original-state capture", exception, cancellationToken);
             }
-            catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-            {
-                // When the original cannot be read, the command is written the same way and there is
-                // nothing to restore; a read never gates a write.
-                DeviceTrace.Failure(serviceId, "The original state could not be captured; writing without a restore",
-                    ex);
-            }
         }
 
-        if (!DeviceWriteBudget.IsAvailable(command.Deadline))
+        if (!DeviceWriteBudget.IsAvailable(command.Deadline) || cancellationToken.IsCancellationRequested)
         {
-            return CommandResults.Rejected(command, new CapabilityReason(
-                CapabilityReasonCode.Quiescing,
-                "Not enough time left to write safely; nothing was written.",
-                true));
-        }
-
-        if (binding is null || originalState is null)
-        {
-            return await apply(command, cancellationToken).ConfigureAwait(false);
-        }
-
-        // An entry left unverified or failed by an earlier restore is set pending again here: this
-        // explicit command is the user action that lets the next release write its first original.
-        DeviceRecoveryOperation<ClawRecoveryState> operation;
-        try
-        {
-            operation = await _journal.BeginAsync(
-                serviceId,
-                binding,
-                originalState,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            return ClawApplied.Refused(command, "recovery journal", exception, cancellationToken);
+            return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
+                "Cancelled before native dispatch.");
         }
 
         // A transport exception does not prove whether the firmware accepted a write. Let it
         // propagate while the exact pre-command journal entry remains outstanding for recovery.
         var result = await apply(command, cancellationToken).ConfigureAwait(false);
-        if (operation.Opened && result.Outcome is CommandOutcome.Rejected)
+        if (operation?.Opened == true && result.Outcome is CommandOutcome.Rejected)
         {
             // Nothing was written, so the entry this command opened has nothing to restore.
             try
             {
-                await _journal.SetStatusAsync(serviceId, DeviceRecoveryStatus.RestoredVerified, CancellationToken.None)
+                await _journal!.SetStatusAsync(serviceId, DeviceRecoveryStatus.RestoredVerified, CancellationToken.None)
                     .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -432,8 +339,7 @@ internal sealed partial class ClawDeviceEngine
         return CommandResults.Indeterminate(
             command,
             CapabilityReasonCode.TransportFaulted,
-            detail,
-            RollbackResult.NotRequired);
+            detail);
     }
 
     private static ValueTask<CapabilityCommandResult> ReadOnlyHandler(

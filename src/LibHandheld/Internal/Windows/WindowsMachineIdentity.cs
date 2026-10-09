@@ -1,113 +1,97 @@
 using System.Globalization;
-using System.Management;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using LibHandheld.Internal.Identity;
+using Microsoft.Win32;
 using DeviceIdentitySnapshot = LibHandheld.Contracts.DeviceIdentitySnapshot;
 using UsbEndpointObservation = LibHandheld.Contracts.UsbEndpointObservation;
 
 namespace LibHandheld.Internal.Windows;
 
-// Identity collection is read-only. No EC, vendor DLL, HID or privileged driver is opened here.
+// Read-only registry, CPUID and HID interface metadata. No reports, EC methods or privileged drivers are used.
 internal static class WindowsMachineIdentity
 {
+    internal static bool OnAcPower()
+    {
+        return !GetSystemPowerStatus(out var status) || status.ACLineStatus != 0;
+    }
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetSystemPowerStatus(out SystemPowerStatus status);
+
     internal static DeviceIdentitySnapshot Read()
+    {
+        return ReadSmbios() with { UsbEndpoints = UsbEndpoints() };
+    }
+
+    internal static DeviceIdentitySnapshot ReadSmbios()
     {
         if (!OperatingSystem.IsWindows())
         {
             throw new PlatformNotSupportedException("Handheld machine detection requires Windows.");
         }
 
-        var system = Query("SELECT Manufacturer, Model, SystemSKUNumber, SystemFamily FROM Win32_ComputerSystem");
-        var board = Query("SELECT Manufacturer, Product, Version FROM Win32_BaseBoard");
-        var bios = Query("SELECT SMBIOSBIOSVersion FROM Win32_BIOS");
-        var processor = Query("SELECT Name FROM Win32_Processor");
+        using var bios = OpenRegistry(@"HARDWARE\DESCRIPTION\System\BIOS");
+        using var processor = OpenRegistry(@"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
         return new DeviceIdentitySnapshot
         {
-            SystemManufacturer = Get(system, "Manufacturer"), SystemProduct = Get(system, "Model"),
-            SystemSku = Get(system, "SystemSKUNumber"), SystemFamily = Get(system, "SystemFamily"),
-            BaseboardManufacturer = Get(board, "Manufacturer"), BaseboardProduct = Get(board, "Product"),
-            BaseboardVersion = Get(board, "Version"), BiosVersion = Get(bios, "SMBIOSBIOSVersion"),
-            ProcessorName = Get(processor, "Name"), CpuIdentity = ProcessorIdentity(), UsbEndpoints = UsbEndpoints()
+            SystemManufacturer = ReadValue(bios, "SystemManufacturer"),
+            SystemProduct = ReadValue(bios, "SystemProductName"),
+            SystemSku = ReadValue(bios, "SystemSKU"), SystemFamily = ReadValue(bios, "SystemFamily"),
+            BaseboardManufacturer = ReadValue(bios, "BaseBoardManufacturer"),
+            BaseboardProduct = ReadValue(bios, "BaseBoardProduct"),
+            BaseboardVersion = ReadValue(bios, "BaseBoardVersion"), BiosVersion = ReadValue(bios, "BIOSVersion"),
+            ProcessorName = ReadValue(processor, "ProcessorNameString"), CpuIdentity = ProcessorIdentity(),
+            UsbEndpoints = []
         };
     }
 
-    private static Dictionary<string, string?> Query(string query)
+    private static RegistryKey? OpenRegistry(string path)
     {
-        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            using ManagementObjectSearcher searcher = new(@"root\CIMV2", query);
-            using var candidates = searcher.Get();
-            foreach (var item in candidates.Cast<ManagementObject>())
-            {
-                using (item)
-                {
-                    foreach (var property in item.Properties)
-                    {
-                        values[property.Name] = IdentityText.Normalize(
-                            Convert.ToString(property.Value, CultureInfo.InvariantCulture));
-                    }
-                }
-
-                break;
-            }
+            return Registry.LocalMachine.OpenSubKey(path, false);
         }
-        catch (Exception exception) when (exception is ManagementException or COMException or
-                                              UnauthorizedAccessException)
+        catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // An unavailable observation must not become a guessed model identity.
+            return null;
         }
+    }
 
-        return values;
+    private static string? ReadValue(RegistryKey? key, string name)
+    {
+        try
+        {
+            return IdentityText.Normalize(key?.GetValue(name) as string);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return null;
+        }
     }
 
     private static IReadOnlyList<UsbEndpointObservation> UsbEndpoints()
     {
-        var endpoints = new List<UsbEndpointObservation>();
         try
         {
-            using ManagementObjectSearcher searcher = new(@"root\CIMV2",
-                @"SELECT DeviceID, HardwareID FROM Win32_PnPEntity WHERE DeviceID LIKE 'USB\\VID_%'");
-            using var candidates = searcher.Get();
-            foreach (var item in candidates.Cast<ManagementObject>())
+            return HidDevices.EnumerateAll().Select(collection => new UsbEndpointObservation
             {
-                using (item)
-                {
-                    var path = Convert.ToString(item["DeviceID"], CultureInfo.InvariantCulture) ?? string.Empty;
-                    var vendor = Hex(path, "VID_", 4);
-                    var product = Hex(path, "PID_", 4);
-                    if (vendor is null || product is null)
-                    {
-                        continue;
-                    }
-
-                    var hardwareIds = item["HardwareID"] as string[];
-                    var release = hardwareIds?.Select(id => Hex(id, "REV_", 4))
-                        .FirstOrDefault(value => value is not null);
-                    var interfaceText = Hex(path, "MI_", 2);
-                    endpoints.Add(new UsbEndpointObservation
-                    {
-                        VendorId = vendor, ProductId = product, DeviceRelease = release,
-                        InterfaceNumber = interfaceText is null
-                            ? null
-                            : int.Parse(interfaceText, NumberStyles.HexNumber, CultureInfo.InvariantCulture)
-                    });
-                }
-            }
+                VendorId = collection.VendorId.ToString("X4", CultureInfo.InvariantCulture),
+                ProductId = collection.ProductId.ToString("X4", CultureInfo.InvariantCulture),
+                DeviceRelease = collection.ReleaseNumber.ToString("X4", CultureInfo.InvariantCulture),
+                InterfaceNumber = Hex(collection.InstancePath, "MI_", 2) is { } interfaceId
+                    ? int.Parse(interfaceId, NumberStyles.HexNumber, CultureInfo.InvariantCulture)
+                    : null,
+                LocationPath = collection.PhysicalLocation,
+                ReportLengths = new[] { (int)collection.InputLength, collection.OutputLength, collection.FeatureLength }
+                    .Where(length => length > 0).Distinct().ToArray()
+            }).Distinct().ToArray();
         }
-        catch (Exception exception) when (exception is ManagementException or COMException or
-                                              UnauthorizedAccessException)
+        catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // Empty observations fail endpoint-dependent detection instead of authorizing an incorrect device.
+            return [];
         }
-
-        return Array.AsReadOnly(endpoints.ToArray());
-    }
-
-    private static string? Get(IReadOnlyDictionary<string, string?> values, string key)
-    {
-        return values.GetValueOrDefault(key);
     }
 
     private static string? ProcessorIdentity()
@@ -139,5 +123,12 @@ internal static class WindowsMachineIdentity
 
         var hex = value.Substring(start + marker.Length, length);
         return hex.All(Uri.IsHexDigit) ? hex.ToUpperInvariant() : null;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SystemPowerStatus
+    {
+        public byte ACLineStatus, BatteryFlag, BatteryLifePercent, SystemStatusFlag;
+        public int BatteryLifeTime, BatteryFullLifeTime;
     }
 }

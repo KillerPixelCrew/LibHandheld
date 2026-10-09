@@ -1,7 +1,6 @@
 using System.Numerics;
 using LibHandheld.Families.MsiClaw.Tests.Fakes;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Identity;
 using static LibHandheld.Families.MsiClaw.Tests.Builders.ClawCommands;
 
 namespace LibHandheld.Families.MsiClaw.Tests;
@@ -122,7 +121,7 @@ public sealed class ClawModelsTests
         var result = await power.ApplyLimitsAsync(
             Command(CapabilityIds.PowerBoost, null, CapabilityValue.Integer(28)), 20, 28, CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(
             [
                 ClawHardwareFacts.PowerSustainedAddress, ClawHardwareFacts.PowerBoostAddress,
@@ -168,7 +167,7 @@ public sealed class ClawModelsTests
         var result = await power.ApplyScenarioAsync(
             Command(CapabilityIds.Scenario, null, CapabilityValue.Choice("user")), "user", CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(0xC6, wmi.ReadData(ClawHardwareFacts.ScenarioAddress));
     }
 }

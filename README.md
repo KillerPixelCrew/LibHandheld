@@ -2,10 +2,10 @@
 
 Windows-first .NET hardware library, directly consumed by WSGM. Native families cover MSI Claw, ASUS
 ROG Ally, Lenovo Legion Go, GPD, AYANEO, OneXPlayer/AOKZOE, Valve, Zotac and the documented
-remaining Windows targets and fallback ranges. The original Claw and Ally engines were migrated from
-MIT WSGM sources. The library provides native identification, power, fans, charging, lighting,
-controller input, motion, haptics, OEM controls, glyphs and recovery without a WSGM SDK or
-device-package loader.
+remaining exact Windows targets. The original Claw and Ally engines were migrated from MIT WSGM
+sources. The library provides native identification, power, fans, charging, lighting, controller
+input, motion, haptics, OEM controls, glyphs and recovery without a WSGM SDK or device-package
+loader.
 
 The complete target remains every device supported by Handheld Companion (HC) or Handheld Daemon
 (HHD). The [inventory](inventory/README.md) contains 201 HC/HHD source records, not 201 unique
@@ -17,14 +17,14 @@ scaffold is not support; compilation and hardware acceptance are recorded separa
 
 The public [API](API.md) is `HandheldDevice` and typed `LibHandheld.Contracts`, with a borrowed
 `IHandheldObserver`. Detection matches supplied identity and does not open hardware. Start acquires
-native services; the caller owns lifecycle sequencing, generation, state-directory selection and
-terminal restoration. Cancellation does not establish that a native operation stopped.
+native services; one device owner serializes operations while the caller owns state-directory
+selection and terminal restoration. Cancellation does not establish that a native operation stopped.
 
-Call `CreateCurrent` for automatic model detection or `Create(modelId, ...)` for explicit selection,
-then use common operations such as `SetTdpAsync`, fan, charging and lighting setters. A family
-registry and shared Windows services route those operations to the appropriate native
-implementation. Variants sharing a protocol normally require one model profile. See
-[adding a device](CONTRIBUTING.md).
+Match the supplied identity with `Detect(identity)`, create the result with
+`Create(definition, identity, stateDirectory, diagnostics)`, then use common operations such as
+`SetTdpAsync`, fan, charging and lighting setters. A family registry and shared Windows services
+route those operations to the appropriate native implementation. Variants sharing a protocol
+normally require one model profile. See [adding a device](CONTRIBUTING.md).
 
 The project targets `net10.0-windows10.0.19041.0`, x64, and uses System.Management for Windows
 hardware access. Internal helpers and family engines remain private; the consuming application owns
@@ -44,7 +44,7 @@ For a contribution, identify the exact model, board, controller interfaces and f
 Document protocol provenance and variant predicates, implement native services, and add parser or
 encoder fixtures. Record source support separately from attended hardware observations. Unknown
 input decoders remain explicitly unimplemented research. Shared helpers should serve concrete
-protocols rather than create another plugin framework.
+protocols rather than create another abstraction layer.
 
 - [API](API.md): contracts, operation results and native lifetimes.
 - [Contributing](CONTRIBUTING.md): model profiles, protocol services and source requirements.

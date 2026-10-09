@@ -1,45 +1,41 @@
-using System.Buffers.Binary;
 using System.ComponentModel;
-using System.Runtime.InteropServices;
 using System.Text;
 using LibHandheld.Families.RogAlly;
 using LibHandheld.Internal.Windows;
-using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Families.Generic;
 
 /// <summary>The dock's two ACPI IDs and 300-byte HID collection; no driver tuning belongs here.</summary>
-internal sealed partial class AsusXgTransport : IDisposable
+internal sealed class AsusXgTransport : IDisposable
 {
-    private const uint ConnectedId = 0x00090018;
-    private const uint EnableId = 0x00090019;
-    private readonly SafeFileHandle _acpi;
+    private readonly IAsusAcpi _acpi;
     private readonly HidCollection[] _lights;
 
-    private AsusXgTransport(SafeFileHandle acpi, HidCollection[] lights)
+    private AsusXgTransport(IAsusAcpi acpi, HidCollection[] lights)
     {
         _acpi = acpi;
         _lights = lights;
     }
 
-    internal bool Connected => Read(ConnectedId) == 1;
+    internal bool Connected => Read(AsusAcpiId.XgConnected) == 1;
 
     public void Dispose()
     {
         _acpi.Dispose();
     }
 
-    internal static AsusXgTransport? Open()
+    internal static AsusXgTransport? Open(IReadOnlyList<HidCollection>? collections = null)
     {
-        var handle = CreateFile(@"\\.\ATKACPI", 0xC0000000, 3, 0, 3, 0, 0);
-        if (handle.IsInvalid)
+        var acpi = new WindowsAsusAcpi();
+        if (!acpi.TryOpen())
         {
-            handle.Dispose();
+            acpi.Dispose();
             return null;
         }
 
-        var lights = HidDevices.Enumerate(0x0B05, [0x1970, 0x1A9A, 0x1BC1]).Where(collection =>
-            collection.FeatureLength == 300
+        var lights = (collections ?? AsusAuraTransport.DiscoverCollections()).Where(collection =>
+            collection.ProductId is 0x1970 or 0x1A9A or AsusAuraProtocol.Xg2025
+            && collection.FeatureLength == 300
             && (collection.ProductId != AsusAuraProtocol.Xg2025 ||
                 AsusAuraProtocol.Application(collection.UsagePage, collection.Usage))
             && !string.IsNullOrEmpty(collection.PhysicalLocation)).ToArray();
@@ -50,19 +46,19 @@ internal sealed partial class AsusXgTransport : IDisposable
             lights = [];
         }
 
-        return new AsusXgTransport(handle, lights);
+        return new AsusXgTransport(acpi, lights);
     }
 
     internal bool? ReadEnabled()
     {
-        return Read(EnableId) is { } value ? value == 1 : null;
+        return Read(AsusAcpiId.XgEnabled) is { } value ? value == 1 : null;
     }
 
-    private int? Read(uint id)
+    private int? Read(AsusAcpiId id)
     {
         try
         {
-            var raw = Exchange(AsusAcpiProtocol.DeviceStatus, id, 0);
+            var raw = _acpi.ReadStatus(id);
             return AsusAcpiProtocol.TryDecodeScalar(raw, out var value) ? value : null;
         }
         catch (Exception exception) when (exception is Win32Exception or IOException)
@@ -73,7 +69,7 @@ internal sealed partial class AsusXgTransport : IDisposable
 
     internal void Enable(bool enabled)
     {
-        if (Exchange(AsusAcpiProtocol.DeviceSet, EnableId, enabled ? 1U : 0) != 0)
+        if (_acpi.Write(AsusAcpiId.XgEnabled, enabled ? 1U : 0) != 0)
         {
             throw new IOException("ASUS firmware rejected the XG Mobile change.");
         }
@@ -121,41 +117,4 @@ internal sealed partial class AsusXgTransport : IDisposable
             HidDevices.SetFeature(handle, collection, payload);
         }
     }
-
-    private uint Exchange(uint method, uint id, uint value)
-    {
-        if (id is not (ConnectedId or EnableId) || (method == AsusAcpiProtocol.DeviceSet && id != EnableId))
-        {
-            throw new InvalidOperationException("Unreviewed XG Mobile ACPI operation.");
-        }
-
-        var request = new byte[16];
-        BinaryPrimitives.WriteUInt32LittleEndian(request, method);
-        BinaryPrimitives.WriteUInt32LittleEndian(request.AsSpan(4), 8);
-        BinaryPrimitives.WriteUInt32LittleEndian(request.AsSpan(8), id);
-        BinaryPrimitives.WriteUInt32LittleEndian(request.AsSpan(12), value);
-        var output = new byte[16];
-        if (!DeviceIoControl(_acpi, AsusAcpiProtocol.Ioctl, request, 16, output, 16, out var returned, 0))
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError(),
-                "The XG Mobile ACPI exchange failed; write effect is unknown.");
-        }
-
-        if (returned < 4)
-        {
-            throw new IOException("The XG Mobile ACPI response is incomplete.");
-        }
-
-        return BinaryPrimitives.ReadUInt32LittleEndian(output);
-    }
-
-    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16,
-        SetLastError = true)]
-    private static partial SafeFileHandle CreateFile(string path, uint access, uint share, nint security,
-        uint disposition, uint flags, nint template);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DeviceIoControl(SafeFileHandle device, uint code, [In] byte[] input, uint inputLength,
-        [Out] byte[] output, uint outputLength, out uint returned, nint overlapped);
 }

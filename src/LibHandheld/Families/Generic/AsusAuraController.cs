@@ -1,19 +1,20 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 
 namespace LibHandheld.Families.Generic;
 
-/// <summary>Actual attached Aura modules, their persistent preference writes and per-module uncertainty.</summary>
+/// <summary>Actual attached Aura modules and their persistent preference writes.</summary>
 internal sealed class AsusAuraController(
     Func<IReadOnlyList<AsusAuraModule>>? discover = null,
     Func<AsusAuraModule, IAsusAuraTransport>? open = null)
 {
     private readonly Dictionary<string, Entry> _modules = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _uncertain = new(StringComparer.Ordinal);
-    internal long Generation { get; private set; }
+    internal bool DescriptorsChanged { get; private set; }
+
     internal bool Any => _modules.Count != 0;
 
     internal bool Available => _modules.Values.Any(entry =>
-        entry.Transport is not null && !_uncertain.Contains(entry.Module.HardwareIdentity));
+        entry.Transport is not null);
 
     internal IReadOnlyList<CapabilityDescriptor> Descriptors => Array.AsReadOnly(_modules.Values
         .OrderBy(entry => entry.Module.ZoneId, StringComparer.Ordinal)
@@ -31,14 +32,10 @@ internal sealed class AsusAuraController(
                 states.Add(new CapabilityState
                 {
                     CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
-                    Available = entry.Transport is not null && !_uncertain.Contains(entry.Module.HardwareIdentity),
+                    Available = entry.Transport is not null,
                     ObservedValue = observed.Value, ObservedAt = observed.Timestamp,
                     Quality = observed.Value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                    Reason = _uncertain.Contains(entry.Module.HardwareIdentity)
-                        ? new CapabilityReason(CapabilityReasonCode.TransportFaulted,
-                            "An Aura write was uncertain; it is not repeated by discovery or resume.")
-                        : null,
-                    DescriptorGeneration = 0, CycleGeneration = 0
+                    Reason = null
                 });
             }
 
@@ -46,10 +43,15 @@ internal sealed class AsusAuraController(
         }
     }
 
-    internal void Refresh(CancellationToken token)
+    internal void AcknowledgeDescriptors()
+    {
+        DescriptorsChanged = false;
+    }
+
+    internal void Refresh(CancellationToken token, IReadOnlyList<AsusAuraModule>? modules = null)
     {
         token.ThrowIfCancellationRequested();
-        var found = (discover ?? AsusAuraTransport.Discover)();
+        var found = modules ?? (discover ?? AsusAuraTransport.Discover)();
         var keys = found.Select(module => module.ZoneId).ToHashSet(StringComparer.Ordinal);
         var changed = false;
         foreach (var missing in _modules.Keys.Where(key => !keys.Contains(key)).ToArray())
@@ -88,7 +90,7 @@ internal sealed class AsusAuraController(
                 changed = true;
             }
 
-            if (entry.Transport is null && !_uncertain.Contains(module.HardwareIdentity))
+            if (entry.Transport is null)
             {
                 try
                 {
@@ -103,7 +105,7 @@ internal sealed class AsusAuraController(
 
         if (changed)
         {
-            Generation++;
+            DescriptorsChanged = true;
         }
     }
 
@@ -119,13 +121,15 @@ internal sealed class AsusAuraController(
         var entry = _modules.Values.SingleOrDefault(candidate => Describe(candidate.Module)
             .Any(descriptor =>
                 descriptor.CapabilityId == command.CapabilityId && descriptor.InstanceId == command.InstanceId));
-        if (entry?.Transport is null || _uncertain.Contains(entry.Module.HardwareIdentity))
+        if (entry?.Transport is null)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
-                "The Aura module is absent or its previous write was uncertain.");
+                "The Aura module is absent.");
         }
 
         var dispatched = false;
+        var preferences = (entry.Boot, entry.Awake, entry.Sleep, entry.Shutdown, entry.Effect,
+            entry.Primary, entry.Secondary, entry.Speed, entry.Left);
         try
         {
             token.ThrowIfCancellationRequested();
@@ -207,7 +211,7 @@ internal sealed class AsusAuraController(
                 _ => value
             };
             entry.Values[(command.CapabilityId, command.InstanceId)] = (observedValue, DateTimeOffset.UtcNow);
-            return CommandResults.Unverified(command);
+            return CommandResults.Applied(command);
 
             void Power()
             {
@@ -248,17 +252,9 @@ internal sealed class AsusAuraController(
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            if (dispatched)
-            {
-                _uncertain.Add(entry.Module.HardwareIdentity);
-                entry.Transport.Dispose();
-                entry.Transport = null;
-            }
-
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message,
-                    RollbackResult.NotRequired)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
+            (entry.Boot, entry.Awake, entry.Sleep, entry.Shutdown, entry.Effect,
+                entry.Primary, entry.Secondary, entry.Speed, entry.Left) = preferences;
+            return CommandResults.TransportFailure(command, dispatched, exception);
         }
     }
 
@@ -278,10 +274,10 @@ internal sealed class AsusAuraController(
 
         if (_modules.Count != 0)
         {
-            Generation++;
+            DescriptorsChanged = true;
         }
 
-        _modules.Clear(); // The uncertainty set survives suspend/resume and hotplug.
+        _modules.Clear();
     }
 
     private static IReadOnlyList<CapabilityDescriptor> Describe(AsusAuraModule module)
@@ -297,16 +293,17 @@ internal sealed class AsusAuraController(
                 Role = CapabilityRole.LightingBrightness,
                 ValueKind = CapabilityValueKind.Integer, Minimum = 0, Maximum = 100, Step = 1,
                 Unit = CapabilityUnit.Percent,
-                Display = Label(label + " brightness"), SupportsWrite = true,
+                Display = CapabilityDescriptors.Label(label + " brightness"), SupportsWrite = true,
                 Persistence = CapabilityPersistence.DevicePersistent
             },
             new()
             {
                 CapabilityId = CapabilityIds.LightingEffect, InstanceId = instance,
                 Role = CapabilityRole.LightingEffect,
-                ValueKind = CapabilityValueKind.Choice, Display = Label(label + " effect"), SupportsWrite = true,
+                ValueKind = CapabilityValueKind.Choice, Display = CapabilityDescriptors.Label(label + " effect"),
+                SupportsWrite = true,
                 Choices = Array.AsReadOnly(AsusAuraProtocol.Effects(module.ProductId)
-                    .Select(effect => new CapabilityChoice(effect, Label(effect))).ToArray()),
+                    .Select(effect => new CapabilityChoice(effect, CapabilityDescriptors.Label(effect))).ToArray()),
                 Persistence = CapabilityPersistence.DevicePersistent
             },
             new()
@@ -315,7 +312,7 @@ internal sealed class AsusAuraController(
                 Role = CapabilityRole.LightingEffectSpeed,
                 ValueKind = CapabilityValueKind.Integer, Minimum = 0, Maximum = 100, Step = 1,
                 Unit = CapabilityUnit.Percent,
-                Display = Label(label + " effect speed"), SupportsWrite = true,
+                Display = CapabilityDescriptors.Label(label + " effect speed"), SupportsWrite = true,
                 Persistence = CapabilityPersistence.DevicePersistent
             },
             Color(instance, label + " color"), Color(instance + "-secondary", label + " second color")
@@ -336,8 +333,12 @@ internal sealed class AsusAuraController(
             {
                 CapabilityId = "asus.aura.direction", InstanceId = instance,
                 Role = CapabilityRole.GenericChoice, ValueKind = CapabilityValueKind.Choice,
-                Display = Label(label + " cycle direction"),
-                Choices = [new CapabilityChoice("left", Label("Left")), new CapabilityChoice("right", Label("Right"))],
+                Display = CapabilityDescriptors.Label(label + " cycle direction"),
+                Choices =
+                [
+                    new CapabilityChoice("left", CapabilityDescriptors.Label("Left")),
+                    new CapabilityChoice("right", CapabilityDescriptors.Label("Right"))
+                ],
                 SupportsWrite = true,
                 Persistence = CapabilityPersistence.DevicePersistent
             });
@@ -346,10 +347,6 @@ internal sealed class AsusAuraController(
         return descriptors;
     }
 
-    private static CapabilityDisplay Label(string label)
-    {
-        return new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = label };
-    }
 
     private static int EncodedSpeed(Entry entry)
     {
@@ -361,7 +358,7 @@ internal sealed class AsusAuraController(
         return new CapabilityDescriptor
         {
             CapabilityId = id, InstanceId = instance, Role = role, ValueKind = CapabilityValueKind.Boolean,
-            Display = Label(label),
+            Display = CapabilityDescriptors.Label(label),
             SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
         };
     }
@@ -372,7 +369,8 @@ internal sealed class AsusAuraController(
         {
             CapabilityId = CapabilityIds.LightingColor, InstanceId = instance, Role = CapabilityRole.LightingZoneColor,
             ValueKind = CapabilityValueKind.Color,
-            Display = Label(label), SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
+            Display = CapabilityDescriptors.Label(label), SupportsWrite = true,
+            Persistence = CapabilityPersistence.DevicePersistent
         };
     }
 

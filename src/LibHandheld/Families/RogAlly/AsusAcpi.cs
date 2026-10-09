@@ -1,10 +1,11 @@
-// SPDX-License-Identifier: MIT
-
 using System.Buffers.Binary;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
+using LibHandheld.Internal.Windows;
 using Microsoft.Win32.SafeHandles;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -44,7 +45,9 @@ internal enum AsusAcpiId : uint
     GpuFanCurve = 0x00110025,
 
     /// <summary>Mid fan curve, which HC writes on every Ally (<c>ROGAlly.cs:317-321</c>).</summary>
-    MidFanCurve = 0x00110032
+    MidFanCurve = 0x00110032,
+    XgConnected = 0x00090018,
+    XgEnabled = 0x00090019
 }
 
 /// <summary>Encodes and decodes ATKACPI DSTS/DEVS exchanges; nothing here touches a handle.</summary>
@@ -72,7 +75,8 @@ internal static class AsusAcpiProtocol
 
     public static bool IsWritable(AsusAcpiId id)
     {
-        return id is not (AsusAcpiId.CpuFanSpeed or AsusAcpiId.GpuFanSpeed) && Enum.IsDefined(id);
+        return id is not (AsusAcpiId.CpuFanSpeed or AsusAcpiId.GpuFanSpeed or AsusAcpiId.XgConnected) &&
+               Enum.IsDefined(id);
     }
 
     public static bool IsCurve(AsusAcpiId id)
@@ -142,14 +146,14 @@ internal static class AsusAcpiProtocol
         };
     }
 
-    /// <summary>Whether sixteen bytes are a curve this plugin may write or restore.</summary>
+    /// <summary>Whether sixteen bytes are a curve this transport may write or restore.</summary>
     /// <remarks>
-    ///     Eight nondecreasing temperatures from 20 to 110 °C and eight duties no higher than 100, at
-    ///     least one of them non-zero: the envelope the Ally X Lab reviewed before any curve write.
+    ///     Eight nondecreasing temperatures from 20 to 110 degrees Celsius and eight duties no higher than 100.
+    ///     All-zero duties are valid, as HC's SetFanSpeed(0) requires.
     /// </remarks>
     /// <param name="curve">Eight temperature bytes followed by eight duty bytes.</param>
     /// <returns>
-    ///     True for the 16-byte admitted temperature/duty envelope with at least one nonzero duty; this does not query
+    ///     True for the 16-byte admitted temperature/duty envelope; this does not query
     ///     hardware.
     /// </returns>
     public static bool IsValidCurve(ReadOnlySpan<byte> curve)
@@ -168,7 +172,17 @@ internal static class AsusAcpiProtocol
             }
         }
 
-        return curve[8..].IndexOfAnyExcept((byte)0) >= 0;
+        return true;
+    }
+
+    /// <summary>HC AsusACPI.SetFanSpeed's flat duty report; it is a command, not a model's automatic baseline.</summary>
+    /// <param name="percent">Requested duty, clamped to the firmware's 0-99 range.</param>
+    /// <returns>Eight HC temperatures followed by eight equal duties.</returns>
+    public static byte[] FlatFanCurve(int percent)
+    {
+        byte[] curve = [30, 40, 50, 60, 70, 80, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0];
+        curve.AsSpan(8, 8).Fill(checked((byte)Math.Clamp(percent, 0, 99)));
+        return curve;
     }
 }
 
@@ -217,7 +231,7 @@ internal interface IAsusAcpi : IDisposable
 ///     Synchronous by nature: a driver call cannot be cancelled, so callers are the plugin's own
 ///     serialized workers, never the UI thread. INIT, WDOG and arbitrary IDs are not exposed.
 /// </remarks>
-internal sealed partial class WindowsAsusAcpi : IAsusAcpi
+internal sealed class WindowsAsusAcpi : IAsusAcpi
 {
     private const uint GenericReadWrite = 0xC0000000;
     private const uint ShareReadWrite = 3;
@@ -239,7 +253,8 @@ internal sealed partial class WindowsAsusAcpi : IAsusAcpi
             }
 
             // HC opens the same path with read/write access (AsusACPI.cs:118).
-            var handle = CreateFile(@"\\.\ATKACPI", GenericReadWrite, ShareReadWrite, IntPtr.Zero, OpenExisting, 0,
+            var handle = NativeDevice.CreateFile(@"\\.\ATKACPI", GenericReadWrite, ShareReadWrite, IntPtr.Zero,
+                OpenExisting, 0,
                 IntPtr.Zero);
             if (handle.IsInvalid)
             {
@@ -339,7 +354,7 @@ internal sealed partial class WindowsAsusAcpi : IAsusAcpi
             }
 
             var response = new byte[AsusAcpiProtocol.ResponseLength];
-            if (!DeviceIoControl(handle, AsusAcpiProtocol.Ioctl, request, (uint)request.Length, response,
+            if (!NativeDevice.DeviceIoControl(handle, AsusAcpiProtocol.Ioctl, request, (uint)request.Length, response,
                     (uint)response.Length, out var returned, IntPtr.Zero))
             {
                 // A failed write does not prove the firmware ignored it; callers never retry.
@@ -354,27 +369,4 @@ internal sealed partial class WindowsAsusAcpi : IAsusAcpi
             return returned == response.Length ? response : [.. response.Take((int)returned)];
         }
     }
-
-    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true,
-        StringMarshalling = StringMarshalling.Utf16)]
-    private static partial SafeFileHandle CreateFile(
-        string path,
-        uint access,
-        uint share,
-        IntPtr security,
-        uint creation,
-        uint flags,
-        IntPtr template);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DeviceIoControl(
-        SafeFileHandle file,
-        uint ioctl,
-        [In] byte[] input,
-        uint inputLength,
-        [Out] byte[] output,
-        uint outputLength,
-        out uint returned,
-        IntPtr overlapped);
 }

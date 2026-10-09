@@ -1,8 +1,6 @@
-// SPDX-License-Identifier: MIT
-
 using System.Buffers.Binary;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly.Tests.Fakes;
 
@@ -138,9 +136,11 @@ internal sealed class FakeIdentityReader(string product, string manufacturer = A
     : IAllyIdentityReader
 {
     public string Product { get; set; } = product;
+    public int Reads { get; private set; }
 
     public ValueTask<AllyIdentityState> ReadAsync(CancellationToken cancellationToken)
     {
+        Reads++;
         var snapshot = new DeviceIdentitySnapshot
         {
             BaseboardManufacturer = manufacturer,
@@ -162,6 +162,8 @@ internal sealed class FakeVendorHid : IAllyVendorHid
     private Action<Exception>? _fault;
 
     public bool Available { get; set; } = true;
+    public bool Reading => _callback is not null;
+    public int ReaderStarts { get; private set; }
 
     public bool FailWrites { get; set; }
 
@@ -178,8 +180,13 @@ internal sealed class FakeVendorHid : IAllyVendorHid
     public ValueTask<bool> StartAsync(Func<byte, DateTimeOffset, ValueTask> callback, Action<Exception> fault,
         CancellationToken cancellationToken)
     {
-        _callback = callback;
-        _fault = fault;
+        _callback = Available ? callback : null;
+        _fault = Available ? fault : null;
+        if (Available)
+        {
+            ReaderStarts++;
+        }
+
         return ValueTask.FromResult(Available);
     }
 
@@ -449,9 +456,9 @@ internal sealed class AllyFakeHardware(string product = "RC72LA")
 
     public FakeVendorHid Vendor { get; } = new();
 
-    public AllyDeviceEngine CreatePlugin()
+    public ServiceEngineFixture CreatePlugin()
     {
-        return new AllyDeviceEngine(new AllyHardwareServices(
+        return new ServiceEngineFixture(context => new AllyDeviceEngine(context, new AllyHardwareServices(
             Identity,
             Acpi,
             _ => Vendor,
@@ -463,6 +470,7 @@ internal sealed class AllyFakeHardware(string product = "RC72LA")
             },
             _ => Motion,
             Keyboard,
-            NoDelay));
+            NoDelay,
+            () => true)));
     }
 }

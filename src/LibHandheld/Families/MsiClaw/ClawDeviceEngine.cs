@@ -1,7 +1,7 @@
-using LibHandheld.Internal.Capabilities;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -13,16 +13,16 @@ namespace LibHandheld.Families.MsiClaw;
 ///     Controller management changes controller ownership without stopping power, lighting or motion.
 ///     Successful writes remain observed when readback cannot confirm them; uncertain writes are not retried.
 /// </remarks>
-internal sealed partial class ClawDeviceEngine : IDeviceEngine
+internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
 {
+    private readonly ProfiledFeatureContext _context;
     private readonly Dictionary<string, CapabilityReason> _observationFailures = new(StringComparer.Ordinal);
-    private readonly DeviceCommandSerializer _serializer;
+    private readonly ServicePublications _publications;
     private readonly ClawHardwareServices _services;
     private bool _active;
     private ChargeLimitService? _chargeLimit;
     private ClawChargeLimitCapability? _chargeLimitCapability;
     private ControllerService? _controller;
-    private long _cycleGeneration;
     private ClawIdentityState? _cycleIdentity;
     private ClawModel? _cycleModel;
     private CapabilityDescriptorSet? _descriptorSet;
@@ -30,7 +30,8 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
     private ClawFanCapability? _fanCapability;
     private FanService? _fans;
     private IDeviceSink? _host;
-    private ClawRecoveryJournal? _journal;
+    private bool _initialized;
+    private DeviceRecoveryJournal? _journal;
     private LightingService? _lighting;
     private ClawLightingCapability? _lightingCapability;
     private MotionService? _motion;
@@ -43,20 +44,17 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
 
     /// <summary>Creates the production plugin with Windows hardware transports.</summary>
     // ReSharper disable once UnusedMember.Global
-    public ClawDeviceEngine()
-        : this(CreateWindowsServices())
+    internal ClawDeviceEngine(ProfiledFeatureContext context) : this(context, CreateWindowsServices())
     {
     }
 
-    internal ClawDeviceEngine(ClawHardwareServices services)
+    internal ClawDeviceEngine(ProfiledFeatureContext context, ClawHardwareServices services) : base("msiclaw-native")
     {
-        _services = services ?? throw new ArgumentNullException(nameof(services));
-        _serializer = new DeviceCommandSerializer(
-            "Claw",
-            () => _active && !_quiescing ? _descriptorSet : null,
-            RefreshAsync,
-            PublishCapabilityStatesAsync);
+        _context = context;
+        _publications = new ServicePublications(context.Sink);
+        _services = services;
     }
+
 
     /// <summary>The model this cycle started on. Only a started cycle has one; nothing falls back to a default.</summary>
     private ClawModel Model => _cycleModel ?? throw new InvalidOperationException("No device cycle is active.");
@@ -64,33 +62,18 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
     /// <summary>The cycle's services in start order; stop releases them in reverse.</summary>
     internal IReadOnlyList<DeviceService<ClawIdentityState>> Services { get; private set; } = [];
 
-    /// <inheritdoc />
-    public string PackageId => ClawHardwareFacts.PackageId;
+
+    public override bool Suspendable => true;
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptorSet?.Descriptors ?? [];
+    internal override IReadOnlyList<CapabilityState> States => _publications.States;
+    internal override IReadOnlyList<OemControlDescriptor> OemControls => _publications.OemControls;
+    internal override bool DescriptorsChanged => _publications.DescriptorsChanged;
 
     /// <inheritdoc />
-    public ValueTask<PluginDetectionResult> DetectAsync(
-        PluginDetectionContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        cancellationToken.ThrowIfCancellationRequested();
-        var model = ClawModels.Find(context.Identity);
-        return ValueTask.FromResult(new PluginDetectionResult
-        {
-            Matched = model is not null,
-            DeviceDefinitionId = model?.DefinitionId,
-            Reason = model is not null
-                ? null
-                : new CapabilityReason(
-                    CapabilityReasonCode.Unsupported,
-                    "This package requires manufacturer Micro-Star and a Claw baseboard: "
-                    + string.Join(", ", ClawModels.All.Select(candidate => candidate.BoardProduct)) + ".")
-        });
-    }
-
     /// <inheritdoc />
-    public async ValueTask<PluginStartResult> StartAsync(
-        PluginStartContext context,
+    /// <inheritdoc />
+    private async ValueTask<EngineStartResult> InitializeAsync(
+        EngineStartContext context,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -103,19 +86,18 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
         var definedModel = ClawModels.FindByDefinition(context.DeviceDefinitionId)
                            ?? throw new InvalidOperationException("WSGM supplied a different device definition.");
 
-        if (context.CycleGeneration != context.Host.CycleGeneration)
-        {
-            throw new InvalidOperationException("WSGM supplied an inconsistent cycle generation.");
-        }
 
         // Installed before the first hardware read, because startup is when the failures worth
         // tracing happen and an ambient sink installed late traces nothing that mattered.
-        DeviceTrace.Install(context.Host);
         DeviceTrace.Info(
             "lifecycle",
-            $"start: definition={context.DeviceDefinitionId}, cycle={context.CycleGeneration}.");
+            $"start: definition={context.DeviceDefinitionId}.");
 
-        var identity = await _services.Identity.ReadAsync(cancellationToken).ConfigureAwait(false);
+        var identity = new ClawIdentityState
+        {
+            Snapshot = context.Identity, Model = definedModel, ExactMachineMatch = true, WmiAvailable = true,
+            OnAcPower = _services.Identity.ReadOnAcPower()
+        };
         if (!identity.ExactMachineMatch || identity.Model != definedModel)
         {
             DeviceTrace.Error("lifecycle", $"the {definedModel.BoardProduct} activation gate no longer matches.");
@@ -130,7 +112,7 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
             + $"mcu={identity.Snapshot.McuFirmwareVersion ?? "<none>"}.");
 
         _host = context.Host;
-        _cycleGeneration = context.CycleGeneration;
+
         _cycleIdentity = identity;
         _quiescing = false;
 
@@ -147,8 +129,7 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
             _chargeLimitCapability = chargeLimitCapability;
             _fanCapability = fanCapability;
             _lightingCapability = lightingCapability;
-            _journal = await ClawRecoveryJournal.OpenAsync(context.StateDirectory, cancellationToken)
-                .ConfigureAwait(false);
+            _journal = context.Journal;
             _oem = new OemEventService(_services.OemEvents, context.Host, _services.OemButtons);
             _power = new PowerService(powerCapability, _journal);
             _chargeLimit = new ChargeLimitService(chargeLimitCapability);
@@ -190,16 +171,9 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
             ];
             BuildCapabilitySurface();
 
-            if (_journal.FailureReason is { } journalFailure)
-            {
-                BlockService(ServiceIds.Power, journalFailure);
-                BlockService(ServiceIds.Fans, journalFailure);
-                BlockService(ServiceIds.Controller, journalFailure);
-            }
-            else
             {
                 await ReconcileOutstandingAsync(
-                    _journal.OutstandingEntries,
+                    _journal.Entries<ClawRecoveryState>(),
                     identity,
                     powerCapability,
                     fanCapability,
@@ -218,7 +192,6 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
                 .ConfigureAwait(false);
             _active = true;
             await PublishCapabilityStatesAsync(cancellationToken).ConfigureAwait(false);
-            _serializer.StartObservation();
             return CurrentStartResult();
         }
         catch
@@ -230,83 +203,10 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
     }
 
     /// <inheritdoc />
-    public ValueTask<CapabilityCommandResult> ExecuteCommandAsync(
-        CapabilityCommand command,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(command);
-        return _serializer.ExecuteAsync(command, token => ExecuteBoundCommandAsync(command, token), cancellationToken);
-    }
-
     /// <inheritdoc />
-    public async ValueTask SuspendAsync(
-        PluginQuiesceContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        if (Services.Count == 0)
-        {
-            return;
-        }
-
-        _quiescing = true;
-        _serializer.StopObservation();
-        await _serializer.RunAsync(
-            () => DeviceServiceLifecycle.SuspendAllAsync(
-                Services,
-                OperationContext(context.Deadline),
-                cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-    }
-
     /// <inheritdoc />
-    public async ValueTask<PluginStartResult> ResumeAsync(
-        PluginResumeContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        if (Services.Count == 0)
-        {
-            return new PluginStartResult
-            {
-                State = PluginOperationalState.Passive,
-                Reason = new CapabilityReason(
-                    CapabilityReasonCode.ResourceReleased,
-                    "The Claw services have not been started.")
-            };
-        }
-
-        return await _serializer.RunAsync(async () =>
-        {
-            _cycleGeneration = context.CycleGeneration;
-            _cycleIdentity = await _services.Identity.ReadAsync(cancellationToken).ConfigureAwait(false);
-
-            // No journal probe here: a record refused after a wake is found by the command that needs
-            // it, which is rejected with nothing written, and the next command tries again.
-            await AcquireServicesAsync(OperationContext(context.Deadline), cancellationToken)
-                .ConfigureAwait(false);
-            if (_host is null || _powerCapability is null || _chargeLimitCapability is null
-                || _fanCapability is null
-                || _lightingCapability is null)
-            {
-                throw new InvalidOperationException("Resume cannot rebuild the capability surface.");
-            }
-
-            BuildCapabilitySurface();
-            await _host.PublishDescriptorsAsync(_descriptorSet!, cancellationToken)
-                .ConfigureAwait(false);
-            _quiescing = false;
-            await PublishCapabilityStatesAsync(cancellationToken).ConfigureAwait(false);
-
-            // Resume rebuilds the capability surface, so the observation loop has to come back with
-            // it: a resumed cycle that never refreshed would go stale exactly as the original did.
-            _serializer.StartObservation();
-            return CurrentStartResult();
-        }, cancellationToken).ConfigureAwait(false);
-    }
-
     /// <inheritdoc />
-    public ValueTask ApplyHapticOutputAsync(
+    internal override ValueTask ApplyHapticOutputAsync(
         HapticOutputFrame frame,
         CancellationToken cancellationToken)
     {
@@ -316,98 +216,16 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
     }
 
     /// <inheritdoc />
-    public ValueTask<PluginDiagnostics> GetDiagnosticsAsync(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var values = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["cycle"] = DiagnosticCycleState(),
-            ["recovery"] = _journal?.DiagnosticState ?? "unavailable"
-        };
-        foreach (var service in Services)
-        {
-            values[service.ServiceId] = service.State.ToString();
-        }
-
-        return ValueTask.FromResult(new PluginDiagnostics { Values = values });
-    }
-
     /// <inheritdoc />
-    public ValueTask ReleaseControllerAsync(
-        PluginControllerReleaseContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        return _serializer.RunAsync(() => ReleaseControllerCoreAsync(context.Deadline, cancellationToken),
-            cancellationToken);
-    }
-
     /// <inheritdoc />
-    public ValueTask SetControllerManagementAsync(
-        PluginControllerManagementContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        return _serializer.RunAsync(async () =>
-        {
-            if (_controller is null)
-            {
-                return;
-            }
-
-            // The device cycle continues: only the controller is taken or let go.
-            _controller.Enabled = context.Enabled;
-            if (context.Enabled)
-            {
-                _cycleIdentity = await _services.Identity.ReadAsync(cancellationToken).ConfigureAwait(false);
-                await DeviceServiceLifecycle.AcquireAsync(_controller, OperationContext(context.Deadline),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await ReleaseControllerCoreAsync(context.Deadline, cancellationToken).ConfigureAwait(false);
-            }
-
-            await PublishCapabilityStatesAsync(cancellationToken).ConfigureAwait(false);
-        }, cancellationToken);
-    }
-
     /// <inheritdoc />
-    public async ValueTask<PluginStopResult> StopAsync(
-        PluginStopContext context,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        _quiescing = true;
-
-        // Before taking the gate: the loop takes the same one, and a refresh must not be able to
-        // read hardware the stop is releasing.
-        _serializer.StopObservation();
-        return await _serializer.RunAsync(async () =>
-        {
-            if (Services.Count > 0)
-            {
-                await DeviceServiceLifecycle.ReleaseAllAsync(Services, OperationContext(context.Deadline),
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            var result = DeviceServiceLifecycle.StopResult(Services);
-
-            _active = false;
-            _descriptorSet = null;
-            Services = [];
-            _journal = null;
-            return result;
-        }, cancellationToken).ConfigureAwait(false);
-    }
-
     /// <inheritdoc />
     /// <remarks>
-    ///     The host awaits <see cref="StopAsync" /> first. Disposal only releases handles and never writes the
+    ///     The engine awaits <see cref="ReleaseAsync" /> first. Disposal only releases handles and never writes the
     ///     hardware: a cycle that was not stopped is restored from the journal at the next start. Every owner is
     ///     disposed even when an earlier one throws, and the failures are thrown together at the end.
     /// </remarks>
-    public async ValueTask DisposeAsync()
+    internal override async ValueTask DisposeAsync()
     {
         if (_disposed)
         {
@@ -415,7 +233,6 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
         }
 
         _disposed = true;
-        _serializer.StopObservation();
         List<Exception> failures = [];
         await Step("chord suppressor", _services.ChordSuppressor.DisposeAsync).ConfigureAwait(false);
         await Step("motion", _services.Motion.DisposeAsync).ConfigureAwait(false);
@@ -423,11 +240,6 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
         await Step("MCU", _services.Mcu.DisposeAsync).ConfigureAwait(false);
         await Step("OEM events", _services.OemEvents.DisposeAsync).ConfigureAwait(false);
         await Step("WMI", _services.Wmi.DisposeAsync).ConfigureAwait(false);
-        await Step("serializer", () =>
-        {
-            _serializer.Dispose();
-            return ValueTask.CompletedTask;
-        }).ConfigureAwait(false);
         if (failures.Count != 0)
         {
             throw new AggregateException("Claw plugin disposal was not complete.", failures);
@@ -447,6 +259,87 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
         }
     }
 
+    internal override void AcknowledgeDescriptors()
+    {
+        _publications.AcknowledgeDescriptors();
+    }
+
+    public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+        CancellationToken token)
+    {
+        _quiescing = false;
+        if (!_initialized)
+        {
+            await InitializeAsync(new EngineStartContext
+            {
+                Host = _publications, Identity = _context.Identity, DeviceDefinitionId = _context.DeviceDefinitionId,
+                StateDirectory = _context.StateDirectory, Journal = _context.Journal, Resources = _context.Resources,
+                ControllerManagementEnabled = _context.ControllerManagementEnabled
+            }, token).ConfigureAwait(false);
+            _initialized = true;
+        }
+        else
+        {
+            await AcquireServicesAsync(OperationContext(cycle.Deadline), token).ConfigureAwait(false);
+            BuildCapabilitySurface();
+            await _publications.PublishDescriptorsAsync(_descriptorSet!, token).ConfigureAwait(false);
+            await PublishCapabilityStatesAsync(token).ConfigureAwait(false);
+            _active = true;
+        }
+
+        var state = CurrentStartResult();
+        return Set(state.State == EngineOperationalState.Active ? DeviceServiceState.Owned :
+            state.State == EngineOperationalState.Degraded ? DeviceServiceState.Degraded : DeviceServiceState.Passive,
+            state.Reason);
+    }
+
+    public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+        CancellationToken token)
+    {
+        _quiescing = true;
+        await DeviceServiceLifecycle.ReleaseAllAsync(Services, OperationContext(cycle.Deadline), token)
+            .ConfigureAwait(false);
+        _active = false;
+        var result = DeviceServiceLifecycle.StopResult(Services);
+        return Set(result.Status == EngineStopStatus.Failed ? DeviceServiceState.Faulted :
+            result.Status == EngineStopStatus.Unverified ? DeviceServiceState.ReleasedUnverified :
+            DeviceServiceState.Idle, result.Reason);
+    }
+
+    internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
+        CancellationToken token)
+    {
+        return await ExecuteBoundCommandAsync(command, token).ConfigureAwait(false);
+    }
+
+    internal override async ValueTask RefreshAsync(CancellationToken token)
+    {
+        await RefreshAsync(null, token).ConfigureAwait(false);
+        await PublishCapabilityStatesAsync(token).ConfigureAwait(false);
+    }
+
+    internal override async ValueTask SetControllerManagementAsync(bool enabled, CancellationToken token)
+    {
+        if (_controller is null)
+        {
+            return;
+        }
+
+        _controller.Enabled = enabled;
+        var deadline = Deadline.After(TimeSpan.FromSeconds(6));
+        if (enabled)
+        {
+            await DeviceServiceLifecycle.AcquireAsync(_controller, OperationContext(deadline), token)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await ReleaseControllerCoreAsync(deadline, token).ConfigureAwait(false);
+        }
+
+        await PublishCapabilityStatesAsync(token).ConfigureAwait(false);
+    }
+
     private async ValueTask ReleaseControllerCoreAsync(
         Deadline deadline,
         CancellationToken cancellationToken)
@@ -459,7 +352,6 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
 
     private async ValueTask RollBackFailedStartAsync()
     {
-        _serializer.StopObservation();
         await DeviceServiceLifecycle.RollBackStartAsync(
             Services,
             OperationContext(Deadline.After(TimeSpan.FromSeconds(12))),
@@ -512,12 +404,11 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
     private DeviceCycleContext<ClawIdentityState> OperationContext(Deadline deadline)
     {
         return new DeviceCycleContext<ClawIdentityState>(
-            _cycleGeneration,
             deadline,
             _cycleIdentity ?? throw new InvalidOperationException("No cycle identity is available."));
     }
 
-    private PluginStartResult CurrentStartResult()
+    private EngineStartResult CurrentStartResult()
     {
         // A controller WSGM asked to keep off is not a service that failed.
         return DeviceServiceLifecycle.StartResult(
@@ -536,7 +427,7 @@ internal sealed partial class ClawDeviceEngine : IDeviceEngine
         // controller buttons that the firmware happens to deliver out of band.
         OemButtonLatch oemButtons = new();
         return new ClawHardwareServices(
-            new WindowsClawIdentityReader(wmi),
+            new WindowsClawIdentityReader(),
             wmi,
             new MsiOemEventSource(),
             new WindowsClawMcuTransport(),

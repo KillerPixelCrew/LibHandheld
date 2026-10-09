@@ -9,13 +9,14 @@ WSGM SDKs, manifests or installed device packages. GPU mechanics belong to LibGP
 
 ## Applied extraction
 
-- Independent `HandheldDevice` API and typed contracts, with borrowed observer publications and
-  consumer-owned lifecycle generations.
+- Independent `HandheldDevice` API and typed contracts, with borrowed observer publications and one
+  active serialized owner, without lifecycle generations.
 - Five Claw and four Ally definitions with migrated native transports, input, motion, haptics,
   power, fans, charging, lighting, OEM controls and restoration paths.
 - Private helpers and original glyph/notice bytes retained; 22 migrated regression source files.
-- WSGM directly uses the library through its adapter/runtime, retaining profiles, AutoTDP, HidHide,
-  virtual input, OEM policy and existing family recovery-state identities.
+- WSGM directly uses the semantic library API, retaining profiles, AutoTDP, HidHide, virtual input
+  and OEM policy. Plain family IDs use fresh state directories and one permissive recovery journal;
+  legacy device profiles and journals are not migrated.
 - Separate WSGM Device SDK assembly and device package projects removed. Common Plugin API 5 retains
   shared historical namespaces in its single assembly; dependent plugins need rebuilding.
 - Setup uses exact library detection and native controller availability. Device Lab contributions

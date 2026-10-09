@@ -1,12 +1,11 @@
-// SPDX-License-Identifier: MIT
-
-using System.ComponentModel;
-using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Threading.Channels;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -250,7 +249,7 @@ internal static class AllyControllerCodec
     }
 
     public static CanonicalControllerSample Decode(
-        in XInputNative.State state,
+        in StandardXInput.State state,
         CanonicalButtons oem,
         DateTimeOffset timestamp)
     {
@@ -259,10 +258,10 @@ internal static class AllyControllerCodec
         {
             Timestamp = timestamp,
             Buttons = Buttons(gamepad.Buttons) | oem,
-            LeftStickX = Axis(gamepad.ThumbLX),
-            LeftStickY = Axis(gamepad.ThumbLY),
-            RightStickX = Axis(gamepad.ThumbRX),
-            RightStickY = Axis(gamepad.ThumbRY),
+            LeftStickX = Axis(gamepad.LeftX),
+            LeftStickY = Axis(gamepad.LeftY),
+            RightStickX = Axis(gamepad.RightX),
+            RightStickY = Axis(gamepad.RightY),
             LeftTrigger = gamepad.LeftTrigger / 255f,
             RightTrigger = gamepad.RightTrigger / 255f
         };
@@ -275,294 +274,53 @@ internal static class AllyControllerCodec
 }
 
 /// <summary>Reads the Ally pad through XInput, as HC does.</summary>
-/// <param name="model">Exact model supplying permitted controller product IDs.</param>
-/// <param name="oem">Shared OEM-button holds and latches to merge into XInput samples.</param>
-internal sealed class WindowsAllyControllerSource(AllyModel model, AllyOemButtonState oem) : IAllyControllerSource
+internal sealed class WindowsAllyControllerSource : IAllyControllerSource
 {
-    /// <summary>About 125 Hz, the Claw's pad cadence, which the motion resampler is tuned against.</summary>
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(8);
+    private readonly AllyOemButtonState _oem;
+    private readonly StandardControllerSource _source;
 
-    private readonly Lock _gate = new();
-    private readonly AllyModel _model = model ?? throw new ArgumentNullException(nameof(model));
-    private readonly AllyOemButtonState _oem = oem ?? throw new ArgumentNullException(nameof(oem));
-    private CancellationTokenSource? _cancellation;
-    private int _slot = -1;
-    private Thread? _worker;
-
-    /// <remarks>
-    ///     Only a pad that is fully back counts: its XInput slot answers and its device nodes are present to
-    ///     hide. After a wake the slot and the nodes return a few seconds apart; until both are there the
-    ///     service keeps waiting, as HC waits for the pad's arrival.
-    /// </remarks>
-    /// <summary>Discovers a usable ASUS XInput slot together with its physical controller nodes.</summary>
-    /// <param name="cancellationToken">Cancels admission before synchronous XInput and device-node discovery.</param>
-    /// <returns>The usable slot and hideable nodes, or null until both are present; discovery does not write configuration.</returns>
-    public ValueTask<AllyControllerTopology?> DiscoverAsync(CancellationToken cancellationToken)
+    internal WindowsAllyControllerSource(AllyModel model, AllyOemButtonState oem)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var slot = FindXInputSlot();
-        if (slot < 0)
-        {
-            return ValueTask.FromResult<AllyControllerTopology?>(null);
-        }
-
-        var nodes = AllyControllerNodes.Find(_model.ControllerProductIds);
-        IReadOnlyList<PhysicalDeviceIdentity> devices =
-        [
-            .. nodes.Select(node => new PhysicalDeviceIdentity
-            {
-                InstancePath = node.InstancePath,
-                LocationPath = node.PhysicalLocation,
-                VendorId = AllyModels.AsusVendorId.ToString("X4", CultureInfo.InvariantCulture),
-                ProductId = ProductOf(node.InstancePath),
-                RequiresHiding = true
-            })
-        ];
-        if (devices.Count == 0)
-        {
-            return ValueTask.FromResult<AllyControllerTopology?>(null);
-        }
-
-        var observed = string.Join(", ",
-            nodes.Select(node => $"{node.InstancePath} {ClassName(node.ClassGuid)}"));
-        return ValueTask.FromResult<AllyControllerTopology?>(
-            new AllyControllerTopology(slot, devices, $"xinput {slot}; {observed}"));
+        _source = new StandardControllerSource(new StandardControllerProfile(model.ControllerProductIds
+            .Select(product => new ControllerUsbId(AllyModels.AsusVendorId, product)).ToArray()));
+        _oem = oem;
     }
 
-    public ValueTask StartAsync(
-        AllyControllerTopology topology,
-        Func<CanonicalControllerSample, CancellationToken, ValueTask> publish,
-        Action<Exception> fault,
-        CancellationToken cancellationToken)
+    public ValueTask<AllyControllerTopology?> DiscoverAsync(CancellationToken token)
     {
-        ArgumentNullException.ThrowIfNull(topology);
-        ArgumentNullException.ThrowIfNull(publish);
-        ArgumentNullException.ThrowIfNull(fault);
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (_gate)
-        {
-            if (_worker is not null)
-            {
-                throw new InvalidOperationException("The Ally controller reader is already active.");
-            }
+        token.ThrowIfCancellationRequested();
+        var topology = _source.Discover();
+        return ValueTask.FromResult(topology is null
+            ? null
+            : new AllyControllerTopology(topology.Slot,
+                topology.Devices, $"xinput {topology.Slot}; {topology.Devices.Count} physical interfaces"));
+    }
 
-            _slot = topology.XInputSlot;
-            var cancellation = new CancellationTokenSource();
-            _cancellation = cancellation;
-            _worker = new Thread(() => Run(topology.XInputSlot, publish, fault, cancellation.Token))
-            {
-                IsBackground = true,
-                Name = "WSGM Ally controller reader"
-            };
-            _worker.Start();
-        }
-
+    public ValueTask StartAsync(AllyControllerTopology topology,
+        Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
+        CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        _source.Start(new StandardControllerTopology(topology.XInputSlot, topology.PhysicalDevices),
+            () => _oem.Current(DateTimeOffset.UtcNow), () => null, publish, fault);
         return ValueTask.CompletedTask;
     }
 
-    public async ValueTask StopAsync(CancellationToken cancellationToken)
+    public ValueTask StopAsync(CancellationToken token)
     {
-        Thread? worker;
-        lock (_gate)
-        {
-            worker = _worker;
-            _cancellation?.Cancel();
-        }
-
-        var stopped = worker is null || await Task.Run(() => worker.Join(TimeSpan.FromSeconds(1)),
-            CancellationToken.None).WaitAsync(cancellationToken).ConfigureAwait(false);
-        lock (_gate)
-        {
-            if (_worker == worker)
-            {
-                _worker = null;
-                _slot = -1;
-                // A reader that has not exited still waits on this token's handle; it is left to the
-                // collector rather than disposed under it.
-                if (stopped)
-                {
-                    _cancellation?.Dispose();
-                }
-
-                _cancellation = null;
-            }
-        }
-
-        if (!stopped)
-        {
-            throw new TimeoutException("The Ally controller reader did not stop within one second.");
-        }
+        return _source.StopAsync(token);
     }
 
-    public ValueTask WriteRumbleAsync(float low, float high, CancellationToken cancellationToken)
+    public ValueTask WriteRumbleAsync(float low, float high, CancellationToken token)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        int slot;
-        lock (_gate)
-        {
-            slot = _slot;
-        }
-
-        if (slot < 0)
-        {
-            throw new InvalidOperationException("The Ally controller route is no longer available for rumble.");
-        }
-
-        // HC's XInputController.SetVibration: the large (low-frequency) motor is left, the small right
-        // (XInputController.cs:279-296). HHD writes an HID output report instead (base.py:226-254),
-        // which the RC73XA lab run showed has no output collection to go to; HC is followed.
-        var vibration = new XInputNative.Vibration
-        {
-            LeftMotorSpeed = (ushort)Math.Round(Math.Clamp(low, 0f, 1f) * ushort.MaxValue),
-            RightMotorSpeed = (ushort)Math.Round(Math.Clamp(high, 0f, 1f) * ushort.MaxValue)
-        };
-        var result = XInputNative.XInputSetState((uint)slot, ref vibration);
-        if (result != 0)
-        {
-            throw new Win32Exception((int)result, "XInputSetState did not accept the Ally rumble frame.");
-        }
-
+        token.ThrowIfCancellationRequested();
+        _source.Rumble(low, high);
         return ValueTask.CompletedTask;
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        await StopAsync(CancellationToken.None).ConfigureAwait(false);
-    }
-
-    private int FindXInputSlot()
-    {
-        for (uint slot = 0; slot < 4; slot++)
-        {
-            try
-            {
-                if (XInputNative.XInputGetCapabilitiesEx(1, slot, 0, out var caps) == 0
-                    && caps.VendorId == AllyModels.AsusVendorId
-                    && _model.ControllerProductIds.Contains(caps.ProductId))
-                {
-                    return (int)slot;
-                }
-            }
-            catch (EntryPointNotFoundException)
-            {
-                return -1;
-            }
-        }
-
-        return -1;
-    }
-
-    private void Run(
-        int slot,
-        Func<CanonicalControllerSample, CancellationToken, ValueTask> publish,
-        Action<Exception> fault,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            // HC polls on an 8 ms precision timer; a plain 8 ms wait sleeps a whole 15.6 ms tick.
-            using PrecisionTicker ticker = new(PollInterval, cancellationToken);
-            while (ticker.Wait())
-            {
-                var now = DateTimeOffset.UtcNow;
-                var result = XInputNative.XInputGetStateEx((uint)slot, out var state);
-                if (result != 0)
-                {
-                    // One neutral frame first, so nothing held at the moment the pad dropped stays held;
-                    // then the service waits for the pad to come back.
-                    publish(CanonicalControllerSample.Neutral(now), cancellationToken).AsTask().GetAwaiter()
-                        .GetResult();
-                    fault(new IOException($"XInput slot {slot} stopped answering ({result})."));
-                    return;
-                }
-
-                publish(AllyControllerCodec.Decode(state, _oem.Current(now), now), cancellationToken).AsTask()
-                    .GetAwaiter().GetResult();
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            try
-            {
-                fault(ex);
-            }
-            catch (Exception callback) when (callback is not OutOfMemoryException)
-            {
-                DeviceTrace.Failure("controller", "Controller fault reporting failed", callback);
-            }
-        }
-    }
-
-    private static string? ProductOf(string instancePath)
-    {
-        var index = instancePath.IndexOf("PID_", StringComparison.OrdinalIgnoreCase);
-        return index >= 0 && index + 8 <= instancePath.Length
-            ? instancePath.Substring(index + 4, 4).ToUpperInvariant()
-            : null;
-    }
-
-    private static string ClassName(Guid classGuid)
-    {
-        return classGuid == HidDevices.XnaCompositeClass ? "xusb"
-            : classGuid == HidDevices.XboxCompositeClass ? "gip"
-            : "hid";
-    }
-}
-
-internal static class XInputNative
-{
-    [DllImport("xinput1_4.dll", EntryPoint = "#100")]
-    public static extern uint XInputGetStateEx(uint userIndex, out State state);
-
-    [DllImport("xinput1_4.dll", EntryPoint = "#108")]
-    public static extern uint XInputGetCapabilitiesEx(uint reserved, uint userIndex, uint flags,
-        out CapabilitiesEx capabilities);
-
-    [DllImport("xinput1_4.dll")]
-    public static extern uint XInputSetState(uint userIndex, ref Vibration vibration);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct Gamepad
-    {
-        public ushort Buttons;
-        public byte LeftTrigger;
-        public byte RightTrigger;
-        public short ThumbLX;
-        public short ThumbLY;
-        public short ThumbRX;
-        public short ThumbRY;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct State
-    {
-        public uint PacketNumber;
-        public Gamepad Gamepad;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct Vibration
-    {
-        public ushort LeftMotorSpeed;
-        public ushort RightMotorSpeed;
-    }
-
-    /// <summary>HC's <c>XInputCapabilitiesEx</c> (<c>XInputController.cs:53-89</c>).</summary>
-    [StructLayout(LayoutKind.Sequential)]
-    public struct CapabilitiesEx
-    {
-        public byte Type;
-        public byte SubType;
-        public ushort Flags;
-        public Gamepad Gamepad;
-        public Vibration Vibration;
-        public ushort VendorId;
-        public ushort ProductId;
-        public ushort Revision;
-        public uint Xid;
+        return _source.DisposeAsync();
     }
 }
 
@@ -613,7 +371,7 @@ internal sealed class WindowsAllyKeyboardHook : IAllyKeyboardSource
     private readonly Lock _gate = new();
 
     private readonly KeyboardHookHandler _handler;
-    private readonly LowLevelKeyboardHook _hook = new("WSGM Ally OEM keyboard hook");
+    private readonly LowLevelHook _hook = new(13, "LibHandheld Ally OEM keyboard");
     private CancellationTokenSource? _cancellation;
     private Action<Exception>? _fault;
     private Task? _pump;

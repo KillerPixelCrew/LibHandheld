@@ -1,6 +1,5 @@
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Windows;
 
@@ -10,7 +9,7 @@ namespace LibHandheld.Families.MsiClaw;
 internal sealed partial class ClawDeviceEngine
 {
     /// <remarks>
-    ///     No outcome here blocks a service. A power or fan entry follows <see cref="ClawRecoveryJournal.Decide" />;
+    ///     No outcome here blocks a service. A power or fan entry follows <see cref="ClawRecoveryRules.Decide" />;
     ///     a restore that throws is recorded as failed and is not written again until a command re-arms it.
     /// </remarks>
     private async ValueTask ReconcileOutstandingAsync(
@@ -29,33 +28,32 @@ internal sealed partial class ClawDeviceEngine
         {
             if (entry.ServiceId == ServiceIds.Controller)
             {
+                if (entry.FirmwareIdentity != ClawFirmwareIdentities.Mcu)
+                {
+                    await _journal.RetireAsync(entry.ServiceId, "firmware changed", cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
                 await ReconcileControllerEntryAsync(entry, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
-            var action = ClawRecoveryJournal.Decide(
+            var action = ClawRecoveryRules.Decide(
                 entry,
-                identity.WmiAvailable ? identity.RecoveryBinding : null,
-                identity.WmiAvailable ? identity.LegacyRecoveryBinding : null);
+                identity.WmiAvailable ? identity.RecoveryBinding : null);
             switch (action)
             {
                 case ClawReconciliationAction.Wait:
                     DeviceTrace.Info("recovery",
                         $"the {entry.ServiceId} entry waits: this start cannot read the firmware it is bound to.");
                     continue;
-                case ClawReconciliationAction.Keep:
-                    DeviceTrace.Warn("recovery",
-                        $"the {entry.ServiceId} entry kept its {entry.Status} restore; it is not written again "
-                        + "until a command re-arms it.");
-                    continue;
                 case ClawReconciliationAction.Discard:
-                    var current = ClawFirmwareIdentities.IsLegacy(entry.FirmwareIdentity)
-                        ? identity.LegacyRecoveryBinding
-                        : identity.RecoveryBinding;
+                    var current = identity.RecoveryBinding;
                     DeviceTrace.Warn("recovery",
-                        $"dropped the {entry.Status} {entry.ServiceId} entry bound to {entry.FirmwareIdentity}: "
+                        $"dropped the {entry.ServiceId} original bound to {entry.FirmwareIdentity}: "
                         + $"the firmware now reads {current ?? "unknown"}, so its captured state is not restored.");
-                    await _journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoredVerified,
+                    await _journal.RetireAsync(entry.ServiceId, "firmware changed",
                         cancellationToken).ConfigureAwait(false);
                     continue;
                 case ClawReconciliationAction.Restore:
@@ -139,22 +137,5 @@ internal sealed partial class ClawDeviceEngine
 
         DeviceTrace.Info("recovery", $"controller mode entry: {status}.");
         await _journal!.SetStatusAsync(entry.ServiceId, status, CancellationToken.None).ConfigureAwait(false);
-    }
-
-    private void BlockService(string serviceId, CapabilityReason reason)
-    {
-        var service = ServiceFor(serviceId);
-        service?.ReconciliationBlockReason = reason;
-    }
-
-    private DeviceServiceStatus? ServiceFor(string serviceId)
-    {
-        return serviceId switch
-        {
-            ServiceIds.Power => _power,
-            ServiceIds.Fans => _fans,
-            ServiceIds.Controller => _controller,
-            _ => null
-        };
     }
 }

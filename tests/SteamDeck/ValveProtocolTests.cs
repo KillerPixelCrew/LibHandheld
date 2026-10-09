@@ -1,7 +1,5 @@
 using System.Buffers.Binary;
 using LibHandheld.Families.SteamDeck;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
 
 namespace LibHandheld.Tests.SteamDeck;
 
@@ -108,6 +106,9 @@ public sealed class ValveProtocolTests
         Assert.True(SteamDeckMemory.IsAllowed(0x80358A08, 32, 0x80300000));
         Assert.False(SteamDeckMemory.IsAllowed(0x80558A08, 32, 0x80300000));
         Assert.False(SteamDeckMemory.IsAllowed(0xFE700000, 8, null));
+        Assert.True(SteamDeckMemory.IsAllowed(0xFE700C01, 8, null));
+        Assert.True(SteamDeckMemory.IsAllowed(0xFE700B9F, 32, null));
+        Assert.False(SteamDeckMemory.IsAllowed(0xFE700B9F, 8, null));
     }
 
     [Fact]
@@ -118,6 +119,7 @@ public sealed class ValveProtocolTests
         Assert.False(DeckFirmware.Match(0x1030, 5)!.Value.ChargeLimit);
         Assert.Null(DeckFirmware.Match(0x1050, 6));
         Assert.Null(DeckFirmware.Match(0xFFFF, 5));
+        Assert.Null(DeckFirmware.Match(0x1050, 5, 1));
         Assert.Equal(0, DeckFirmware.Match(0x1050, 5)!.Value.BatteryTemperature(0x0AAC));
         Assert.Equal(0, DeckFirmware.Match(0xB030, 6)!.Value.BatteryTemperature(0xAC0A));
     }

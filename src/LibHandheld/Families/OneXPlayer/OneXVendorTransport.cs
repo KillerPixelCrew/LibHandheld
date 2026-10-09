@@ -56,8 +56,8 @@ internal sealed class OneXVendorTransport : IDisposable
         }
 
         var old = kind is OneXLightingKind.HidV2 or OneXLightingKind.HidV1G1;
-        var collection = HidDevices.Enumerate(old ? (ushort)0x1A2C : (ushort)0x1A86,
-            old ? [0xB001] : [0xFE00, 0x1305]).FirstOrDefault(item =>
+        var collection = HidDevices.Unique(HidDevices.Enumerate(old ? (ushort)0x1A2C : (ushort)0x1A86,
+            old ? [0xB001] : [0xFE00, 0x1305]), item =>
             item.UsagePage == (old ? 0xFF01 : 0xFF00) && item.Usage == 1 && item.OutputLength is 64 or 65);
         return collection is null ? null : new OneXVendorTransport(collection);
     }
@@ -146,7 +146,7 @@ internal static class OneXSerial
         }
 
         var serial = new SerialPort(selected, 115200, Parity.Even, 8, StopBits.Two)
-            { ReadTimeout = 100, WriteTimeout = 250 };
+            { ReadTimeout = SerialPort.InfiniteTimeout, WriteTimeout = 250 };
         try
         {
             serial.Open();

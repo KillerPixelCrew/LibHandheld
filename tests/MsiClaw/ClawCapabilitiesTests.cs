@@ -1,6 +1,5 @@
 using LibHandheld.Families.MsiClaw.Tests.Fakes;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Lifecycle;
 using static LibHandheld.Families.MsiClaw.Tests.Builders.ClawCommands;
 
 namespace LibHandheld.Families.MsiClaw.Tests;
@@ -31,7 +30,6 @@ public sealed class ClawCapabilitiesTests
         {
             var failed = await power.ApplyLimitsAsync(command, 25, 25, CancellationToken.None);
             Assert.Equal(CommandOutcome.Indeterminate, failed.Outcome);
-            Assert.Equal(RollbackResult.NotRequired, failed.Rollback);
         }
 
         wmi.Writes.Clear();
@@ -40,7 +38,7 @@ public sealed class ClawCapabilitiesTests
         await power.ReassertAsync(read, CancellationToken.None);
         Assert.Empty(wmi.Writes);
         var applied = await power.ApplyLimitsAsync(command, 20, 20, CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedVerified, applied.Outcome);
+        Assert.Equal(CommandOutcome.Applied, applied.Outcome);
         Assert.Equal(20, power.Observe(read).SustainedWatts);
     }
 
@@ -68,7 +66,6 @@ public sealed class ClawCapabilitiesTests
         };
         Assert.Equal(CommandOutcome.Rejected, result.Outcome);
         Assert.Equal(CapabilityReasonCode.TransportFaulted, result.Reason?.Code);
-        Assert.Equal(RollbackResult.NotRequired, result.Rollback);
         Assert.Empty(wmi.Writes);
     }
 
@@ -96,8 +93,7 @@ public sealed class ClawCapabilitiesTests
                 Command(CapabilityIds.FanMode, null, CapabilityValue.Choice("full-speed")), "full-speed",
                 CancellationToken.None)
         };
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
-        Assert.Equal(RollbackResult.NotRequired, result.Rollback);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.NotEmpty(wmi.Writes);
     }
 
@@ -109,7 +105,6 @@ public sealed class ClawCapabilitiesTests
             Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(60)), 60, CancellationToken.None);
         Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
         Assert.Equal(CapabilityReasonCode.TransportFaulted, result.Reason?.Code);
-        Assert.Equal(RollbackResult.NotRequired, result.Rollback);
     }
 
     [Fact]
@@ -121,7 +116,7 @@ public sealed class ClawCapabilitiesTests
         var result = await lighting.ApplyAsync(
             Command(CapabilityIds.LightingBrightness, null, CapabilityValue.Integer(75)),
             current => current with { Brightness = 75 }, CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(75, lighting.Current?.Brightness);
     }
 
@@ -147,8 +142,7 @@ public sealed class ClawCapabilitiesTests
         ClawPowerCapability power = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay);
         var command = Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(target));
         var result = await power.ApplyLimitsAsync(command, target, target, CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
-        Assert.Equal(target, result.ReadbackValue?.IntegerValue);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(target, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
         Assert.Equal(target, wmi.ReadData(ClawHardwareFacts.PowerBoostAddress));
     }
@@ -164,8 +158,7 @@ public sealed class ClawCapabilitiesTests
 
         var result = await power.ApplyLimitsAsync(command, 25, 31, CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
-        Assert.Equal(31, result.ReadbackValue?.IntegerValue);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(25, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
         Assert.Equal(31, wmi.ReadData(ClawHardwareFacts.PowerBoostAddress));
     }
@@ -203,9 +196,7 @@ public sealed class ClawCapabilitiesTests
         var result = await power.ApplyLimitsAsync(command, 12, 12, CancellationToken.None);
         var read = await power.ReadAsync(CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
-        Assert.Null(result.ReadbackValue);
-        Assert.Equal(RollbackResult.NotRequired, result.Rollback);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(13, read.BoostWatts);
         Assert.Equal((12, 12), (power.Observe(read).SustainedWatts, power.Observe(read).BoostWatts));
         Assert.Equal(
@@ -274,7 +265,7 @@ public sealed class ClawCapabilitiesTests
             current => current with { Brightness = 75 },
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(75, Assert.Single(mcu.ProfileWrites)[4]);
         Assert.Equal(75, lighting.Current?.Brightness);
     }
@@ -301,7 +292,7 @@ public sealed class ClawCapabilitiesTests
 
         byte[] expected = [.. original];
         expected[4] = 75;
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(expected, Assert.Single(mcu.ProfileWrites));
         Assert.Equal(expected, mcu.Profile);
     }
@@ -334,8 +325,7 @@ public sealed class ClawCapabilitiesTests
             current => current with { Brightness = 75 },
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
-        Assert.Equal(RollbackResult.NotRequired, result.Rollback);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         var write = Assert.Single(mcu.ProfileWrites);
         Assert.Equal(0xA5, write[0]);
         Assert.Equal(0x7E, write[3]);
@@ -360,8 +350,7 @@ public sealed class ClawCapabilitiesTests
             percent,
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
-        Assert.Equal(percent, result.ReadbackValue?.IntegerValue);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(0x80 | percent, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
     }
 
@@ -413,8 +402,7 @@ public sealed class ClawCapabilitiesTests
 
         Assert.Equal(100, observed.Percent);
         Assert.Equal(0x80 | 100, observed.RawValue);
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
-        Assert.Equal(80, result.ReadbackValue?.IntegerValue);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(0x80 | 80, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
     }
 
@@ -441,7 +429,7 @@ public sealed class ClawCapabilitiesTests
             command.RequestedValue!.CurveValue,
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         var dutyWrite = Assert.Single(
             wmi.Writes,
             write => write.Method == "Set_Fan" && write.Package[0] == 1).Package;
@@ -482,7 +470,7 @@ public sealed class ClawCapabilitiesTests
             command.RequestedValue!.CurveValue,
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
 
         // Only the six curve positions are compared. Every other byte in the package is firmware
         // data this write preserves per channel, and the two channels do not hold the same values
@@ -514,8 +502,7 @@ public sealed class ClawCapabilitiesTests
         var result = await capability.ApplyScenarioAsync(Command(CapabilityIds.Scenario, null,
             CapabilityValue.Choice("sport")), "sport", CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
-        Assert.Equal(RollbackResult.NotRequired, result.Rollback);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Single(wmi.Writes);
         Assert.Equal(0xC4, capability.Observe(await capability.ReadAsync(CancellationToken.None)).Scenario);
     }
@@ -543,7 +530,7 @@ public sealed class ClawCapabilitiesTests
         ClawPowerCapability capability = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay);
         var result = await capability.ApplyScenarioAsync(Command(CapabilityIds.Scenario, null,
             CapabilityValue.Choice("inactive")), "inactive", CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(expected, wmi.ReadData(ClawHardwareFacts.ScenarioAddress));
     }
 
@@ -611,8 +598,6 @@ public sealed class ClawCapabilitiesTests
         {
             CommandId = Guid.NewGuid(),
             CapabilityId = CapabilityIds.FanMode,
-            ExpectedDescriptorGeneration = 1,
-            ExpectedCycleGeneration = 1,
             Deadline = Deadline.After(TimeSpan.FromSeconds(2))
         };
 

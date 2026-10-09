@@ -38,7 +38,7 @@ public readonly record struct HapticOutputFrame
     /// <returns>A frame with every channel at zero.</returns>
     /// <remarks>
     ///     Rumble always needs an explicit stop path. A motor left running is not a cosmetic bug: it
-    ///     keeps vibrating after the game closed, the overlay opened, or the device engine was disabled, and
+    ///     keeps vibrating after the game closed, the overlay opened, or the plugin was disabled, and
     ///     nothing else will turn it off.
     /// </remarks>
     public static HapticOutputFrame Stop(DateTimeOffset timestamp)
@@ -49,7 +49,7 @@ public readonly record struct HapticOutputFrame
 
 /// <summary>What a device does with an output channel it cannot reproduce.</summary>
 /// <remarks>
-///     Declared per channel so the device engine's answer is visible rather than implied. A device with two
+///     Declared per channel so the plugin's answer is visible rather than implied. A device with two
 ///     rumble motors and no trigger haptics should say so; silently discarding trigger output looks
 ///     identical to a broken implementation from the outside.
 /// </remarks>
@@ -83,7 +83,7 @@ public sealed record HapticCapabilities
 
     /// <summary>Lowest intensity at which the device's motors reliably produce output, 0 to 1.</summary>
     /// <remarks>
-    ///     Motor technology, declared by the device engine because the host cannot know it: a voice coil or
+    ///     Motor technology, declared by the plugin because the host cannot know it: a voice coil or
     ///     LRA renders arbitrarily small intensities and keeps the default of zero, while an ERM
     ///     motor does not start below roughly a third of full drive. The host maps bounded haptic
     ///     events — not continuous rumble envelopes — onto this floor so LRA-grade ticks remain

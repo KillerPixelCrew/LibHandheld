@@ -10,14 +10,17 @@
   <ItemGroup>
     <PackageReference Include="System.Management" Version="10.0.12"/>
     <PackageReference Include="System.IO.Ports" Version="10.0.3"/>
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6"/>
     <InternalsVisibleTo Include="LibHandheld.Tests"/>
+    <InternalsVisibleTo Include="WSGM.Tests"/>
     <None Include="../../LICENSE" Link="LibHandheld-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     <None Include="../../PROVENANCE.md" Link="LibHandheld-PROVENANCE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     <EmbeddedResource Include="Families/**/glyphs/**"/>
     <EmbeddedResource Include="Families/**/THIRD_PARTY_NOTICES.md"/>
     <EmbeddedResource Include="Internal/Transports/Modules/RyzenSMU.bin" LogicalName="LibHandheld.PawnIO.RyzenSMU.bin"/>
     <EmbeddedResource Include="Internal/Transports/Modules/LedsValve.bin" LogicalName="LibHandheld.PawnIO.LedsValve.bin"/>
+    <EmbeddedResource Include="Internal/Transports/Modules/LpcIO.bin" LogicalName="LibHandheld.PawnIO.LpcIO.bin"/>
+    <EmbeddedResource Include="Internal/Transports/Modules/LpcACPIEC.bin" LogicalName="LibHandheld.PawnIO.LpcACPIEC.bin"/>
+    <EmbeddedResource Include="Internal/Transports/Modules/IntelMSR.bin" LogicalName="LibHandheld.PawnIO.IntelMSR.bin"/>
     <None Include="Internal/Transports/THIRD_PARTY_NOTICES.md" Link="LibHandheld-Transports-NOTICES.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     <None Include="Internal/Transports/MPL-2.0.txt" Link="LibHandheld-Transports-MPL-2.0.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     <None Include="Internal/Transports/LGPL-2.1.txt" Link="LibHandheld-Transports-LGPL-2.1.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>

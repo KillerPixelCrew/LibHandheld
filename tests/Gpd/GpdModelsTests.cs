@@ -1,7 +1,5 @@
 using System.Numerics;
 using LibHandheld.Families.Gpd;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Tests.Gpd;
@@ -25,14 +23,15 @@ public sealed class GpdModelsTests
     }
 
     [Theory]
-    [InlineData("G1618-04", "AMD Ryzen 7 8840U w/ Radeon 780M Graphics", "gpd-win4-8840u")]
-    [InlineData("G1619-05", "AMD Ryzen 5 7640U w/ Radeon 760M Graphics", "gpd-win-max2-7640u")]
-    public void SharedBoardIdsSelectTheExactCpuProtocol(string product, string cpu, string expected)
+    [InlineData("G1618-04", "AMD Ryzen 7 8840U w/ Radeon 780M Graphics", "gpd-win4-8840u", null)]
+    [InlineData("G1619-05", "AMD Ryzen 5 7640U w/ Radeon 760M Graphics", "gpd-win-max2-7640u", "gpd-win-max2-8840u")]
+    public void SharedBoardIdsSelectTheExactCpuProtocolOrHcBoardDefault(string product, string cpu, string expected,
+        string? unknownCpuDefault)
     {
         Assert.Equal(expected, GpdModels.Match(new DeviceIdentitySnapshot
             { SystemManufacturer = "GPD", SystemProduct = product, ProcessorName = cpu })?.Definition.Id);
-        Assert.Null(GpdModels.Match(new DeviceIdentitySnapshot
-            { SystemManufacturer = "GPD", SystemProduct = product, ProcessorName = "Unknown CPU" }));
+        Assert.Equal(unknownCpuDefault, GpdModels.Match(new DeviceIdentitySnapshot
+            { SystemManufacturer = "GPD", SystemProduct = product, ProcessorName = "Unknown CPU" })?.Definition.Id);
     }
 
     [Fact]

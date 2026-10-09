@@ -26,16 +26,16 @@ internal sealed class AyaneoSuperJoy : IAsyncDisposable
             return true;
         }
 
-        var collections = HidDevices.Enumerate(0x1C4F, [0x0002]).Where(collection =>
+        var collection = HidDevices.Unique(HidDevices.Enumerate(0x1C4F, [0x0002]), collection =>
             collection.UsagePage == 0xFF00 && collection.Usage == 1
-                                           && collection.InputLength == 65 && collection.OutputLength == 65).ToArray();
+                                           && collection.InputLength == 65 && collection.OutputLength == 65);
         // Identical externally attached controllers must not be configured by accident.
-        if (collections.Length != 1)
+        if (collection is null)
         {
             return false;
         }
 
-        _stream = HidDevices.OpenStream(collections[0]);
+        _stream = HidDevices.OpenStream(collection);
         return true;
     }
 
@@ -43,29 +43,10 @@ internal sealed class AyaneoSuperJoy : IAsyncDisposable
         int timeoutMilliseconds = 400)
     {
         var stream = _stream ?? throw new InvalidOperationException("The SuperJoy collection is absent or ambiguous.");
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(timeoutMilliseconds));
         try
         {
-            // The write is submitted exactly once. Reading several unrelated queued replies is safe;
-            // a missing reply must never result in an automatic repeat of a potentially applied write.
-            await stream.WriteAsync(report, timeout.Token).ConfigureAwait(false);
-            var response = new byte[65];
-            for (var unrelated = 0; unrelated < 8; unrelated++)
-            {
-                var length = await stream.ReadAsync(response, timeout.Token).ConfigureAwait(false);
-                if (length != response.Length)
-                {
-                    throw new IOException("The SuperJoy response was incomplete.");
-                }
-
-                if (response[4] == report[4])
-                {
-                    return response;
-                }
-            }
-
-            throw new IOException("No reply matched the SuperJoy command.");
+            return await HidDevices.ExchangeAsync(stream, report, 65, response => response[4] == report[4],
+                TimeSpan.FromMilliseconds(timeoutMilliseconds), token).ConfigureAwait(false);
         }
         catch
         {
@@ -127,9 +108,9 @@ internal sealed class AyaneoSuperJoy : IAsyncDisposable
         frame[3] = 0x0B;
         frame[5] = index;
         frame[7] = kind;
-        frame[9] = modifier;
-        frame[11] = virtualKey;
-        // The command's checksum includes the keyboard key from byte 11 onward.
+        frame[10] = modifier;
+        frame[12] = virtualKey;
+        // Windows' report prefix shifts HHD's modifier/key offsets to 10 and 12.
         Checksum(frame);
         return frame;
     }

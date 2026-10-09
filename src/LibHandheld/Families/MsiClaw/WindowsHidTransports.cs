@@ -1,6 +1,7 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -167,6 +168,15 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
             while (!deadline.HasExpired)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                // Poll only approved devnode paths while firmware re-enumerates. Read the full HID
+                // descriptors once Windows reports the requested product at its captured location.
+                var present = HidDevices.PresentNodes(ClawHardwareFacts.UsbVendorId, [productId]);
+                if (!present.Any(node => HidDevices.SamePhysicalLocation(node.PhysicalLocation, physicalLocation)))
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 var topology = HidEndpointEnumerator.DiscoverControllerTopology();
                 if (topology is not null
                     && topology.Mode == mode
@@ -252,26 +262,8 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
-        while (true)
-        {
-            var report = new byte[ClawHardwareFacts.McuReportLength];
-            var offset = 0;
-            while (offset < report.Length)
-            {
-                var read = await stream.ReadAsync(report.AsMemory(offset), deadline.Token).ConfigureAwait(false);
-                if (read == 0)
-                {
-                    throw new EndOfStreamException("The MCU HID collection closed while awaiting an acknowledgement.");
-                }
-
-                offset += read;
-            }
-
-            if (predicate(report))
-            {
-                return report;
-            }
-        }
+        return await HidDevices.ReadMatchingAsync(stream, ClawHardwareFacts.McuReportLength, predicate,
+            deadline.Token).ConfigureAwait(false);
     }
 }
 
@@ -629,14 +621,7 @@ internal static class HidEndpointEnumerator
                     && HidDevices.SamePhysicalLocation(endpoint.PhysicalLocation, mcu.PhysicalLocation)
                     && (endpoint.InstancePath.Contains("&IG_", StringComparison.OrdinalIgnoreCase)
                         || endpoint is { UsagePage: 0x0001, Usage: 0x0005 }))
-                .Select(endpoint => new PhysicalDeviceIdentity
-                {
-                    InstancePath = endpoint.InstancePath,
-                    LocationPath = endpoint.PhysicalLocation,
-                    VendorId = ClawHardwareFacts.Hex(ClawHardwareFacts.UsbVendorId),
-                    ProductId = ClawHardwareFacts.Hex(productId),
-                    RequiresHiding = true
-                })
+                .Select(PhysicalIdentities.FromCollection)
         ];
         var observed = string.Join(", ", endpoints
             .Where(endpoint => HidDevices.SamePhysicalLocation(endpoint.PhysicalLocation, mcu.PhysicalLocation))

@@ -1,10 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Security.Cryptography;
+using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Internal.Transports;
-
-internal readonly record struct IntelPowerSnapshot(ushort SustainedMirror, ushort BoostMirror, ulong PackageMsr);
 
 internal sealed class IntelPowerTransport : ICpuPowerTransport
 {
@@ -28,10 +26,10 @@ internal sealed class IntelPowerTransport : ICpuPowerTransport
     {
         return Transaction(() =>
         {
-            var snapshot = ReadSnapshotCore();
-            return new CpuPowerLimits((snapshot.SustainedMirror & 0x7FFF) * _unitWatts,
-                (snapshot.SustainedMirror & 0x7FFF) * _unitWatts,
-                (snapshot.BoostMirror & 0x7FFF) * _unitWatts);
+            var sustained = checked((ushort)MemoryReturn("/rdmem16", 0x59A0));
+            var boost = checked((ushort)MemoryReturn("/rdmem16", 0x59A4));
+            return new CpuPowerLimits((sustained & 0x7FFF) * _unitWatts,
+                (boost & 0x7FFF) * _unitWatts, (boost & 0x7FFF) * _unitWatts);
         });
     }
 
@@ -39,9 +37,10 @@ internal sealed class IntelPowerTransport : ICpuPowerTransport
     {
         var sustained = CpuPowerEncoding.IntelUnits(limits.SustainedWatts, _unitWatts);
         var boost = CpuPowerEncoding.IntelUnits(limits.BoostWatts, _unitWatts);
-        if (Math.Abs(limits.SlowWatts - limits.SustainedWatts) > 0.001)
+        if (Math.Abs(limits.SlowWatts - limits.BoostWatts) > 0.001)
         {
-            throw new ArgumentException("Intel package power has PL1 and PL2; its slow limit must equal PL1.",
+            throw new ArgumentException(
+                "Intel package power has PL1 and PL2; its slow and boost limits both address PL2.",
                 nameof(limits));
         }
 
@@ -69,19 +68,13 @@ internal sealed class IntelPowerTransport : ICpuPowerTransport
     // detection never start a process; Open belongs only to the selected device's Start.
     internal static IntelPowerTransport Open(string? path = null)
     {
-        path ??= Path.Combine(AppContext.BaseDirectory, "Resources", "Intel", "KX", "KX.exe");
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
         path = Path.GetFullPath(path);
-        var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var held = PinnedPayload.OpenHeld(path, KxDigest);
         try
         {
-            if (!Convert.ToHexString(SHA256.HashData(held)).Equals(KxDigest, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Intel KX.exe does not match the pinned payload.");
-            }
-
-            using var msr = PawnIoModule.OpenLhm("IntelMSR");
-            var rawUnit = msr.Execute("ioctl_read_msr", [0x606], 1)[0];
-            var units = 1.0 / (1 << (int)(rawUnit & 0xF));
+            // HC KX encodes both package limits in eighth-watts; no PawnIO session is needed.
+            const double units = 0.125;
             var candidates = new[] { 0xFEDC0000, 0xFED10000 };
             foreach (var candidate in candidates)
             {
@@ -99,65 +92,6 @@ internal sealed class IntelPowerTransport : ICpuPowerTransport
             held.Dispose();
             throw;
         }
-    }
-
-    internal IntelPowerSnapshot ReadSnapshot()
-    {
-        return Transaction(ReadSnapshotCore);
-    }
-
-    internal void Restore(IntelPowerSnapshot original)
-    {
-        Transaction(() =>
-        {
-            WriteMemory(0x59A0, original.SustainedMirror);
-            WriteMemory(0x59A4, original.BoostMirror);
-            WriteMsr(0x610, original.PackageMsr);
-            return true;
-        });
-    }
-
-    internal int ReadGpuClock()
-    {
-        return Transaction(() => checked((int)MemoryReturn("/rdmem8", 0x5994) * 50));
-    }
-
-    internal void SetGpuClock(int megahertz)
-    {
-        if (megahertz is < 0 or > 12750 || megahertz % 50 != 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(megahertz));
-        }
-
-        Transaction(() =>
-        {
-            Run(_path, "/wrmem8", Hex(_mchbar + 0x5994), Hex((uint)(megahertz / 50)));
-            return true;
-        });
-    }
-
-    internal void SetUndervolt(int rail, int millivolts)
-    {
-        if (rail is < 0 or > 3 || millivolts is < -1000 or > 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(millivolts));
-        }
-
-        var scaled = (Math.Abs(millivolts) * 1024 + 500) / 1000;
-        var code = scaled == 0 ? 0u : (uint)(4096 - scaled * 2);
-        var railIndex = rail == 3 ? 4 : rail;
-        Transaction(() =>
-        {
-            WriteMsr(0x150, ((0x80000011UL | ((ulong)railIndex << 8)) << 32) | ((ulong)code << 20));
-            return true;
-        });
-    }
-
-    private IntelPowerSnapshot ReadSnapshotCore()
-    {
-        return new IntelPowerSnapshot(checked((ushort)MemoryReturn("/rdmem16", 0x59A0)),
-            checked((ushort)MemoryReturn("/rdmem16", 0x59A4)),
-            ParseMsr(Run(_path, "/rdmsr", "0x610")) ?? throw new InvalidDataException("KX did not return MSR 0x610."));
     }
 
     private long MemoryReturn(string operation, uint offset)
@@ -189,7 +123,7 @@ internal sealed class IntelPowerTransport : ICpuPowerTransport
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            return HardwareBus.Run(@"Global\Access_PCI", TimeSpan.FromSeconds(2), operation);
+            return operation();
         }
     }
 
@@ -202,33 +136,6 @@ internal sealed class IntelPowerTransport : ICpuPowerTransport
                     CultureInfo.InvariantCulture, out var value))
             {
                 return value;
-            }
-        }
-
-        return null;
-    }
-
-    internal static ulong? ParseMsr(string text)
-    {
-        foreach (var line in text.Split('\n'))
-        {
-            var start = line.IndexOf("Msr Data", StringComparison.Ordinal);
-            var colon = start < 0 ? -1 : line.IndexOf(':', start);
-            if (colon < 0)
-            {
-                continue;
-            }
-
-            var words = line[(colon + 1)..]
-                .Split(' ', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-            if (words.Length >= 2 && uint.TryParse(words[0].Replace("0x", "", StringComparison.OrdinalIgnoreCase),
-                                      NumberStyles.HexNumber,
-                                      CultureInfo.InvariantCulture, out var high)
-                                  && uint.TryParse(words[1].Replace("0x", "", StringComparison.OrdinalIgnoreCase),
-                                      NumberStyles.HexNumber,
-                                      CultureInfo.InvariantCulture, out var low))
-            {
-                return ((ulong)high << 32) | low;
             }
         }
 

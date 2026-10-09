@@ -1,8 +1,7 @@
 using System.ComponentModel;
-using System.Globalization;
 using System.Runtime.InteropServices;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Input;
 
 namespace LibHandheld.Internal.Windows;
 
@@ -63,10 +62,6 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                     continue;
                 }
             }
-            else if (!UsbPortIdentity.IsInternal(nodes[0].InstancePath, location))
-            {
-                continue;
-            }
 
             // Capabilities-ex does not identify the USB port. Refuse ambiguous identical pads rather
             // than taking an external controller or hiding a second pad with the same VID/PID.
@@ -76,13 +71,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                 return null;
             }
 
-            found = new StandardControllerTopology((int)slot, Array.AsReadOnly(nodes.Select(node =>
-                new PhysicalDeviceIdentity
-                {
-                    InstancePath = node.InstancePath, LocationPath = node.PhysicalLocation,
-                    VendorId = caps.Vendor.ToString("X4", CultureInfo.InvariantCulture),
-                    ProductId = caps.Product.ToString("X4", CultureInfo.InvariantCulture), RequiresHiding = true
-                }).ToArray()));
+            found = new StandardControllerTopology((int)slot, nodes.Select(PhysicalIdentities.FromNode).ToArray());
         }
 
         if (found is not null || _hid?.Discover() is not { } hid)
@@ -98,19 +87,13 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                 return null;
             }
         }
-        else if (!UsbPortIdentity.IsInternal(hid.InstancePath, hid.PhysicalLocation))
+
+        if (string.IsNullOrWhiteSpace(hid.InstancePath) || string.IsNullOrWhiteSpace(hid.PhysicalLocation))
         {
             return null;
         }
 
-        return new StandardControllerTopology(-1, [
-            new PhysicalDeviceIdentity
-            {
-                InstancePath = hid.InstancePath, LocationPath = hid.PhysicalLocation,
-                VendorId = hid.VendorId.ToString("X4", CultureInfo.InvariantCulture),
-                ProductId = hid.ProductId.ToString("X4", CultureInfo.InvariantCulture), RequiresHiding = true
-            }
-        ], hid);
+        return new StandardControllerTopology(-1, [PhysicalIdentities.FromCollection(hid)], hid);
     }
 
     internal static bool SameBuiltInHub(string controller, string companion)
@@ -177,6 +160,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             var status = StandardXInput.SetState((uint)_slot, ref frame);
             if (status != 0)
             {
+                _slot = -1;
                 throw new Win32Exception((int)status);
             }
         }

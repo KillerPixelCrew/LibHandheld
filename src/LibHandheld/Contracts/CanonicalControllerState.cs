@@ -7,7 +7,7 @@ namespace LibHandheld.Contracts;
 ///     The canonical state represents the richest supported handheld without assuming a virtual target.
 ///     A target consumes only what it genuinely supports: the Steam Deck composite takes rear paddles and
 ///     native motion, Xbox 360 takes neither, and nothing is synthesized to fill the gap. Gyro is passed
-///     through where the target supports motion and simply absent where it does not — it is never
+///     through where the target supports motion and simply absent where it does not â€” it is never
 ///     converted into stick or mouse movement, which is the line between calibration and remapping.
 /// </remarks>
 [Flags]
@@ -96,24 +96,18 @@ public enum CanonicalButtons : uint
 }
 
 /// <summary>
-///     One complete sample of the physical controller, normalized by the device engine.
+///     One complete sample of the physical controller, normalized by its native backend.
 /// </summary>
 /// <remarks>
 ///     Full state rather than deltas: a dropped delta leaves a control stuck forever, while a dropped
 ///     full state is corrected by the next one. Axes are normalized so no consumer needs to know the
-///     device's raw ranges, centres, or inversions — that translation is the device engine's, and it is the
-///     only place that knows them.
+///     device's raw ranges, centres or inversions. The native decoder owns that translation.
 ///     <para>
-///         <b>This model is deliberately complete rather than minimal.</b> It defines every control the
-///         virtual targets the consumer presents can express — Steam Deck Composite, Xbox 360, and DualShock 4 —
-///         even where no device engine reports one yet. That is the opposite of the usual rule for this SDK, and
-///         the reason is the API version: it is an exact integer match across the consumer, Device Lab,
-///         and every installed device engine, so adding one control later is a breaking rebuild for every device engine
-///         that exists. The target set is fixed and its control surface is knowable today, so the contract
-///         is settled once here instead of a button at a time.
+///         The canonical surface covers the controls represented by common virtual targets.
+///         Missing physical controls remain unset; consumers need no vendor report layout.
 ///     </para>
 ///     <para>
-///         A device engine reports only what its hardware has and leaves the rest alone; a target renders only what
+///         A backend reports only what its hardware has and leaves the rest alone; a target renders only what
 ///         it can represent, dropping the rest rather than remapping it. Neither side invents a control.
 ///     </para>
 /// </remarks>
@@ -146,7 +140,7 @@ public readonly record struct CanonicalControllerSample
     /// <summary>Left touch contact position on the horizontal axis, from -1 to 1.</summary>
     /// <remarks>
     ///     The touch surface is expressed as two independent contacts, left and right, because that
-    ///     covers both shapes the consumer's virtual targets present: the Steam Deck's two separate trackpads
+    ///     covers both shapes WSGM's virtual targets present: the Steam Deck's two separate trackpads
     ///     map one contact each, and the DualShock 4's single two-finger touchpad maps its first finger
     ///     to the left contact and its second to the right. A device with neither leaves these zero and
     ///     never reports a touch.
@@ -181,8 +175,8 @@ public readonly record struct CanonicalControllerSample
     ///     The neutral sample: nothing held, every axis centred.
     /// </summary>
     /// <remarks>
-    ///     Published to the virtual target whenever forwarding stops — UI capture, target removal, game
-    ///     exit, suspend, disconnect, device engine disable, or fault. Without it the last forwarded state stays
+    ///     Published to the virtual target whenever forwarding stops â€” UI capture, target removal, game
+    ///     exit, suspend, disconnect, plugin disable, or fault. Without it the last forwarded state stays
     ///     latched and the game keeps seeing a held control.
     /// </remarks>
     /// <param name="timestamp">Timestamp to stamp on the neutral sample.</param>

@@ -1,11 +1,7 @@
 using System.Buffers.Binary;
 using LibHandheld.Families.LegionGo;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
-using LibHandheld.Internal.Testing;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Testing;
 
@@ -129,12 +125,12 @@ public sealed class LegionTests
             {
                 PairedPowerLimitWatts = 25
             }, CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedVerified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(20, wmi.Values[LegionProtocol.LongPower]);
         Assert.Equal(20, wmi.Values[LegionProtocol.CrossPower]);
         Assert.Equal(25, wmi.Values[LegionProtocol.ShortPower]);
         Assert.Equal(25, wmi.Values[LegionProtocol.PeakPower]);
-        _ = await engine.StopAsync(new PluginStopContext(PluginStopReason.WsgmExiting, Deadline.Never),
+        _ = await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
         Assert.Equal(2, wmi.Mode);
         Assert.All(
@@ -155,10 +151,9 @@ public sealed class LegionTests
             {
                 PairedPowerLimitWatts = 25
             }, CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(20, wmi.Values[LegionProtocol.LongPower]);
-        Assert.Null(result.ReadbackValue);
-        _ = await engine.StopAsync(new PluginStopContext(PluginStopReason.WsgmExiting, Deadline.Never),
+        _ = await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
     }
 
@@ -171,7 +166,7 @@ public sealed class LegionTests
         await using var engine = Engine("83E1", new FakeWmi(), hid);
         await engine.StartAsync(Start(host, directory, "83E1", true), CancellationToken.None);
         Assert.True(hid.Reading);
-        await engine.SetControllerManagementAsync(new PluginControllerManagementContext(false, Deadline.Never),
+        await engine.SetControllerManagementAsync(new EngineControllerManagementContext(false, Deadline.Never),
             CancellationToken.None);
         Assert.False(hid.Reading);
         Assert.True(hid.Connected);
@@ -181,12 +176,12 @@ public sealed class LegionTests
         var result = await engine.ExecuteCommandAsync(
             Command(host.DescriptorSets[^1], CapabilityIds.LightingBrightness, CapabilityValue.Integer(50)),
             CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
-        await engine.SetControllerManagementAsync(new PluginControllerManagementContext(true, Deadline.Never),
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        await engine.SetControllerManagementAsync(new EngineControllerManagementContext(true, Deadline.Never),
             CancellationToken.None);
         Assert.True(hid.Reading);
         Assert.Single(host.DescriptorSets);
-        _ = await engine.StopAsync(new PluginStopContext(PluginStopReason.WsgmExiting, Deadline.Never),
+        _ = await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
         Assert.False(hid.Connected);
     }
@@ -197,18 +192,20 @@ public sealed class LegionTests
             { SystemManufacturer = "LENOVO", SystemProduct = product, BiosVersion = "test-bios" };
     }
 
-    private static LegionGoDeviceEngine Engine(string product, FakeWmi wmi, FakeHid hid)
+    private static ServiceEngineFixture Engine(string product, FakeWmi wmi, FakeHid hid)
     {
-        return new LegionGoDeviceEngine(new LegionHardware(() => Identity(product), () => wmi, () => hid,
-            () => new FakeEc()));
+        return new ServiceEngineFixture(context => new LegionGoDeviceEngine(context,
+            new LegionHardware(() => Identity(product), () => wmi, () => hid,
+                () => new FakeEc())));
     }
 
-    private static PluginStartContext Start(TestPluginHostAdapter host, TemporaryDirectory directory, string product,
+    private static EngineStartContext Start(TestPluginHostAdapter host, TemporaryDirectory directory, string product,
         bool controller)
     {
-        return new PluginStartContext
+        return new EngineStartContext
         {
-            Host = host, CycleGeneration = host.CycleGeneration, StateDirectory = directory.Root,
+            Host = host, Identity = Identity(product), StateDirectory = directory.Root,
+            Journal = TestRecovery.Open(directory.Root),
             DeviceDefinitionId = LegionGoModels.Match(Identity(product))!.DefinitionId,
             ControllerManagementEnabled = controller
         };
@@ -219,7 +216,6 @@ public sealed class LegionTests
         return new CapabilityCommand
         {
             CommandId = Guid.NewGuid(), CapabilityId = id, RequestedValue = value,
-            ExpectedCycleGeneration = surface.CycleGeneration, ExpectedDescriptorGeneration = surface.Generation,
             Deadline = Deadline.Never
         };
     }
@@ -361,7 +357,7 @@ public sealed class LegionTests
 
         public ushort ReadUInt16(ushort address)
         {
-            return (ushort)(ReadByte(address) | ReadByte((ushort)(address + 1)) << 8);
+            return (ushort)(ReadByte(address) | (ReadByte((ushort)(address + 1)) << 8));
         }
 
         public void WriteByte(ushort address, byte value)

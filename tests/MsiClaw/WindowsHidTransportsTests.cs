@@ -1,5 +1,3 @@
-using LibHandheld.Internal.Lifecycle;
-
 namespace LibHandheld.Families.MsiClaw.Tests;
 
 [Collection("plugin-trace")]

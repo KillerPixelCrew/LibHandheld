@@ -1,25 +1,22 @@
-using System.ComponentModel;
-using System.Runtime.InteropServices;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Input;
-using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Internal.Windows;
 
 /// <summary>Descriptor-based acquisition of a documented DirectInput-mode HID gamepad.</summary>
 internal sealed class StandardControllerHidSource(HidControllerProfile profile)
 {
-    private nint _descriptor;
+    private HidUsageReader? _decoder;
     private Task? _reader;
     private CancellationTokenSource? _stop;
     private FileStream? _stream;
 
     internal HidCollection? Discover()
     {
-        var matches = profile.UsbIds.SelectMany(id => HidDevices.Enumerate(id.Vendor, [id.Product])).Where(collection =>
-                collection.UsagePage == 1 && collection.Usage is 4 or 5 && collection.InputLength is > 0 and <= 4096)
-            .ToArray();
-        return matches.Length == 1 ? matches[0] : null;
+        return HidDevices.Unique(profile.UsbIds.SelectMany(id =>
+            HidDevices.Enumerate(id.Vendor, [id.Product])), collection => collection.UsagePage == 1
+                                                                          && collection.Usage is 4 or 5 &&
+                                                                          collection.InputLength > 0);
     }
 
     internal void Start(HidCollection collection, Func<CanonicalButtons> oem, Func<MotionSample?> motion,
@@ -28,46 +25,43 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
     {
         if (_stream is not null)
         {
-            throw new InvalidOperationException("The alternate physical HID reader is still owned.");
-        }
-
-        var details = HidDevices.Inspect(collection);
-        var usages = new ushort[]
-        {
-            profile.LeftX, profile.LeftY, profile.RightX, profile.RightY, profile.LeftTrigger, profile.RightTrigger,
-            0x39
-        };
-        var axes = usages.Select(usage => details.Capabilities.FirstOrDefault(cap =>
-            cap.ReportType == HidReportType.Input && !cap.IsButton
-                                                  && cap.UsagePage == 1 && cap.UsageMin <= usage &&
-                                                  cap.UsageMax >= usage)).ToArray();
-        if (axes.Take(6).Any(axis => axis is null))
-        {
-            throw new NotSupportedException("The alternate controller HID axes do not match its model profile.");
+            throw new InvalidOperationException("The physical HID reader is still owned.");
         }
 
         var stream = HidDevices.OpenStream(collection);
-        if (!HidD_GetPreparsedData(stream.SafeFileHandle, out var descriptor))
+        HidUsageReader decoder;
+        try
+        {
+            decoder = new HidUsageReader(stream.SafeFileHandle);
+            if (!decoder.HasValue(profile.LeftX) || !decoder.HasValue(profile.LeftY)
+                                                 || !decoder.HasValue(profile.RightX) ||
+                                                 !decoder.HasValue(profile.RightY)
+                                                 || !decoder.HasValue(profile.LeftTrigger) ||
+                                                 !decoder.HasValue(profile.RightTrigger))
+            {
+                decoder.Dispose();
+                throw new NotSupportedException("The HID axes do not match this model's controller profile.");
+            }
+        }
+        catch
         {
             stream.Dispose();
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
+            throw;
         }
 
         _stream = stream;
-        _descriptor = descriptor;
+        _decoder = decoder;
         _stop = new CancellationTokenSource();
-        _reader = ReadAsync(stream, collection.InputLength, descriptor, usages, axes, oem, motion, touchpad, publish,
-            fault, _stop.Token);
+        _reader = ReadAsync(stream, decoder, collection.InputLength, oem, motion, touchpad, publish, fault,
+            _stop.Token);
     }
 
-    private async Task ReadAsync(FileStream stream, int length, nint descriptor, ushort[] usages, HidCapability?[] axes,
-        Func<CanonicalButtons> oem, Func<MotionSample?> motion, Func<StandardTouchSample>? touchpad,
+    private async Task ReadAsync(FileStream stream, HidUsageReader decoder, int length, Func<CanonicalButtons> oem,
+        Func<MotionSample?> motion, Func<StandardTouchSample>? touchpad,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
         CancellationToken token)
     {
         var report = new byte[length];
-        var pressed = new ushort[64];
-        var values = new uint[7];
         try
         {
             while (true)
@@ -75,62 +69,15 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
                 var count = await stream.ReadAsync(report, token).ConfigureAwait(false);
                 if (count == 0)
                 {
-                    throw new IOException("The alternate physical HID gamepad disconnected.");
+                    throw new IOException("The physical HID gamepad disconnected.");
                 }
 
-                var matches = true;
-                for (var axis = 0; axis < 6; axis++)
-                {
-                    var cap = axes[axis]!;
-                    matches &= report[0] == cap.ReportId && HidP_GetUsageValue(0, 1, cap.LinkCollection, usages[axis],
-                        out values[axis], descriptor, report, (uint)count) == 0x00110000;
-                }
-
-                if (!matches)
+                if (!Decode(decoder, report.AsSpan(0, count), oem(), motion(), touchpad?.Invoke() ?? default,
+                        out var sample))
                 {
                     continue;
                 }
 
-                var buttonCount = (uint)pressed.Length;
-                if (HidP_GetUsages(0, 9, 0, pressed, ref buttonCount, descriptor, report, (uint)count) != 0x00110000)
-                {
-                    buttonCount = 0;
-                }
-
-                var buttons = oem();
-                var leftFull = false;
-                var rightFull = false;
-                for (var index = 0; index < buttonCount; index++)
-                {
-                    var usage = pressed[index];
-                    if (usage > 0 && usage <= profile.Buttons.Count)
-                    {
-                        buttons |= profile.Buttons[usage - 1];
-                    }
-
-                    leftFull |= usage == profile.LeftTriggerButton;
-                    rightFull |= usage == profile.RightTriggerButton;
-                }
-
-                if (axes[6] is { } hat && report[0] == hat.ReportId
-                                       && HidP_GetUsageValue(0, 1, hat.LinkCollection, 0x39, out values[6], descriptor,
-                                           report, (uint)count) == 0x00110000)
-                {
-                    buttons |= Hat(values[6], hat.LogicalMin, hat.LogicalMax);
-                }
-
-                var touch = touchpad?.Invoke() ?? default;
-                buttons |= (touch.Touch ? CanonicalButtons.LeftPadTouch : 0) |
-                           (touch.Click ? CanonicalButtons.LeftPadClick : 0);
-                var sample = new CanonicalControllerSample
-                {
-                    Timestamp = DateTimeOffset.UtcNow, Buttons = buttons,
-                    LeftStickX = Normalize(values[0], axes[0]!), LeftStickY = -Normalize(values[1], axes[1]!),
-                    RightStickX = Normalize(values[2], axes[2]!), RightStickY = -Normalize(values[3], axes[3]!),
-                    LeftTrigger = leftFull ? 1 : (Normalize(values[4], axes[4]!) + 1) / 2,
-                    RightTrigger = rightFull ? 1 : (Normalize(values[5], axes[5]!) + 1) / 2,
-                    LeftPadX = touch.X, LeftPadY = touch.Y, LeftPadForce = touch.Touch ? 1 : 0, Motion = motion()
-                };
                 await publish(sample, token).ConfigureAwait(false);
             }
         }
@@ -145,34 +92,56 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
         }
     }
 
-    internal static CanonicalButtons Hat(uint value, int minimum, int maximum)
+    private bool Decode(HidUsageReader decoder, ReadOnlySpan<byte> report, CanonicalButtons buttons,
+        MotionSample? motion, StandardTouchSample touch, out CanonicalControllerSample sample)
     {
-        if (value < minimum || value > maximum)
+        sample = default;
+        if (!decoder.TryValue(report, profile.LeftX, out var leftX) || !decoder.TryValue(report, profile.LeftY,
+                                                                        out var leftY)
+                                                                    || !decoder.TryValue(report, profile.RightX,
+                                                                        out var rightX) || !decoder.TryValue(report,
+                                                                        profile.RightY, out var rightY)
+                                                                    || !decoder.TryValue(report, profile.LeftTrigger,
+                                                                        out var leftTrigger) ||
+                                                                    !decoder.TryValue(report, profile.RightTrigger,
+                                                                        out var rightTrigger))
         {
-            return CanonicalButtons.None;
+            return false;
         }
 
-        return ((int)value - minimum) switch
+        var leftFull = false;
+        var rightFull = false;
+        foreach (var usage in decoder.Usages(report, 9))
         {
-            0 => CanonicalButtons.DPadUp, 1 => CanonicalButtons.DPadUp | CanonicalButtons.DPadRight,
-            2 => CanonicalButtons.DPadRight, 3 => CanonicalButtons.DPadRight | CanonicalButtons.DPadDown,
-            4 => CanonicalButtons.DPadDown, 5 => CanonicalButtons.DPadDown | CanonicalButtons.DPadLeft,
-            6 => CanonicalButtons.DPadLeft, 7 => CanonicalButtons.DPadLeft | CanonicalButtons.DPadUp,
-            _ => CanonicalButtons.None
+            if (usage > 0 && usage <= profile.Buttons.Count)
+            {
+                buttons |= profile.Buttons[usage - 1];
+            }
+
+            leftFull |= usage == profile.LeftTriggerButton;
+            rightFull |= usage == profile.RightTriggerButton;
+        }
+
+        if (decoder.TryValue(report, 0x39, out var hat))
+        {
+            buttons |= HidUsageReader.Hat((int)(hat.Raw - hat.Minimum));
+        }
+
+        buttons |= (touch.Touch ? CanonicalButtons.LeftPadTouch : 0) |
+                   (touch.Click ? CanonicalButtons.LeftPadClick : 0);
+        sample = new CanonicalControllerSample
+        {
+            Timestamp = DateTimeOffset.UtcNow, Buttons = buttons, LeftStickX = leftX.Signed, LeftStickY = -leftY.Signed,
+            RightStickX = rightX.Signed, RightStickY = -rightY.Signed,
+            LeftTrigger = leftFull ? 1 : leftTrigger.Unsigned, RightTrigger = rightFull ? 1 : rightTrigger.Unsigned,
+            LeftPadX = touch.X, LeftPadY = touch.Y, LeftPadForce = touch.Touch ? 1 : 0, Motion = motion
         };
+        return true;
     }
 
-    private static float Normalize(uint raw, HidCapability cap)
+    internal static CanonicalButtons Hat(uint value, int minimum, int maximum)
     {
-        if (cap.LogicalMax <= cap.LogicalMin)
-        {
-            return 0;
-        }
-
-        var value = cap.LogicalMin < 0 && cap.BitSize is > 0 and < 32
-            ? (int)(raw << (32 - cap.BitSize)) >> (32 - cap.BitSize)
-            : (long)raw;
-        return Math.Clamp((float)((value - cap.LogicalMin) * 2d / (cap.LogicalMax - cap.LogicalMin) - 1), -1, 1);
+        return value < minimum || value > maximum ? CanonicalButtons.None : HidUsageReader.Hat((int)value - minimum);
     }
 
     internal async ValueTask StopAsync(CancellationToken token)
@@ -184,31 +153,11 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
             await _reader.WaitAsync(token).ConfigureAwait(false);
         }
 
-        if (_descriptor != 0)
-        {
-            _ = HidD_FreePreparsedData(_descriptor);
-            _descriptor = 0;
-        }
-
+        _decoder?.Dispose();
+        _decoder = null;
         _stop?.Dispose();
         _stop = null;
         _stream = null;
         _reader = null;
     }
-
-    [DllImport("hid.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool HidD_GetPreparsedData(SafeFileHandle handle, out nint descriptor);
-
-    [DllImport("hid.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool HidD_FreePreparsedData(nint descriptor);
-
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetUsageValue(int type, ushort page, ushort link, ushort usage, out uint value,
-        nint descriptor, byte[] report, uint length);
-
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetUsages(int type, ushort page, ushort link, ushort[] usages, ref uint count,
-        nint descriptor, byte[] report, uint length);
 }

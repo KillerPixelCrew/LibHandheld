@@ -1,6 +1,6 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Windows;
 
@@ -169,7 +169,7 @@ internal sealed partial class LegacyMotionSensors
         }
     }
 
-    private void OnReport(bool gyrometer, ISensorDataReport report, Action<MotionSensorReading> publish)
+    private void OnReport(bool gyrometer, SensorReport report, Action<MotionSensorReading> publish)
     {
         if (!gyrometer)
         {
@@ -229,6 +229,21 @@ internal sealed partial class LegacyMotionSensors
     }
 
     /// <summary>Logs the first failed event report per subscription; a stream of them is one fact.</summary>
+    private void ReportEventFailure(MotionSensorReadError? error)
+    {
+        lock (_gate)
+        {
+            if (_eventFailureReported)
+            {
+                return;
+            }
+
+            _eventFailureReported = true;
+        }
+
+        DeviceTrace.Warn("motion", $"IMU event report could not be read: {error}");
+    }
+
     private void ReportEventFailure(string? error)
     {
         lock (_gate)
@@ -267,32 +282,14 @@ internal sealed partial class LegacyMotionSensors
                 return 0;
             }
 
-            // A unique wrapper, released here: the runtime's shared wrapper would leave two
-            // hundred finalizable objects a second to the garbage collector.
-            // Accepted allocation exception: the Sensor API supplies a new report pointer each time.
-            object? wrapper = null;
             try
             {
-                wrapper = Marshal.GetUniqueObjectForIUnknown(report);
-                if (wrapper is ISensorDataReport data)
-                {
-                    owner.OnReport(gyrometer, data, publish);
-                }
+                owner.OnReport(gyrometer, new SensorReport(report), publish);
             }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
+            catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                owner.ReportEventFailure($"{ex.GetType().Name}: {ex.Message}");
-            }
-            finally
-            {
-                try
-                {
-                    Release(wrapper);
-                }
-                catch (Exception ex) when (ex is not OutOfMemoryException)
-                {
-                    owner.ReportEventFailure(DiagnosticText.FromException("Report release failed", ex));
-                }
+                owner.ReportEventFailure(new MotionSensorReadError(MotionSensorErrorKind.NativeFailure,
+                    exception.HResult));
             }
 
             return 0;

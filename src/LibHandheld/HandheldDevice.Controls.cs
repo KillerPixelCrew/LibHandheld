@@ -1,26 +1,10 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
-using CapabilityChoice = LibHandheld.Internal.Capabilities.CapabilityChoice;
-using CapabilityCommand = LibHandheld.Contracts.CapabilityCommand;
-using CapabilityCommandResult = LibHandheld.Contracts.CapabilityCommandResult;
-using CapabilityDescriptor = LibHandheld.Contracts.CapabilityDescriptor;
-using CapabilityDescriptorSet = LibHandheld.Contracts.CapabilityDescriptorSet;
-using CapabilityPersistence = LibHandheld.Internal.Capabilities.CapabilityPersistence;
-using CapabilityReason = LibHandheld.Contracts.CapabilityReason;
-using CapabilityReasonCode = LibHandheld.Contracts.CapabilityReasonCode;
-using CapabilityRole = LibHandheld.Contracts.CapabilityRole;
-using CapabilityState = LibHandheld.Contracts.CapabilityState;
-using CapabilityUnit = LibHandheld.Contracts.CapabilityUnit;
-using CapabilityValue = LibHandheld.Contracts.CapabilityValue;
-using CapabilityValueKind = LibHandheld.Contracts.CapabilityValueKind;
-using CommandOutcome = LibHandheld.Contracts.CommandOutcome;
-using CurvePoint = LibHandheld.Contracts.CurvePoint;
 
 namespace LibHandheld;
 
 public sealed partial class HandheldDevice
 {
-    private readonly SemaphoreSlim _commands = new(1, 1);
     private readonly Dictionary<(string Id, string? Instance), CapabilityState> _states = [];
     private CapabilityDescriptorSet? _descriptors;
 
@@ -241,12 +225,11 @@ public sealed partial class HandheldDevice
         Func<DeviceControlSnapshot, IReadOnlyList<ControlRequest>> requests, Deadline? deadline,
         CancellationToken cancellationToken)
     {
-        using var operation = Enter();
         var budget = deadline ?? Deadline.After(TimeSpan.FromSeconds(5));
         using var waiting = budget.CreateCancellationSource(cancellationToken);
         try
         {
-            await _commands.WaitAsync(waiting.Token).ConfigureAwait(false);
+            await _owner.WaitAsync(waiting.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -294,26 +277,25 @@ public sealed partial class HandheldDevice
                 }
 
                 results.Add(new DeviceControlResult(item.Role, item.Command.InstanceId, result));
-                if (result.Outcome is not (CommandOutcome.AppliedVerified or CommandOutcome.AppliedUnverified))
+                if (result.Outcome is not CommandOutcome.Applied)
                 {
                     return new DeviceOperationResult
                     {
-                        Outcome = result.Outcome, Reason = result.Reason, Results = results
+                        Outcome = results.Count > 1 ? CommandOutcome.Indeterminate : result.Outcome,
+                        Reason = result.Reason, Results = results
                     };
                 }
             }
 
             return new DeviceOperationResult
             {
-                Outcome = results.All(result => result.Result.Outcome == CommandOutcome.AppliedVerified)
-                    ? CommandOutcome.AppliedVerified
-                    : CommandOutcome.AppliedUnverified,
+                Outcome = CommandOutcome.Applied,
                 Results = results
             };
         }
         finally
         {
-            _commands.Release();
+            _owner.Release();
         }
     }
 
@@ -321,7 +303,7 @@ public sealed partial class HandheldDevice
         IReadOnlyList<ControlRequest> requests, Deadline deadline, out List<PreparedCommand> commands)
     {
         commands = [];
-        if (snapshot.DescriptorGeneration == 0)
+        if (snapshot.Controls.Count == 0)
         {
             return new CapabilityReason(CapabilityReasonCode.HostUnavailable, "Device controls have not started.");
         }
@@ -410,8 +392,8 @@ public sealed partial class HandheldDevice
             {
                 CommandId = Guid.NewGuid(), CapabilityId = descriptor.CapabilityId,
                 InstanceId = descriptor.InstanceId, RequestedValue = item.Request.Value,
-                PairedPowerLimitWatts = pairedWatts, ExpectedCycleGeneration = snapshot.CycleGeneration,
-                ExpectedDescriptorGeneration = snapshot.DescriptorGeneration, Deadline = deadline
+                PairedPowerLimitWatts = pairedWatts,
+                Deadline = deadline
             }));
         }
 
@@ -441,34 +423,13 @@ public sealed partial class HandheldDevice
 
     private static bool ValueMatches(CapabilityDescriptor descriptor, CapabilityValue value)
     {
-        var native = new Internal.Capabilities.CapabilityDescriptor
-        {
-            CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
-            Role = (Internal.Capabilities.CapabilityRole)descriptor.Role,
-            ValueKind = (Internal.Capabilities.CapabilityValueKind)descriptor.ValueKind,
-            Display = new CapabilityDisplay
-            {
-                Key = DisplayKey.Custom, CustomLabel = descriptor.Label
-            },
-            Persistence = (CapabilityPersistence)descriptor.Persistence,
-            Minimum = descriptor.Minimum, Maximum = descriptor.Maximum, Step = descriptor.Step,
-            MaximumLength = descriptor.MaximumLength,
-            Choices = descriptor.Choices.Select(choice =>
-                new CapabilityChoice(choice.Value,
-                    new CapabilityDisplay
-                    {
-                        Key = DisplayKey.Custom, CustomLabel = choice.Label
-                    })).ToArray()
-        };
-        return CapabilityValueValidation.ValueMatches(HandheldConversions.ToNative(value),
-            native, out _);
+        return CapabilityValueValidation.ValueMatches(value, descriptor, out _);
     }
 
     private DeviceControlSnapshot Snapshot()
     {
         return new DeviceControlSnapshot
         {
-            CycleGeneration = _cycleGeneration, DescriptorGeneration = _descriptors?.Generation ?? 0,
             Controls = _descriptors?.Descriptors.Select(descriptor => new DeviceControl(descriptor,
                 _states.GetValueOrDefault((descriptor.CapabilityId, descriptor.InstanceId)))).ToArray() ?? []
         };

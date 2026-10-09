@@ -1,10 +1,6 @@
 using LibHandheld.Families.OneXPlayer;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Testing;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Testing;
 
@@ -39,8 +35,137 @@ public sealed class OneXPlayerTests
         Assert.Equal(expected, OneXPlayerModels.Match(new DeviceIdentitySnapshot
                 { BaseboardManufacturer = "ONE-NETBOOK", BaseboardProduct = "ONE XPLAYER", BaseboardVersion = version })
             ?.Definition.Id);
-        Assert.Null(OneXPlayerModels.Match(new DeviceIdentitySnapshot
-            { BaseboardManufacturer = "ONE-NETBOOK", BaseboardProduct = "ONE XPLAYER", BaseboardVersion = "Unknown" }));
+        Assert.Equal("oxp-mini-amd", OneXPlayerModels.Match(new DeviceIdentitySnapshot
+            {
+                BaseboardManufacturer = "ONE-NETBOOK", BaseboardProduct = "ONE XPLAYER", BaseboardVersion = "Unknown"
+            })
+            ?.Definition.Id);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("V02")]
+    public void MiniUnknownRevisionsUseHcsAmdDefault(string? version)
+    {
+        Assert.Equal("oxp-mini-amd", OneXPlayerModels.Match(new DeviceIdentitySnapshot
+        {
+            BaseboardManufacturer = "ONE-NETBOOK", BaseboardProduct = "ONEXPLAYER Mini Pro",
+            BaseboardVersion = version
+        })?.Definition.Id);
+    }
+
+    [Theory]
+    [InlineData(0, 0, 1)]
+    [InlineData(32, 1, 1)]
+    [InlineData(33, 3, 1)]
+    [InlineData(34, 3, 3)]
+    [InlineData(66, 3, 3)]
+    [InlineData(67, 4, 4)]
+    public void BrightnessUsesEachFirmwareGenerationBoundary(int percentage, byte serialLevel, byte hidLevel)
+    {
+        var serial = OneXCommandCodec.Brightness(OneXLightingKind.Serial, percentage, 0);
+        Assert.Equal(serialLevel, serial[8]);
+        Assert.Equal((byte)1, serial[6]);
+        var hid = OneXCommandCodec.Brightness(OneXLightingKind.HidV1, percentage, 0);
+        Assert.Equal(hidLevel, hid[8]);
+        Assert.Equal((byte)(percentage == 0 ? 0 : 1), hid[6]);
+        Assert.Equal((byte)1, OneXCommandCodec.Brightness(OneXLightingKind.HidV2, percentage, 0)[4]);
+        var rear = OneXCommandCodec.Brightness(OneXLightingKind.Serial, percentage, 3);
+        Assert.Equal((byte)(percentage == 0 ? 0 : 1), rear[6]);
+        Assert.Equal((byte)0, rear[7]);
+        Assert.Equal((byte)0, rear[8]);
+    }
+
+    [Fact]
+    public void X1AokClassicPresetKeepsItsNativeMode()
+    {
+        Assert.Equal((byte)0x14, OneXCommandCodec.Lighting(OneXLightingKind.Serial, "aok-classic", 0, 0)[3]);
+        Assert.Equal(200, OneXNativeService.LightingDelay(OneXLightingKind.HidV1X2));
+        Assert.Equal(50, OneXNativeService.LightingDelay(OneXLightingKind.HidV1));
+    }
+
+    [Theory]
+    [InlineData(false, false, false, 0x20, 103, 102, 3)]
+    [InlineData(true, false, false, 2, 104, 105, 4)]
+    [InlineData(false, true, false, 2, 103, 102, 4)]
+    [InlineData(false, false, true, 0x20, 103, 102, 3)]
+    public void VendorRemappingUsesNativeBankKeysAndIntercept(bool mini, bool apex, bool three,
+        byte bank, byte firstKey, byte secondKey, int count)
+    {
+        var profile = new OneXProtocolProfile(OneXEcKind.Indexed, 0x44A, 0x44B, 0, 184,
+            OneXLightingKind.HidV1, VendorButtons: true, X2: !apex, Mini: mini, Apex: apex, Three: three);
+        var frames = OneXCommandCodec.ControllerConfiguration(profile);
+        Assert.Equal(count, frames.Count);
+        Assert.Equal(new byte[] { 0xB4, 0x3F, 1, 2, 0x38, bank, 1, 1 }, frames[0][..8]);
+        Assert.Equal(firstKey, frames[1][53]);
+        Assert.Equal(secondKey, frames[1][59]);
+        if (apex)
+        {
+            Assert.Equal(new byte[] { 0xB2, 0x3F, 1, 1, 0x1F, 0x40, 3, 2, 3, 0, 0, 0, 1 }, frames[2][..13]);
+        }
+        else
+        {
+            Assert.Equal(new byte[] { 0xB4, 0x3F, 1, 2, 0x38, bank, 3, 1, 0x24, 2, 2, 5 }, frames[2][..12]);
+        }
+
+        if (mini || apex)
+        {
+            Assert.Equal(new byte[] { 0xB2, 0x3F, 1, 0, 1, 2 }, frames[^1][..6]);
+        }
+    }
+
+    [Fact]
+    public void StatusResendRulesSeparateX1MiniFromRemappedControllers()
+    {
+        var profile = new OneXProtocolProfile(OneXEcKind.Indexed, 0x44A, 0x44B, 0, 184,
+            OneXLightingKind.HidV1, VendorButtons: true);
+        var status = OneXCommandCodec.V1(0xB8, [0, 0, 0x20]);
+        Assert.True(OneXOemSource.RequestsConfiguration(profile, status));
+        Assert.False(OneXOemSource.RequestsConfiguration(profile with { SimpleVibration = true }, status));
+        status = OneXCommandCodec.V1(0xB8, [0xFE]);
+        Assert.False(OneXOemSource.RequestsConfiguration(profile, status));
+        Assert.True(OneXOemSource.RequestsConfiguration(profile with { SimpleVibration = true }, status));
+        Assert.Equal(new byte[] { 0xB3, 0x3F, 1, 1, 5, 5 },
+            OneXCommandCodec.ControllerConfiguration(profile with { SimpleVibration = true })[0][..6]);
+    }
+
+    [Fact]
+    public void BusySerialPortLeavesHidFallbackAvailable()
+    {
+        Assert.Null(OneXOemSource.TryOpenSerial(() => throw new UnauthorizedAccessException("Busy port")));
+    }
+
+    [Fact]
+    public void TakeoverOnlyChangesItsBitInTheLiveRegister()
+    {
+        var ec = new FakeEc();
+        ec.Values[0x04EB] = 0xA5;
+        OneXNativeService.WriteTakeoverBit(ec, true);
+        Assert.Equal((byte)0xE5, ec.Values[0x04EB]);
+        ec.Values[0x04EB] = 0xDA;
+        OneXNativeService.WriteTakeoverBit(ec, false);
+        Assert.Equal((byte)0x9A, ec.Values[0x04EB]);
+        var unreadable = new FakeEc { ReadUnavailable = true };
+        Assert.Throws<IOException>(() => OneXNativeService.WriteTakeoverBit(unreadable, true));
+        Assert.Empty(unreadable.Writes);
+    }
+
+    [Fact]
+    public async Task TakeoverRestorePreservesBitsChangedByFirmwareWhileOwned()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FakeEc();
+        ec.Values[0x04EB] = 0xA5;
+        var service = new OneXNativeService(
+            new ProfiledFeatureContext(directory.Root, "bios1", new TestPluginHostAdapter(1))
+                { Journal = TestRecovery.Open(directory.Root), ControllerManagementEnabled = true },
+            new OneXProtocolProfile(OneXEcKind.Wmi, 0x44A, 0x44B, 0, 184, OneXLightingKind.None), _ => ec);
+        await service.AcquireAsync(Cycle(), CancellationToken.None);
+        Assert.Equal((byte)0xE5, ec.Values[0x04EB]);
+        ec.Values[0x04EB] = 0xDA;
+        await service.ReleaseAsync(Cycle(), CancellationToken.None);
+        Assert.Equal((byte)0x9A, ec.Values[0x04EB]);
     }
 
     [Theory]
@@ -133,7 +258,7 @@ public sealed class OneXPlayerTests
         await service.AcquireAsync(Cycle(), CancellationToken.None);
         var result = await service.ExecuteAsync(Command("fan.duty", CapabilityValue.Integer(50)), "bios1",
             CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(new (ushort, byte)[] { (0x44B, 92), (0x44A, 1) }, ec.Writes);
         await service.ReleaseAsync(Cycle(), CancellationToken.None);
         Assert.Equal((byte)91, ec.Values[0x44B]);
@@ -165,14 +290,14 @@ public sealed class OneXPlayerTests
         await service.AcquireAsync(Cycle(), CancellationToken.None);
         var result = await service.ExecuteAsync(Command("fan.duty", CapabilityValue.Integer(50)), "bios1",
             CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         var released = await service.ReleaseAsync(Cycle(), CancellationToken.None);
         Assert.Equal(DeviceServiceState.ReleasedUnverified, released.State);
-        Assert.Contains(((ushort)0x44A, (byte)0), ec.Writes);
+        Assert.DoesNotContain(((ushort)0x44A, (byte)0), ec.Writes);
     }
 
     [Fact]
-    public async Task AnUncertainCommandIsNotRepeatedByObservationOrAnotherCommand()
+    public async Task AnUncertainCommandIsNotRepeatedByObservationButAnExplicitRetryIsAllowed()
     {
         using var directory = new TemporaryDirectory();
         var ec = new FakeEc { FailWrite = true };
@@ -183,30 +308,31 @@ public sealed class OneXPlayerTests
         ec.FailWrite = false;
         ec.Writes.Clear();
         await service.RefreshAsync(CancellationToken.None);
-        Assert.Equal(CommandOutcome.Rejected, (await service.ExecuteAsync(
-            Command("fan.duty", CapabilityValue.Integer(50)), "bios1", CancellationToken.None)).Outcome);
         Assert.Empty(ec.Writes);
+        Assert.Equal(CommandOutcome.Applied, (await service.ExecuteAsync(
+            Command("fan.duty", CapabilityValue.Integer(50)), "bios1", CancellationToken.None)).Outcome);
+        Assert.Equal(new (ushort, byte)[] { (0x44B, 92), (0x44A, 1) }, ec.Writes);
         await service.ReleaseAsync(Cycle(), CancellationToken.None);
     }
 
     private static OneXNativeService Service(string path, FakeEc ec, OneXEcKind kind)
     {
         return new OneXNativeService(
-            new ProfiledFeatureContext(path, "bios1", new TestPluginHostAdapter(1)),
+            new ProfiledFeatureContext(path, "bios1", new TestPluginHostAdapter(1))
+                { Journal = TestRecovery.Open(path) },
             new OneXProtocolProfile(kind, 0x44A, 0x44B, 0, 184, OneXLightingKind.None), _ => ec, () => ec);
     }
 
     private static DeviceCycleContext<ProfiledCycleIdentity> Cycle()
     {
-        return new DeviceCycleContext<ProfiledCycleIdentity>(1, Deadline.Never, new ProfiledCycleIdentity("bios1"));
+        return new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never, new ProfiledCycleIdentity("bios1"));
     }
 
     private static CapabilityCommand Command(string id, CapabilityValue value)
     {
         return new CapabilityCommand
         {
-            CommandId = Guid.NewGuid(), CapabilityId = id, RequestedValue = value, Deadline = Deadline.Never,
-            ExpectedCycleGeneration = 1, ExpectedDescriptorGeneration = 1
+            CommandId = Guid.NewGuid(), CapabilityId = id, RequestedValue = value, Deadline = Deadline.Never
         };
     }
 

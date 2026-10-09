@@ -24,9 +24,9 @@ implementation. Keep model checks, packets and register addresses behind that bo
    profile declaration alone does not establish support. Follow the maintainer's manual-first test
    policy.
 
-Physical identity belongs to the built-in device. A CPU-only fallback sets `HasController = false`
-and cannot claim an arbitrary external controller. Explicit selection is not an override of native
-identity or firmware checks.
+Physical identity belongs to the exact built-in device. There is no CPU-only fallback; unmatched
+machines remain passive. Explicit selection is not an override of native identity or firmware
+checks.
 
 All devices use the same observer and lifecycle contracts. The application owns profiles, AutoTDP,
 virtual targets, hiding physical controllers and OEM action assignments. Hardware acceptance remains

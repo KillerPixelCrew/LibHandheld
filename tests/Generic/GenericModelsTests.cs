@@ -1,6 +1,5 @@
 using System.Numerics;
 using LibHandheld.Families.Generic;
-using LibHandheld.Internal.Identity;
 
 namespace LibHandheld.Tests.Generic;
 
@@ -15,21 +14,18 @@ public sealed class GenericModelsTests
     {
         var profile = GenericModels.Match(new DeviceIdentitySnapshot
             { BaseboardManufacturer = "AYN", BaseboardProduct = product, ProcessorName = cpu });
-        Assert.Equal(expected, profile?.Definition.Id);
-        Assert.NotNull(profile!.CreateNativeService);
+        Assert.NotNull(profile);
+        Assert.Equal(expected, profile.Definition.Id);
+        Assert.Single(profile.ServiceFactories);
         Assert.Equal(new Vector3(2, -3, -1), profile.Motion!.Gyro.Apply(new Vector3(1, 2, 3)));
     }
 
     [Fact]
-    public void CpuFallbackDoesNotInventControllerTopologyOrVendorEc()
+    public void UnknownCpuMachineRemainsPassive()
     {
         var profile = GenericModels.Match(new DeviceIdentitySnapshot
             { SystemManufacturer = "Unknown", SystemProduct = "Unknown", ProcessorName = "AMD Ryzen 7 7840U" });
-        Assert.Equal("generic-amd", profile?.Definition.Id);
-        Assert.False(profile!.Definition.HasController);
-        Assert.Null(profile.Controller);
-        Assert.Null(profile.Fan);
-        Assert.Null(profile.CreateNativeService);
+        Assert.Null(profile);
         Assert.Null(GenericModels.Match(new DeviceIdentitySnapshot { ProcessorName = "Unknown processor" }));
     }
 
@@ -43,11 +39,11 @@ public sealed class GenericModelsTests
         });
         Assert.Equal("tectoy-zeenix-pro", profile?.Definition.Id);
         Assert.True(profile!.Definition.HasController);
-        Assert.Equal("Unrelated", GenericModels.MatchFallback(new DeviceIdentitySnapshot
+        Assert.Null(GenericModels.Match(new DeviceIdentitySnapshot
         {
             SystemManufacturer = "Other", SystemProduct = "Desktop", BaseboardProduct = "Unrelated",
             ProcessorName = "AMD Ryzen 7 6800U"
-        })!.Products[0]);
+        }));
     }
 
     [Fact]

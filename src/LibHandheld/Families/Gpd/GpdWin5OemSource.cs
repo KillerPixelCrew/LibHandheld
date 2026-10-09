@@ -1,53 +1,44 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Gpd;
 
-/// <summary>Win 5 firmware 1.11 and later exposes real rear-button press/release reports.</summary>
+/// <summary>Win 5 firmware 1.17 (minor byte 0x11) and later exposes rear-button press/release reports.</summary>
 internal sealed class GpdWin5OemSource : IProfiledOemSource
 {
     private readonly bool[] _pressed = new bool[3];
+    private readonly HidReportSource _source = new();
     private Action<string, CanonicalButtons, bool>? _publish;
-    private Task? _reader;
-    private CancellationTokenSource? _stop;
-    private FileStream? _stream;
-    public bool IsConnected => _reader is { IsCompleted: false };
+    public bool IsConnected => _source.IsConnected;
 
     public async ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish, CancellationToken token)
     {
-        var collections = HidDevices.Enumerate(0x2F24, [0x0137, 0x0135]).Where(collection =>
+        var collection = HidDevices.Unique(HidDevices.Enumerate(0x2F24, [0x0137, 0x0135]), collection =>
             collection.UsagePage == 0xFF00 && collection.Usage == 1 && collection.InputLength >= 14
-            && collection.OutputLength >= 2 && collection.InputLength <= 1024).ToArray();
-        if (collections.Length != 1)
+            && collection.OutputLength >= 2);
+        if (collection is null)
         {
             return false;
         }
 
-        var collection = collections[0];
         var stream = HidDevices.OpenStream(collection);
         try
         {
             var request = new byte[collection.OutputLength];
             request[0] = 1;
             request[1] = 0x41;
-            await stream.WriteAsync(request, token).ConfigureAwait(false);
-            await Task.Delay(TimeSpan.FromMilliseconds(50), token).ConfigureAwait(false);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-            timeout.CancelAfter(TimeSpan.FromSeconds(1));
-            var response = new byte[collection.InputLength];
-            var count = await stream.ReadAsync(response, timeout.Token).ConfigureAwait(false);
-            if (!SupportsEdges(response.AsSpan(0, count)))
+            var response = await HidDevices.ExchangeAsync(stream, request, collection.InputLength,
+                response => response[0] == 1 && response[1] == 0x41, TimeSpan.FromSeconds(1), token,
+                TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
+            if (!SupportsEdges(response))
             {
                 stream.Dispose();
                 return false;
             }
 
-            _stream = stream;
             _publish = publish;
-            _stop = new CancellationTokenSource();
-            _reader = ReadAsync(stream, collection.InputLength, _stop.Token);
-            return true;
+            return _source.Start(stream, collection.InputLength, HandleReport, ReleaseHeld, token);
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
@@ -63,17 +54,7 @@ internal sealed class GpdWin5OemSource : IProfiledOemSource
 
     public async ValueTask StopAsync(CancellationToken token)
     {
-        _stop?.Cancel();
-        _stream?.Dispose();
-        if (_reader is not null)
-        {
-            await _reader.WaitAsync(token).ConfigureAwait(false);
-        }
-
-        _stop?.Dispose();
-        _stop = null;
-        _stream = null;
-        _reader = null;
+        await _source.StopAsync(token).ConfigureAwait(false);
         _publish = null;
     }
 
@@ -101,42 +82,24 @@ internal sealed class GpdWin5OemSource : IProfiledOemSource
                | ((report[8] & 0x69) != 0 ? CanonicalButtons.QuickAccess : 0);
     }
 
-    private async Task ReadAsync(FileStream stream, int length, CancellationToken token)
+    private void HandleReport(ReadOnlySpan<byte> report)
     {
-        var report = new byte[length];
-        try
+        if (report.Length > 1 && report[1] is 0x21 or 0x22 or 0x25 or 0x27 or 0x2B or 0x41 or 0x43 or 0x44)
         {
-            while (true)
-            {
-                var count = await stream.ReadAsync(report, token).ConfigureAwait(false);
-                if (count == 0)
-                {
-                    return;
-                }
+            return;
+        }
 
-                if (count > 1 && report[1] is 0x21 or 0x22 or 0x25 or 0x27 or 0x2B or 0x41 or 0x43 or 0x44)
-                {
-                    continue;
-                }
+        var buttons = Decode(report);
+        Emit(0, "l4", CanonicalButtons.RearPaddle1, buttons);
+        Emit(1, "r4", CanonicalButtons.RearPaddle2, buttons);
+        Emit(2, "gamepad", CanonicalButtons.QuickAccess, buttons);
+    }
 
-                var buttons = Decode(report.AsSpan(0, count));
-                Emit(0, "l4", CanonicalButtons.RearPaddle1, buttons);
-                Emit(1, "r4", CanonicalButtons.RearPaddle2, buttons);
-                Emit(2, "gamepad", CanonicalButtons.QuickAccess, buttons);
-            }
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-        }
-        catch (IOException)
-        {
-        }
-        finally
-        {
-            Emit(0, "l4", CanonicalButtons.RearPaddle1, 0);
-            Emit(1, "r4", CanonicalButtons.RearPaddle2, 0);
-            Emit(2, "gamepad", CanonicalButtons.QuickAccess, 0);
-        }
+    private void ReleaseHeld()
+    {
+        Emit(0, "l4", CanonicalButtons.RearPaddle1, 0);
+        Emit(1, "r4", CanonicalButtons.RearPaddle2, 0);
+        Emit(2, "gamepad", CanonicalButtons.QuickAccess, 0);
     }
 
     private void Emit(int index, string id, CanonicalButtons button, CanonicalButtons state)

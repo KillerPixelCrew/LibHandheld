@@ -15,6 +15,7 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
     private readonly IPawnIoModule _module;
     private bool _disposed;
     private SmuMailbox _mailbox;
+    private bool _moduleMailbox;
 
     internal AmdSmuTransport(IPawnIoModule module, uint codeName, uint firmwareVersion)
     {
@@ -32,16 +33,9 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
 
     public CpuPowerLimits ReadLimits()
     {
-        return Transaction(() =>
-        {
-            // Current HC uses the firmware's zero-argument get/set messages. This avoids assuming
-            // that a PM-table version has the same offsets as an older processor family.
-            var limits = new CpuPowerLimits(SendCore(Commands.Sustained, [0])[0] / 1000.0,
-                SendCore(Commands.Slow, [0])[0] / 1000.0,
-                SendCore(Commands.Boost, [0])[0] / 1000.0);
-            Validate(limits);
-            return limits;
-        });
+        // These IDs are SET messages. Sending zero is a write, never a read of the current limit.
+        // No reviewed read protocol is available here; callers retain accepted writes as observations.
+        throw new NotSupportedException("AMD power-limit readback is unavailable for this transport.");
     }
 
     public void WriteLimits(CpuPowerLimits limits)
@@ -72,7 +66,7 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
         var module = PawnIoModule.OpenRyzen();
         try
         {
-            var transport = HardwareBus.Run(@"Global\Access_PCI", Timeout, () => new AmdSmuTransport(module,
+            var transport = HardwareBus.Run(HardwareBus.Pci, Timeout, () => new AmdSmuTransport(module,
                 checked((uint)module.Execute("ioctl_get_code_name", [], 1)[0]),
                 checked((uint)module.Execute("ioctl_get_smu_version", [], 1)[0])));
             transport.SelectMailbox();
@@ -139,12 +133,20 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
             {
                 SendCore(1, [0x47]);
             }
-            catch (SmuCommandException)
+            catch (Exception failure) when (failure is SmuCommandException or TimeoutException)
             {
-                // A terminal firmware rejection is known to have completed. Only then try HC's
-                // alternate PSMU mailbox. A timeout/failed IOCTL never triggers another exchange.
+                // This is the read-only mailbox version query, never a power setter. Its timeout
+                // permits testing an independent mailbox; user writes never enter this fallback.
                 _mailbox = PsmuMailboxFor(CodeName);
-                SendCore(1, [0x47]);
+                try
+                {
+                    SendCore(1, [0x47]);
+                }
+                catch (Exception alternate) when (alternate is SmuCommandException or TimeoutException)
+                {
+                    SendModuleCore(1, [0x47]);
+                    _moduleMailbox = true;
+                }
             }
 
             return true;
@@ -165,6 +167,11 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
 
     private uint[] SendCore(uint command, uint[] arguments)
     {
+        if (_moduleMailbox)
+        {
+            return SendModuleCore(command, arguments);
+        }
+
         var deadline = Stopwatch.GetTimestamp() + (long)(Timeout.TotalSeconds * Stopwatch.Frequency);
         WaitResponse(deadline);
         WriteRegister(_mailbox.Response, 0);
@@ -223,7 +230,7 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            return HardwareBus.Run(@"Global\Access_PCI", Timeout, operation);
+            return HardwareBus.Run(HardwareBus.Pci, Timeout, operation);
         }
     }
 
@@ -232,7 +239,7 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
         return codeName switch
         {
             2 or 6 or 7 or 15 => new SmuPowerCommands(0x1A, 0x1C, 0x1B),
-            1 or 10 or 12 or 13 or 22 or 23 or 24 or 25 or 30 or 31 or 32 or 33 or 34 => new SmuPowerCommands(0x14,
+            1 or 10 or 12 or 13 or 22 or 23 or 24 or 25 or 30 or 31 or 32 or 33 => new SmuPowerCommands(0x14,
                 0x16, 0x15),
             16 or 17 or 28 => new SmuPowerCommands(0x4F, 0x5F, 0x3E),
             _ => null

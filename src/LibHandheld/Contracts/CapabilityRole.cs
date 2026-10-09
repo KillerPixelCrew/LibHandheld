@@ -3,17 +3,13 @@ using System.Text.Json.Serialization;
 namespace LibHandheld.Contracts;
 
 /// <summary>
-///     What a capability means to the consumer, independent of how any device implements it.
+///     What a capability means, independent of how any device implements it.
 /// </summary>
 /// <remarks>
-///     The role is the entire basis on which the overlay and the native QAM decide what control to draw
-///     and what a value means. the consumer knows "sustained power limit, 8-30 W, step 1"; whether the device engine
-///     reaches that through vendor WMI, an EC transaction, AMD SMU, or Intel MMIO is not expressible
-///     here and must never become expressible.
+///     Consumers receive semantic roles, units and bounds without native transport details.
+///     The backend owns vendor WMI, EC, SMU or MMIO operations.
 ///     <para>
-///         The generic roles at the end exist so an unusual feature — UMA allocation, a secondary display
-///         brightness, USB-C routing, an external-GPU switch — can be exposed without a device engine shipping UI
-///         code for it.
+///         Vendor-specific roles cover features such as UMA allocation, a secondary display or USB-C routing.
 ///     </para>
 /// </remarks>
 [JsonConverter(typeof(JsonStringEnumConverter<CapabilityRole>))]
@@ -89,10 +85,8 @@ public enum CapabilityRole
     ///     Variable refresh rate for a panel.
     /// </summary>
     /// <remarks>
-    ///     Usually published by a <c>wsgm.gpu</c> package, because the graphics driver drives the panel's
-    ///     adaptive sync: on Intel graphics that is IGCL's Arc Sync. A device package may publish it for a
-    ///     panel only it can reach. the consumer projects one of them on Valve's Performance row and never learns
-    ///     which driver answered.
+    ///     A graphics driver normally owns adaptive sync, such as Intel IGCL's Arc Sync. A handheld
+    ///     provider may expose it for a panel only it can reach. The consumer chooses its projection.
     /// </remarks>
     VariableRefreshRate,
 
@@ -145,7 +139,7 @@ public enum CapabilityValueKind
     /// </summary>
     /// <remarks>
     ///     The only kind not constrained by construction, so it carries the same text contract as
-    ///     CapabilityDisplay.CustomLabel: a declared maximum length with control and
+    ///     <see cref="CapabilityDisplay.CustomText" />: a declared maximum length with control and
     ///     bidirectional formatting characters rejected.
     /// </remarks>
     Text
@@ -153,7 +147,7 @@ public enum CapabilityValueKind
 
 /// <summary>Units a numeric capability may carry.</summary>
 /// <remarks>
-///     A closed set rather than a free-text unit string: the consumer formats and localizes these, and a device engine
+///     A closed set rather than a free-text unit string: WSGM formats and localizes these, and a plugin
 ///     supplying "Watt " or "watts" would leak straight into the UI.
 /// </remarks>
 [JsonConverter(typeof(JsonStringEnumConverter<CapabilityUnit>))]

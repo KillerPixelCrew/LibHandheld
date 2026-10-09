@@ -1,6 +1,7 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.LegionGo;
@@ -11,11 +12,7 @@ internal sealed partial class LegionGoDeviceEngine
         CancellationToken token)
     {
         var surface = _surface!;
-        if (command.ExpectedCycleGeneration != _cycle || command.ExpectedDescriptorGeneration != surface.Generation)
-        {
-            return CommandResults.Rejected(command, CapabilityReasonCode.GenerationChanged,
-                "The Lenovo capability generation changed.");
-        }
+
 
         if (command.Deadline.HasExpired || token.IsCancellationRequested ||
             !DeviceWriteBudget.IsAvailable(command.Deadline))
@@ -28,7 +25,7 @@ internal sealed partial class LegionGoDeviceEngine
         if (LegionGoModels.Match(identity) != _model ||
             LegionIdentity.Binding(identity) != LegionIdentity.Binding(_identity!))
         {
-            return CommandResults.Rejected(command, CapabilityReasonCode.GenerationChanged,
+            return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
                 "The Lenovo machine or BIOS changed.");
         }
 
@@ -36,20 +33,22 @@ internal sealed partial class LegionGoDeviceEngine
             d.CapabilityId == command.CapabilityId && d.InstanceId == command.InstanceId);
         var value = command.RequestedValue;
         var action = descriptor?.SupportsAction == true && descriptor.ValueKind == CapabilityValueKind.None;
-        if (descriptor is null || (!action && (!descriptor.SupportsWrite || value is null ||
-                                               !CapabilityValueValidation.ValueMatches(value, descriptor, out _))))
+        if (descriptor is null)
         {
-            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
-                "The Lenovo value does not fit its native descriptor.");
+            return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
+                "No native Lenovo control has this identity.");
+        }
+
+        if (CommandAdmission.Validate(command, descriptor, surface.Descriptors) is { } invalid)
+        {
+            return CommandResults.Rejected(command, invalid);
         }
 
         value ??= CapabilityValue.None();
-        if (_journal?.FailureReason is { } failure && descriptor.Persistence == CapabilityPersistence.Volatile)
-        {
-            return CommandResults.Rejected(command, failure);
-        }
 
-        if (descriptor.SectionId == DeviceSections.RgbId ||
+        if (descriptor.Role is CapabilityRole.LightingBrightness or CapabilityRole.LightingEffect
+                or CapabilityRole.LightingEffectSpeed or CapabilityRole.LightingZoneColor
+                or CapabilityRole.LightingPower ||
             command.CapabilityId is NativeTouchpad or GyroSide or ControllerMode or ControllerReset)
         {
             if (_hid?.Connected != true)
@@ -138,6 +137,8 @@ internal sealed partial class LegionGoDeviceEngine
                     writeToken.ThrowIfCancellationRequested();
                     dispatched = true;
                     _wmi!.WriteMode(ModeValue(value.ChoiceValue!));
+                    _observed.Forget(CapabilityIds.PowerSustained);
+                    _observed.Forget(CapabilityIds.PowerBoost);
                     break;
                 case CapabilityIds.ChargeLimit:
                     dispatched = true;
@@ -147,23 +148,11 @@ internal sealed partial class LegionGoDeviceEngine
                     await CaptureFansAsync(writeToken).ConfigureAwait(false);
                     writeToken.ThrowIfCancellationRequested();
                     dispatched = true;
-                    if (_model.EcFan)
-                    {
-                        _fanCurve = value.CurveValue.ToArray();
-                        _fanCurveFaulted = false;
-                        _fanMode = "custom";
-                        var temperature = _wmi!.ReadFeature(LegionProtocol.Temperature) ?? value.CurveValue[0].Input;
-                        var rpm = LegionProtocol.FanPercentToRpm(CurveAt(value.CurveValue, temperature));
-                        _ec!.WriteUInt16(0xC6C8, (ushort)rpm);
-                        _lastFanRpm = rpm;
-                    }
-                    else
-                    {
-                        var table = Enumerable.Range(1, 10).Select(i => (ushort)CurveAt(value.CurveValue, i * 10))
-                            .ToArray();
-                        _wmi!.WriteFanTable(table);
-                        _fanMode = "custom";
-                    }
+                    _fansChanged = true;
+                    var table = Enumerable.Range(1, 10).Select(i => (ushort)CurveAt(value.CurveValue, i * 10))
+                        .ToArray();
+                    _wmi!.WriteFanTable(table);
+                    _fanMode = "custom";
 
                     Remember(CapabilityIds.FanMode, CapabilityValue.Choice(_fanMode));
                     break;
@@ -171,11 +160,17 @@ internal sealed partial class LegionGoDeviceEngine
                     await CaptureFansAsync(writeToken).ConfigureAwait(false);
                     writeToken.ThrowIfCancellationRequested();
                     dispatched = true;
+                    _fansChanged = true;
                     var targetRpm = LegionProtocol.FanPercentToRpm(value.IntegerValue!.Value);
-                    _ec!.WriteUInt16(0xC6C8, (ushort)targetRpm);
-                    _lastFanRpm = targetRpm;
-                    _fanCurve = null;
-                    _fanCurveFaulted = false;
+                    if (_model.EcFan)
+                    {
+                        _ec!.WriteUInt16(0xC6C8, (ushort)targetRpm);
+                    }
+                    else
+                    {
+                        _wmi!.WriteFanTable(Enumerable.Repeat(checked((ushort)value.IntegerValue.Value), 10).ToArray());
+                    }
+
                     _fanMode = "custom";
                     Remember(CapabilityIds.FanMode, CapabilityValue.Choice(_fanMode));
                     break;
@@ -183,15 +178,15 @@ internal sealed partial class LegionGoDeviceEngine
                     await CaptureFansAsync(writeToken).ConfigureAwait(false);
                     writeToken.ThrowIfCancellationRequested();
                     dispatched = true;
+                    _fansChanged = true;
                     _wmi!.WriteFeature(LegionProtocol.FullFan, value.ChoiceValue == "full-speed" ? 1 : 0);
                     if (value.ChoiceValue == "automatic")
                     {
                         if (_model.EcFan)
                         {
                             _ec!.WriteUInt16(0xC6C8, 0);
-                            _lastFanRpm = 0;
                         }
-                        else if (_journal!.OriginalStateFor("fans")?.FanTable is { } original)
+                        else if (_journal!.OriginalStateFor<LegionRecoveryState>("fans")?.FanTable is { } original)
                         {
                             _wmi.WriteFanTable(original);
                         }
@@ -202,7 +197,12 @@ internal sealed partial class LegionGoDeviceEngine
                     }
 
                     _fanMode = value.ChoiceValue!;
-                    _fanCurveFaulted = false;
+                    if (_fanMode == "automatic")
+                    {
+                        _observed.Forget(FanDuty);
+                        _observed.Forget(CapabilityIds.FanCurve);
+                    }
+
                     break;
                 case LightingPower:
                     dispatched = true;
@@ -217,29 +217,34 @@ internal sealed partial class LegionGoDeviceEngine
                 case CapabilityIds.LightingSpeed:
                 case CapabilityIds.LightingEffect:
                 case CapabilityIds.LightingColor:
+                    var brightness = _brightness;
+                    var speed = _speed;
+                    var effect = _effect;
+                    var leftColor = _leftColor;
+                    var rightColor = _rightColor;
                     if (command.CapabilityId == CapabilityIds.LightingBrightness)
                     {
-                        _brightness = value.IntegerValue!.Value;
+                        brightness = value.IntegerValue!.Value;
                     }
                     else if (command.CapabilityId == CapabilityIds.LightingSpeed)
                     {
-                        _speed = value.IntegerValue!.Value;
+                        speed = value.IntegerValue!.Value;
                     }
                     else if (command.CapabilityId == CapabilityIds.LightingEffect)
                     {
-                        _effect = value.ChoiceValue!;
+                        effect = value.ChoiceValue!;
                     }
                     else if (command.InstanceId == "right")
                     {
-                        _rightColor = value.ColorValue!.Value;
+                        rightColor = value.ColorValue!.Value;
                     }
                     else
                     {
-                        _leftColor = value.ColorValue!.Value;
+                        leftColor = value.ColorValue!.Value;
                     }
 
                     dispatched = true;
-                    await _hid!.WriteAsync(LegionProtocol.Rgb(_model, 3, _effect, _leftColor, _brightness, _speed),
+                    await _hid!.WriteAsync(LegionProtocol.Rgb(_model, 3, effect, leftColor, brightness, speed),
                         writeToken).ConfigureAwait(false);
                     if (_model.Slim)
                     {
@@ -248,7 +253,7 @@ internal sealed partial class LegionGoDeviceEngine
                     }
                     else
                     {
-                        await _hid.WriteAsync(LegionProtocol.Rgb(_model, 4, _effect, _rightColor, _brightness, _speed),
+                        await _hid.WriteAsync(LegionProtocol.Rgb(_model, 4, effect, rightColor, brightness, speed),
                             writeToken).ConfigureAwait(false);
                         await _hid.WriteAsync([5, 6, 0x73, 2, 3, 3, 1], writeToken).ConfigureAwait(false);
                         await _hid.WriteAsync([5, 6, 0x73, 2, 4, 3, 1], writeToken).ConfigureAwait(false);
@@ -258,6 +263,12 @@ internal sealed partial class LegionGoDeviceEngine
                     {
                         await _hid.WriteAsync(report, writeToken).ConfigureAwait(false);
                     }
+
+                    _brightness = brightness;
+                    _speed = speed;
+                    _effect = effect;
+                    _leftColor = leftColor;
+                    _rightColor = rightColor;
 
                     break;
                 case NativeTouchpad:
@@ -290,128 +301,63 @@ internal sealed partial class LegionGoDeviceEngine
                 Remember(command.CapabilityId, value, command.InstanceId);
             }
 
-            // Readback can improve evidence but never controls whether the write is admitted.
-            try
-            {
-                await RefreshAsync(command.CapabilityId, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                return CommandResults.Unverified(command, ex.Message);
-            }
-
-            return descriptor.SupportsRead && VerifyReadback(command, value)
-                ? CommandResults.Verified(command, value)
-                : CommandResults.Unverified(command);
+            // The shared observation owner refreshes once after the acknowledged command.
+            return CommandResults.Applied(command);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            if (_model.EcFan && command.CapabilityId is FanDuty or CapabilityIds.FanCurve)
-            {
-                _fanCurveFaulted = true;
-            }
-
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, ex.Message,
-                    RollbackResult.NotRequired)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, ex.Message);
+            return CommandResults.TransportFailure(command, dispatched, ex);
         }
     }
 
     private void Remember(string id, CapabilityValue value, string? instance = null)
     {
-        _observed[(id, instance)] = value;
-        _written.Add((id, instance));
-    }
-
-    private bool VerifyReadback(CapabilityCommand command, CapabilityValue value)
-    {
-        switch (command.CapabilityId)
-        {
-            case CapabilityIds.PowerSustained:
-            case CapabilityIds.PowerBoost:
-                if (!DevicePowerPair.TryResolve(command, _surface!.Descriptors, out var sustained, out var boost,
-                        out _))
-                {
-                    return false;
-                }
-
-                return _wmi!.ReadFeature(LegionProtocol.LongPower) == sustained &&
-                       _wmi.ReadFeature(LegionProtocol.CrossPower) == sustained &&
-                       _wmi.ReadFeature(LegionProtocol.ShortPower) == boost &&
-                       _wmi.ReadFeature(LegionProtocol.PeakPower) == boost;
-            case CapabilityIds.Scenario: return _wmi!.ReadMode() == ModeValue(value.ChoiceValue!);
-            case CapabilityIds.ChargeLimit:
-                return _wmi!.ReadFeature(LegionProtocol.ChargeProtection) == (value.BooleanValue == true ? 1 : 0);
-            case CapabilityIds.FanCurve:
-                return !_model!.EcFan && _wmi!.ReadFanTable()?.SequenceEqual(Enumerable.Range(1, 10)
-                    .Select(i => (ushort)CurveAt(value.CurveValue, i * 10))) == true;
-            default: return false;
-        }
+        _observed.Written(id, value, instance);
     }
 
     private async ValueTask CapturePowerAsync(string service, CancellationToken token)
     {
-        if (_journal!.EntryFor(service) is { Status: DeviceRecoveryStatus.Pending } entry &&
-            entry.FirmwareIdentity == LegionIdentity.Binding(_identity!))
+        await _journal!.BeginAsync(service, LegionIdentity.Binding(_identity!), () =>
         {
-            return;
-        }
-
-        Dictionary<int, int> values = [];
-        foreach (var id in new[]
-                 {
-                     LegionProtocol.LongPower, LegionProtocol.CrossPower, LegionProtocol.ShortPower,
-                     LegionProtocol.PeakPower
-                 })
-        {
-            if (_wmi!.ReadFeature(id) is { } value && value is > 0 and <= 255)
+            Dictionary<int, int> values = [];
+            foreach (var id in new[]
+                     {
+                         LegionProtocol.LongPower, LegionProtocol.CrossPower, LegionProtocol.ShortPower,
+                         LegionProtocol.PeakPower
+                     })
             {
-                values[id] = value;
+                if (_wmi!.ReadFeature(id) is { } value)
+                {
+                    values[id] = value;
+                }
             }
-        }
 
-        var observedMode = _wmi!.ReadMode();
-        var mode = observedMode is { } known && ModeName(known) is not null ? observedMode : null;
-        await _journal.BeginAsync(service, LegionIdentity.Binding(_identity!), new LegionRecoveryState
-                { Features = values, Mode = mode, UnknownOriginal = values.Count != 4 || mode is null }, token)
-            .ConfigureAwait(false);
+            var observedMode = _wmi!.ReadMode();
+            var mode = observedMode is { } known && ModeName(known) is not null ? observedMode : null;
+            return new LegionRecoveryState
+                { Features = values, Mode = mode, UnknownOriginal = values.Count != 4 || mode is null };
+        }, token).ConfigureAwait(false);
     }
 
     private async ValueTask CaptureFansAsync(CancellationToken token)
     {
-        if (_journal!.EntryFor("fans") is { Status: DeviceRecoveryStatus.Pending } entry &&
-            entry.FirmwareIdentity == LegionIdentity.Binding(_identity!))
+        await _journal!.BeginAsync("fans", LegionIdentity.Binding(_identity!), () =>
         {
-            return;
-        }
-
-        var full = _wmi!.ReadFeature(LegionProtocol.FullFan);
-        var table = _model!.EcFan ? null : _wmi.ReadFanTable();
-        ushort? rpm = null;
-        if (_model.EcFan && _ec is not null)
-        {
-            try
+            var full = _wmi!.ReadFeature(LegionProtocol.FullFan);
+            var table = _model!.EcFan ? null : _wmi.ReadFanTable();
+            ushort? rpm = _model.EcFan && _ec is not null ? _ec.ReadUInt16(0xC6C8) : null;
+            return new LegionRecoveryState
             {
-                rpm = _ec.ReadUInt16(0xC6C8);
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                _host?.Trace(DeviceTraceLevel.Warn, "legion-recovery", $"Fan original unreadable: {ex.Message}");
-            }
-        }
-
-        await _journal.BeginAsync("fans", LegionIdentity.Binding(_identity!), new LegionRecoveryState
-        {
-            Features = full is { } value ? new Dictionary<int, int> { [LegionProtocol.FullFan] = value } : [],
-            FanTable = table, EcFan = rpm,
-            UnknownOriginal = full is null || (_model.EcFan ? rpm is null : table is null)
+                Features = full is { } value ? new Dictionary<int, int> { [LegionProtocol.FullFan] = value } : [],
+                FanTable = table, EcFan = rpm,
+                UnknownOriginal = full is null || (_model.EcFan ? rpm is null : table is null)
+            };
         }, token).ConfigureAwait(false);
     }
 
     private async ValueTask RestoreAsync(CancellationToken token, Deadline? budget = null)
     {
-        if (_journal is null || _journal.FailureReason is not null || _identity is null || _wmi is null)
+        if (_journal is null || _identity is null || _wmi is null)
         {
             return;
         }
@@ -422,7 +368,8 @@ internal sealed partial class LegionGoDeviceEngine
             return;
         }
 
-        foreach (var entry in _journal.OutstandingEntries.Where(e => e.Status == DeviceRecoveryStatus.Pending))
+        var ecReleaseAttempted = false;
+        foreach (var entry in _journal.Entries<LegionRecoveryState>())
         {
             if (!DeviceWriteBudget.IsAvailable(budget ?? Deadline.Never))
             {
@@ -431,42 +378,43 @@ internal sealed partial class LegionGoDeviceEngine
 
             if (entry.FirmwareIdentity != LegionIdentity.Binding(live))
             {
+                await _journal.RetireAsync(entry.ServiceId, "firmware changed", token).ConfigureAwait(false);
                 continue;
             }
 
             var state = entry.OriginalState;
-            var verified = !state.UnknownOriginal;
+            var verified = false;
             try
             {
-                // Restore mode before the captured limits because a mode transition resets those limits.
-                if (state.Mode is { } mode)
-                {
-                    _wmi.WriteMode(mode);
-                    verified &= _wmi.ReadMode() == mode;
-                }
-
-                foreach (var feature in state.Features)
+                // Non-custom OEM modes own their limits. Rewriting those limits after the mode
+                // can return Lenovo firmware to Custom; restore raw limits only for a captured custom mode.
+                foreach (var feature in state.Features.Where(_ => state.Mode is null or 255))
                 {
                     DeviceWriteBudget.Require(budget ?? Deadline.Never, "Lenovo recovery feature");
                     _wmi.WriteFeature(feature.Key, feature.Value);
-                    verified &= _wmi.ReadFeature(feature.Key) == feature.Value;
+                }
+
+                if (state.Mode is { } mode)
+                {
+                    _wmi.WriteMode(mode);
                 }
 
                 if (state.FanTable is { } table)
                 {
                     _wmi.WriteFanTable(table);
-                    verified &= _wmi.ReadFanTable()?.SequenceEqual(table) == true;
                 }
 
-                if (state.EcFan is { } rpm)
+                if (entry.ServiceId == "fans" && _model!.EcFan)
                 {
                     if (_ec is null)
                     {
                         continue;
                     }
 
-                    _ec.WriteUInt16(0xC6C8, rpm);
-                    verified &= _ec.ReadUInt16(0xC6C8) == rpm;
+                    // HC LegionGo2.Close releases the override with zero even when its prior RPM was unreadable.
+                    ecReleaseAttempted = true;
+                    _ec.WriteUInt16(0xC6C8, 0);
+                    _fansChanged = false;
                 }
 
                 await _journal.SetStatusAsync(entry.ServiceId,
@@ -476,15 +424,21 @@ internal sealed partial class LegionGoDeviceEngine
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                _host?.Trace(DeviceTraceLevel.Warn, "legion-recovery", ex.Message);
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "legion-recovery", ex.Message);
                 await _journal
                     .SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
                     .ConfigureAwait(false);
             }
         }
 
-        _fanCurve = null;
+        if (!ecReleaseAttempted && _fansChanged && _model!.EcFan && _ec is not null &&
+            DeviceWriteBudget.IsAvailable(budget ?? Deadline.Never))
+        {
+            token.ThrowIfCancellationRequested();
+            _ec.WriteUInt16(0xC6C8, 0);
+            _fansChanged = false;
+        }
+
         _fanMode = "automatic";
-        _lastFanRpm = null;
     }
 }

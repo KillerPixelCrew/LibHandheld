@@ -1,7 +1,6 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
 
@@ -129,17 +128,25 @@ internal static class GpdModels
 
     internal static IReadOnlyList<HandheldDefinition> GetDefinitions()
     {
-        return Array.AsReadOnly(All.Select(model => model.Definition).ToArray());
+        return Array.AsReadOnly(All.Select(model => model.DeclaredDefinition).ToArray());
     }
 
     internal static ProfiledDeviceModel? Match(DeviceIdentitySnapshot identity)
     {
-        return All.FirstOrDefault(model => model.Matches(identity));
+        if (All.FirstOrDefault(model => model.Matches(identity)) is { } matched)
+        {
+            return matched;
+        }
+
+        // HC defaults these exact WIN Max 2 boards to the 8840U variant when the brand string
+        // does not select another known variant. Other boards still require their own exact row.
+        var max2 = All.Single(model => model.Definition.Id == "gpd-win-max2-8840u");
+        return (max2 with { Processors = [] }).Matches(identity) ? max2 : null;
     }
 
-    internal static IDeviceEngine CreateEngine(HandheldDefinition definition)
+    internal static NativeEngine CreateEngine(HandheldDefinition definition)
     {
-        return new ProfiledDeviceEngine(All.Single(model => model.Definition == definition));
+        return new ProfiledDeviceEngine(All.Single(model => model.Definition.Id == definition.Id));
     }
 
     private static ProfiledDeviceModel Model(string id, string name, string source, string[] products,
@@ -157,14 +164,24 @@ internal static class GpdModels
             SourceFamilyId = source, Manufacturers = ["GPD"], Products = products, Processors = processors,
             Cpu = cpu, MinimumWatts = minimum, MaximumWatts = maximum, Fan = fan, Motion = motion,
             Controller = source is "GPDWin2" or "GPDWin3" ? Controller with { CompanionUsbIds = [] } : Controller,
-            KeyboardChords = chords ?? RearChords,
+            KeyboardChords = chords ?? (source.StartsWith("GPDWinMax2", StringComparison.Ordinal)
+                ? [new KeyboardOemChord("menu", "Menu", [0x07], CanonicalButtons.QuickAccess), .. RearChords]
+                : RearChords),
             Touchpad = source.StartsWith("GPDWinMini", StringComparison.Ordinal) ||
                        source.StartsWith("GPDWinMax2", StringComparison.Ordinal)
                 ? Touchpad
                 : null,
-            CreateNativeService = source is "GPDWin2" or "GPDWin3"
-                ? null
-                : context => new GpdNativeService(context, source != "GPDWin5")
+            NativeRoles = source is "GPDWin2" or "GPDWin3"
+                ? []
+                :
+                [
+                    CapabilityRole.GenericChoice, CapabilityRole.GenericRange, CapabilityRole.LightingEffect,
+                    CapabilityRole.LightingZoneColor
+                ],
+            NativeOemReplacesChords = ["l4", "r4", "gamepad"],
+            ServiceFactories = source is "GPDWin2" or "GPDWin3"
+                ? []
+                : [_ => new GpdNativeService()]
         };
     }
 }

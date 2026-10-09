@@ -1,4 +1,5 @@
 using System.Numerics;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Windows;
 

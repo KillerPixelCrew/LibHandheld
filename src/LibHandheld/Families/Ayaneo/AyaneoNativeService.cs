@@ -1,7 +1,8 @@
-using System.Text.Json.Serialization;
+using System.Diagnostics;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Transports;
 
@@ -21,7 +22,7 @@ internal sealed class AyaneoNativeService(
     internal const string MappingId = "controller.configure-oem-mapping";
     internal const string EjectId = "controller.eject-module";
     internal const string VibrationId = "controller.vibration-strength";
-    private readonly AyaneoRecoveryJournal _journal = new();
+    private readonly DeviceRecoveryJournal _journal = context.Journal;
     private readonly Dictionary<(string Id, string? Instance), CapabilityValue> _observed = new();
     private readonly AyaneoSuperJoy _superJoy = new();
     private int _brightness = 100;
@@ -41,50 +42,41 @@ internal sealed class AyaneoNativeService(
     private byte _vibration = 0x20;
 
     public override bool Suspendable => true;
+
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors { get; } = Describe(model);
     internal override IReadOnlyList<CapabilityState> States => _states;
     private ushort OwnerAddress => model.Protocol == AyaneoEcProtocol.CEii ? (ushort)0xD187 : (ushort)0xBF;
+
+    internal override async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await _superJoy.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _ec?.Dispose();
+            _ec = null;
+        }
+    }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         _firmware = cycle.Identity.Firmware;
-        await _journal.InitializeAsync(Path.Combine(context.StateDirectory, "ayaneo-native"), token)
-            .ConfigureAwait(false);
-        if (_journal.FailureReason is { } failure)
-        {
-            return Set(DeviceServiceState.Passive, failure);
-        }
 
         _ec = open?.Invoke(model.Protocol) ?? (model.Protocol == AyaneoEcProtocol.CEii
             ? PawnIoEmbeddedController.OpenIndexed()
             : PawnIoEmbeddedController.OpenAcpi());
-        if (_journal.EntryFor("lighting-owner") is { } previous)
-        {
-            if (previous.FirmwareIdentity != cycle.Identity.Firmware)
-            {
-                // No previous BIOS's ownership byte is written into this BIOS. A fresh capture is required.
-                await _journal.SetStatusAsync("lighting-owner", DeviceRecoveryStatus.RestoredVerified, token)
-                    .ConfigureAwait(false);
-            }
-            else if (previous.Status == DeviceRecoveryStatus.Pending)
-            {
-                await RestoreOwnerAsync(previous.OriginalState.Owner, token).ConfigureAwait(false);
-            }
-            else
-            {
-                return Set(DeviceServiceState.Passive,
-                    new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
-                        "An earlier RGB ownership restore remains unconfirmed."));
-            }
-        }
+        await _journal.ReconcileAsync<AyaneoRecoveryState>("lighting-owner", _firmware,
+            (original, ct) => RestoreOwnerAsync(original.Owner, ct), token).ConfigureAwait(false);
 
         if (model.Lighting != AyaneoLighting.None)
         {
-            var original = _ec.ReadByte(OwnerAddress);
             await _journal.BeginAsync("lighting-owner", cycle.Identity.Firmware,
-                new AyaneoRecoveryState { Owner = original }, token).ConfigureAwait(false);
+                () => new AyaneoRecoveryState { Owner = _ec.ReadByte(OwnerAddress) }, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
             _ec.WriteByte(OwnerAddress, model.Protocol == AyaneoEcProtocol.CEii ? (byte)0xA5 : (byte)0xFE);
             if (model.Lighting == AyaneoLighting.SuperJoy)
             {
@@ -97,17 +89,10 @@ internal sealed class AyaneoNativeService(
             }
         }
 
-        if (model.ModularController && _journal.EntryFor("controller-power") is { } power)
+        if (model.ModularController)
         {
-            if (power.FirmwareIdentity != cycle.Identity.Firmware)
-            {
-                await _journal.SetStatusAsync("controller-power", DeviceRecoveryStatus.RestoredVerified, token)
-                    .ConfigureAwait(false);
-            }
-            else if (power.Status == DeviceRecoveryStatus.Pending)
-            {
-                await RestorePowerAsync(power.OriginalState.Owner, token).ConfigureAwait(false);
-            }
+            await _journal.ReconcileAsync<AyaneoRecoveryState>("controller-power", _firmware,
+                (original, ct) => RestorePowerAsync(original.Owner, ct), token).ConfigureAwait(false);
         }
 
         if (model.ModularController && _controllerEnabled)
@@ -136,8 +121,7 @@ internal sealed class AyaneoNativeService(
             }
             catch (Exception exception) when (exception is not OutOfMemoryException && !token.IsCancellationRequested)
             {
-                context.Sink.TraceChange(DeviceTraceLevel.Warn, "ayaneo-native", "power-led-restore",
-                    exception.Message);
+                DeviceTrace.Change("ayaneo-native", "power-led-restore", exception.Message, DeviceTraceLevel.Warn);
             }
         }
 
@@ -162,7 +146,7 @@ internal sealed class AyaneoNativeService(
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            context.Sink.TraceChange(DeviceTraceLevel.Warn, "ayaneo-native", "read", exception.Message);
+            DeviceTrace.Change("ayaneo-native", "read", exception.Message, DeviceTraceLevel.Warn);
         }
 
         if (model.ModularController && _controllerEnabled && Environment.TickCount64 - _lastModuleQuery >= 2000)
@@ -196,7 +180,7 @@ internal sealed class AyaneoNativeService(
             }
             catch (Exception exception) when (exception is not OutOfMemoryException && !token.IsCancellationRequested)
             {
-                context.Sink.TraceChange(DeviceTraceLevel.Warn, "ayaneo-native", "module-query", exception.Message);
+                DeviceTrace.Change("ayaneo-native", "module-query", exception.Message, DeviceTraceLevel.Warn);
             }
         }
 
@@ -264,7 +248,7 @@ internal sealed class AyaneoNativeService(
             case SecondaryId:
                 _ec.Transaction(() =>
                 {
-                    _ec.WriteByte(0xFF, 0);
+                    _ec.WriteByte(0x4F, 0);
                     _ec.WriteByte(0x4E, (byte)(command.RequestedValue!.IntegerValue!.Value * 255 / 100));
                     return true;
                 });
@@ -334,7 +318,7 @@ internal sealed class AyaneoNativeService(
         }
 
         PublishStates();
-        return Result(command, CommandOutcome.AppliedUnverified);
+        return Result(command, CommandOutcome.Applied);
     }
 
     private async ValueTask ApplyLightingAsync(CancellationToken token)
@@ -397,7 +381,14 @@ internal sealed class AyaneoNativeService(
         var green = (byte)(rgb >> 8);
         var blue = (byte)rgb;
         var (first, second, third) = logo ? (blue, red, green)
-            : kun ? zone is 1 or 3 ? (green, red, blue) : (green, blue, red) : (red, green, blue);
+            : kun ? zone switch
+            {
+                1 => (green, red, blue),
+                2 => (green, blue, red),
+                3 => (blue, red, green),
+                4 => (blue, green, red),
+                _ => (red, green, blue)
+            } : (red, green, blue);
         var address = (byte)(zone * 3);
         WriteRgb(group, address, Scale(first));
         WriteRgb(group, (byte)(address + 1), Scale(second));
@@ -485,7 +476,7 @@ internal sealed class AyaneoNativeService(
                 _modulesRemoved = false;
                 await AcquireControllerPowerAsync(token).ConfigureAwait(false);
             }
-            else if (_journal.PendingOriginalFor("controller-power") is { } original)
+            else if (_journal.PendingOriginalFor<AyaneoRecoveryState>("controller-power") is { } original)
             {
                 await RestorePowerAsync(original.Owner, token).ConfigureAwait(false);
             }
@@ -498,19 +489,20 @@ internal sealed class AyaneoNativeService(
         var state = DeviceServiceState.Idle;
         try
         {
-            if (_ec is not null && _journal.PendingOriginalFor("lighting-owner") is { } original)
+            if (_ec is not null && _journal.PendingOriginalFor<AyaneoRecoveryState>("lighting-owner") is { } original)
             {
                 await RestoreOwnerAsync(original.Owner, token).ConfigureAwait(false);
-                if (_journal.EntryFor("lighting-owner") is not null)
+                if (_journal.EntryFor<AyaneoRecoveryState>("lighting-owner") is not null)
                 {
                     state = DeviceServiceState.ReleasedUnverified;
                 }
             }
 
-            if (_ec is not null && _journal.PendingOriginalFor("controller-power") is { } originalPower)
+            if (_ec is not null && _journal.PendingOriginalFor<AyaneoRecoveryState>("controller-power") is
+                    { } originalPower)
             {
                 await RestorePowerAsync(originalPower.Owner, token).ConfigureAwait(false);
-                if (_journal.EntryFor("controller-power") is not null)
+                if (_journal.EntryFor<AyaneoRecoveryState>("controller-power") is not null)
                 {
                     state = DeviceServiceState.ReleasedUnverified;
                 }
@@ -553,9 +545,10 @@ internal sealed class AyaneoNativeService(
 
         // This takes ownership only while both modules are present. A pending uncertain write is never
         // resubmitted by observation; explicit re-enable or a completed removal/insertion starts a new action.
-        var original = _ec.ReadByte(0x2D);
-        await _journal.BeginAsync("controller-power", _firmware, new AyaneoRecoveryState { Owner = original }, token)
+        await _journal.BeginAsync("controller-power", _firmware,
+                () => new AyaneoRecoveryState { Owner = _ec.ReadByte(0x2D) }, token)
             .ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
         _ec.WriteByte(0x2D, 0xFF);
     }
 
@@ -578,6 +571,7 @@ internal sealed class AyaneoNativeService(
 
     private async ValueTask EjectAsync(string side, CancellationToken token)
     {
+        var ec = _ec ?? throw new InvalidOperationException("AYANEO EC ownership is not active.");
         var bits = side switch
         {
             "left" => (byte)0x07, "right" => (byte)0x70, "both" => (byte)0x77,
@@ -585,54 +579,67 @@ internal sealed class AyaneoNativeService(
         };
         _ejectionPending = true;
         _modulesRemoved = false;
-        var original = _ec!.ReadByte(0x2D);
-        await _journal.BeginAsync("controller-power", _firmware, new AyaneoRecoveryState { Owner = original }, token)
-            .ConfigureAwait(false);
-        Exception? submissionFailure = null;
         try
         {
-            await _superJoy.ExchangeAsync(AyaneoSuperJoy.Lighting(_left, _right, _brightness, _enabled, _effect, bits,
-                _vibration), token).ConfigureAwait(false);
+            await _journal.BeginAsync("controller-power", _firmware,
+                () => new AyaneoRecoveryState { Owner = ec.ReadByte(0x2D) }, token).ConfigureAwait(false);
+            await CompleteEjectAsync(
+                ct => _superJoy.ExchangeAsync(AyaneoSuperJoy.Lighting(_left, _right, _brightness, _enabled,
+                    _effect, bits, _vibration), ct),
+                ct => _superJoy.QueryAsync(ct),
+                () => ec.WriteByte(0x2D, 0xFE), token).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
+        catch
         {
-            submissionFailure = exception;
-        }
-
-        // Once the physical eject was accepted, finish its power-down even if the caller stops waiting.
-        // This is the second step of the admitted action, never a retry of the eject command.
-        await Task.Delay(TimeSpan.FromSeconds(3), CancellationToken.None).ConfigureAwait(false);
-        try
-        {
-            for (var query = 0; _superJoy.IsOpen && query < 8; query++)
-            {
-                var report = await _superJoy.QueryAsync(CancellationToken.None).ConfigureAwait(false);
-                if ((report[20] & ~0x11) == 0)
-                {
-                    break;
-                }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(400), CancellationToken.None).ConfigureAwait(false);
-            }
+            // A failed or unconfirmed latch operation cannot authorize cutting controller power.
+            _ejectionPending = false;
+            _modulesRemoved = false;
+            throw;
         }
         finally
         {
-            try
+            await _superJoy.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    internal static async ValueTask CompleteEjectAsync(
+        Func<CancellationToken, ValueTask<byte[]>> submit,
+        Func<CancellationToken, ValueTask<byte[]>> query,
+        Action powerDown,
+        CancellationToken token,
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<TimeSpan>? elapsed = null)
+    {
+        token.ThrowIfCancellationRequested();
+        var started = Stopwatch.GetTimestamp();
+        await submit(token).ConfigureAwait(false);
+        delay ??= Task.Delay;
+        var confirmed = false;
+        // Status queries observe the admitted eject; they never resubmit its command.
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            var report = await query(CancellationToken.None).ConfigureAwait(false);
+            await delay(TimeSpan.FromMilliseconds(400), CancellationToken.None).ConfigureAwait(false);
+            if (report.Length == 65 && (report[20] & ~0x11) == 0)
             {
-                _ec.WriteByte(0x2D, 0xFE);
-            }
-            finally
-            {
-                await _superJoy.DisposeAsync().ConfigureAwait(false);
+                confirmed = true;
+                break;
             }
         }
 
-        if (submissionFailure is not null)
+        if (!confirmed)
         {
-            throw new IOException(
-                "Module eject submission was unconfirmed; controller power-down completed without resubmitting it.",
-                submissionFailure);
+            throw new IOException("Module eject was not confirmed; controller power remains on.");
         }
+
+        var remaining = TimeSpan.FromSeconds(3) - (elapsed?.Invoke()
+                                                   ?? Stopwatch.GetElapsedTime(started));
+        if (remaining > TimeSpan.Zero)
+        {
+            await delay(remaining, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        powerDown();
     }
 
     private void Observe(string id, string? instance, CapabilityValue value)
@@ -661,7 +668,7 @@ internal sealed class AyaneoNativeService(
                 CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId, Available = available,
                 ObservedValue = hasValue ? value : null,
                 Quality = hasValue ? HardwareStateQuality.Observed : HardwareStateQuality.Unknown,
-                ObservedAt = hasValue ? DateTimeOffset.UtcNow : null, DescriptorGeneration = 0, CycleGeneration = 0,
+                ObservedAt = hasValue ? DateTimeOffset.UtcNow : null,
                 Reason = available
                     ? null
                     : new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
@@ -680,12 +687,8 @@ internal sealed class AyaneoNativeService(
         };
     }
 
-    private static CapabilityDisplay Label(string text)
-    {
-        return new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = text };
-    }
 
-    private static IReadOnlyList<CapabilityDescriptor> Describe(AyaneoModel model)
+    internal static IReadOnlyList<CapabilityDescriptor> Describe(AyaneoModel model)
     {
         var descriptors = new List<CapabilityDescriptor>
         {
@@ -720,7 +723,7 @@ internal sealed class AyaneoNativeService(
                     with
                     {
                         Choices = Array.AsReadOnly(new[] { "solid", "pulse", "rainbow" }
-                            .Select(value => new CapabilityChoice(value, Label(value))).ToArray())
+                            .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
                     });
             }
         }
@@ -742,7 +745,7 @@ internal sealed class AyaneoNativeService(
                 with
                 {
                     Choices = Array.AsReadOnly(new[] { "disabled", "low", "medium", "high" }
-                        .Select(value => new CapabilityChoice(value, Label(value))).ToArray())
+                        .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
                 });
             descriptors.Add(Value("controller.modules", CapabilityRole.GenericReadOnly, "Connected modules",
                     CapabilityValueKind.Choice)
@@ -750,7 +753,7 @@ internal sealed class AyaneoNativeService(
                 {
                     SupportsRead = true, SupportsWrite = false,
                     Choices = Array.AsReadOnly(new[] { "both", "left", "right", "none" }
-                        .Select(value => new CapabilityChoice(value, Label(value))).ToArray())
+                        .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
                 });
             foreach (var side in new[] { (ModuleLeftId, "Left module"), (ModuleRightId, "Right module") })
             {
@@ -785,7 +788,7 @@ internal sealed class AyaneoNativeService(
     {
         return new CapabilityDescriptor
         {
-            CapabilityId = id, Role = role, Display = Label(label), ValueKind = kind,
+            CapabilityId = id, Role = role, Display = CapabilityDescriptors.Label(label), ValueKind = kind,
             SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
         };
     }
@@ -795,23 +798,3 @@ internal sealed record AyaneoRecoveryState
 {
     public byte Owner { get; init; }
 }
-
-internal sealed class AyaneoRecoveryJournal()
-    : DeviceRecoveryJournal<AyaneoRecoveryState>(AyaneoJson.Default.RecoveryDocument)
-{
-    internal ValueTask InitializeAsync(string directory, CancellationToken token)
-    {
-        return LoadAsync(directory, token);
-    }
-
-    protected override void ValidateEntry(DeviceRecoveryEntry<AyaneoRecoveryState> entry)
-    {
-        if (entry.ServiceId is not ("lighting-owner" or "controller-power"))
-        {
-            throw new InvalidDataException("The AYANEO native recovery entry is unknown.");
-        }
-    }
-}
-
-[JsonSerializable(typeof(DeviceRecoveryDocument<AyaneoRecoveryState>), TypeInfoPropertyName = "RecoveryDocument")]
-internal partial class AyaneoJson : JsonSerializerContext;

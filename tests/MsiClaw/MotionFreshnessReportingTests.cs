@@ -1,9 +1,5 @@
 using LibHandheld.Families.MsiClaw.Tests.Fakes;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
-using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Testing;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Families.MsiClaw.Tests;
 
@@ -111,11 +107,21 @@ public sealed class MotionFreshnessReportingTests : IDisposable
         Action<MotionSample> Publish)> StartCapturingAsync()
     {
         TestPluginHostAdapter host = new(1);
-        DeviceTrace.Install(host);
+        DeviceTrace.Install(entry =>
+        {
+            if (entry.ChangeKey is { } key)
+            {
+                host.TraceChange((DeviceTraceLevel)entry.Level, entry.Scope, key, entry.Message);
+            }
+            else
+            {
+                host.Trace((DeviceTraceLevel)entry.Level, entry.Scope, entry.Message);
+            }
+        });
         FakeMotionSource source = new();
         MotionService motion = new(source, ClawModels.Claw8A2Vm);
         await motion.AcquireAsync(
-            new DeviceCycleContext<ClawIdentityState>(1, Deadline.Never, FakeIdentityReader.CreateState()),
+            new DeviceCycleContext<ClawIdentityState>(Deadline.Never, FakeIdentityReader.CreateState()),
             CancellationToken.None);
         return (motion, host, source.Publish!);
     }

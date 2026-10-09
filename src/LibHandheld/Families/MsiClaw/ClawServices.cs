@@ -1,7 +1,7 @@
 using System.Numerics;
-using LibHandheld.Internal.Capabilities;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -119,23 +119,18 @@ internal sealed class OemEventService(
 
 internal sealed class PowerService(
     ClawPowerCapability capability,
-    ClawRecoveryJournal journal) : ClawJournalledService(ServiceIds.Power)
+    DeviceRecoveryJournal journal) : ClawJournalledService(ServiceIds.Power)
 {
     private readonly ClawPowerCapability _capability =
         capability ?? throw new ArgumentNullException(nameof(capability));
 
-    private readonly ClawRecoveryJournal _journal = journal ?? throw new ArgumentNullException(nameof(journal));
+    private readonly DeviceRecoveryJournal _journal = journal ?? throw new ArgumentNullException(nameof(journal));
     public PowerPair? LastObserved { get; private set; }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        if (ReconciliationBlockReason is not null)
-        {
-            return Set(DeviceServiceState.Faulted, ReconciliationBlockReason);
-        }
-
         var identity = context.Identity;
         if (!identity.ExactMachineMatch || !identity.WmiAvailable)
         {
@@ -179,7 +174,7 @@ internal sealed class PowerService(
                 CapabilityReasonCode.FirmwareNotVerified,
                 "The MSI_ACPI provider did not answer.")
             : new CapabilityReason(
-                CapabilityReasonCode.GenerationChanged,
+                CapabilityReasonCode.Unsupported,
                 "The Claw model identity no longer matches.");
     }
 }
@@ -207,7 +202,7 @@ internal sealed class ChargeLimitService(
         return Set(DeviceServiceState.Owned);
     }
 
-    public async ValueTask RefreshAsync(CancellationToken cancellationToken)
+    internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
     {
         LastObserved = _capability.Observe(await _capability.ReadAsync(cancellationToken).ConfigureAwait(false));
     }
@@ -228,37 +223,32 @@ internal sealed class ChargeLimitService(
                 CapabilityReasonCode.FirmwareNotVerified,
                 "The MSI_ACPI provider did not answer.")
             : new CapabilityReason(
-                CapabilityReasonCode.GenerationChanged,
+                CapabilityReasonCode.Unsupported,
                 "The Claw model identity no longer matches.");
     }
 }
 
 internal sealed class FanService(
     ClawFanCapability capability,
-    ClawRecoveryJournal journal) : ClawJournalledService(ServiceIds.Fans)
+    DeviceRecoveryJournal journal) : ClawJournalledService(ServiceIds.Fans)
 {
     private readonly ClawFanCapability _capability =
         capability ?? throw new ArgumentNullException(nameof(capability));
 
-    private readonly ClawRecoveryJournal _journal = journal ?? throw new ArgumentNullException(nameof(journal));
+    private readonly DeviceRecoveryJournal _journal = journal ?? throw new ArgumentNullException(nameof(journal));
     public FanSnapshot? LastObserved { get; private set; }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        if (ReconciliationBlockReason is not null)
-        {
-            return Set(DeviceServiceState.Faulted, ReconciliationBlockReason);
-        }
-
         var identity = context.Identity;
         if (!identity.ExactMachineMatch || !identity.WmiAvailable)
         {
             return Set(DeviceServiceState.Passive, new CapabilityReason(
                 identity.ExactMachineMatch
                     ? CapabilityReasonCode.FirmwareNotVerified
-                    : CapabilityReasonCode.GenerationChanged,
+                    : CapabilityReasonCode.Unsupported,
                 "The Claw model or its MSI_ACPI provider was not available."));
         }
 
@@ -267,7 +257,7 @@ internal sealed class FanService(
         return Set(DeviceServiceState.Owned);
     }
 
-    public async ValueTask RefreshAsync(CancellationToken cancellationToken)
+    internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
     {
         LastObserved = _capability.Observe(
             await _capability.ReadSnapshotAsync(cancellationToken).ConfigureAwait(false));
@@ -294,7 +284,7 @@ internal sealed class TelemetryService(
 
     public FanTelemetry? LastTelemetry { get; private set; }
 
-    public async ValueTask RefreshAsync(CancellationToken cancellationToken)
+    internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
     {
         LastTelemetry = await _capability.ReadTelemetryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -336,7 +326,7 @@ internal sealed class LightingService(
 
     public LightingState? LastObserved { get; private set; }
 
-    public async ValueTask RefreshAsync(CancellationToken cancellationToken)
+    internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
     {
         LastObserved = await _capability.ReadAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -349,7 +339,7 @@ internal sealed class LightingService(
         if (!identity.ExactMachineMatch)
         {
             return Set(DeviceServiceState.Passive, new CapabilityReason(
-                CapabilityReasonCode.GenerationChanged,
+                CapabilityReasonCode.Unsupported,
                 "Exact device identity no longer matches the Claw implementation."));
         }
 
@@ -570,7 +560,7 @@ internal sealed class ChordSuppressorService(
     private void ReportFault(Exception exception)
     {
         var detail = DiagnosticText.FromException("The firmware chord suppressor stopped", exception);
-        _host.Trace(DeviceTraceLevel.Warn, "chords", detail);
+        DeviceTrace.Write(DeviceTraceLevel.Warn, "chords", detail);
         _ = Set(DeviceServiceState.Degraded, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
     }
 

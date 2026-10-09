@@ -1,9 +1,5 @@
 using LibHandheld.Families.SteamDeck;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Testing;
 using LibHandheld.Testing;
 
 namespace LibHandheld.Tests.SteamDeck;
@@ -11,13 +7,13 @@ namespace LibHandheld.Tests.SteamDeck;
 public sealed class ValveLifecycleTests
 {
     [Fact]
-    public async Task RuntimeControllerToggleRetiresReaderAndRestoresOnlyCapturedRegisters()
+    public async Task RuntimeControllerToggleRetiresReaderAndRestoresDesktopMappingsAndCapturedGyroMode()
     {
         using var directory = new TemporaryDirectory();
         var host = new TestPluginHostAdapter(1);
         var controllers = new List<NeptuneFake>();
         var context = new ProfiledFeatureContext(directory.Root, "steamdeck-lcd|bios", host)
-            { ControllerManagementEnabled = true };
+            { Journal = TestRecovery.Open(directory.Root), ControllerManagementEnabled = true };
         var service = new SteamDeckNativeService(context,
             () =>
             {
@@ -26,7 +22,7 @@ public sealed class ValveLifecycleTests
                 return pad;
             },
             () => new MemoryFake(), () => new VangoghPower(new MemoryFake(), 0x80300000));
-        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(1, Deadline.Never,
+        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
             new ProfiledCycleIdentity("steamdeck-lcd|bios"));
         await service.AcquireAsync(cycle, CancellationToken.None);
         Assert.True(service.Connected);
@@ -89,6 +85,12 @@ public sealed class ValveLifecycleTests
             Registers[id] = value;
         }
 
+        public void SetManagedMappings(bool managed)
+        {
+            Registers[7] = managed ? (ushort)7 : (ushort)0;
+            Registers[8] = managed ? (ushort)7 : (ushort)0;
+        }
+
         public void Rumble(HapticOutputFrame frame)
         {
             Output.Add(frame);
@@ -107,7 +109,8 @@ public sealed class ValveLifecycleTests
         {
             return address switch
             {
-                0xFE700C4C => 0xB030, 0xFE7003BD => 6, 0xFE7003B0 => 2000, 0xFE700B92 => 2500, 0xFE70046E => 0xAC0A,
+                0xFE700C4C => 0xB030, 0xFE7003BD => 6, 0xFE700C01 => 0, 0xFE7003B0 => 2000,
+                0xFE700B92 => 2500, 0xFE70046E => 0xAC0A,
                 _ => 1
             };
         }

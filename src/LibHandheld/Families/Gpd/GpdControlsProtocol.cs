@@ -294,8 +294,8 @@ internal sealed class GpdControlsProtocol : IDisposable
         var report = new byte[_version2 ? 64 : _collection.FeatureLength];
         report[0] = 1;
         var success = _version2
-            ? HidD_GetInputReport(_handle, report, report.Length)
-            : HidD_GetFeature(_handle, report, report.Length);
+            ? HidDevices.GetInputReport(_handle, report)
+            : HidDevices.GetFeature(_handle, report);
         if (!success)
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError());
@@ -303,12 +303,4 @@ internal sealed class GpdControlsProtocol : IDisposable
 
         return report;
     }
-
-    [DllImport("hid.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool HidD_GetFeature(SafeFileHandle handle, byte[] report, int length);
-
-    [DllImport("hid.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool HidD_GetInputReport(SafeFileHandle handle, byte[] report, int length);
 }

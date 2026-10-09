@@ -1,9 +1,10 @@
+using LibHandheld.Contracts;
+
 namespace LibHandheld.Internal.Capabilities;
 
-/// <summary>The one check of a capability value against its descriptor, shared by WSGM and plugins.</summary>
+/// <summary>Checks a typed native value against its descriptor.</summary>
 /// <remarks>
-///     WSGM applies it before a value enters its state or reaches a plugin, and a plugin may apply it again
-///     when it revalidates a command. Generation, deadline and power-source checks stay the plugin's own.
+///     Admission also checks the active owner, cancellation, deadline and power-source requirements.
 /// </remarks>
 internal static class CapabilityValueValidation
 {

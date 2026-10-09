@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
-using LibHandheld.Internal.Input;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Windows;
 using Microsoft.Win32.SafeHandles;
 
@@ -16,6 +16,7 @@ internal interface INeptuneDevice : IDisposable
     void StopReading();
     ushort? ReadSetting(byte id);
     void WriteSetting(byte id, ushort value);
+    void SetManagedMappings(bool managed);
     void Rumble(HapticOutputFrame frame);
 }
 
@@ -43,11 +44,7 @@ internal sealed class NeptuneDevice : INeptuneDevice
             FirmwareIdentity = $"{collection.ReleaseNumber:X4}|{ReadSerial()}|{collection.PhysicalLocation}";
             Identities = Array.AsReadOnly(HidDevices.PresentNodes(0x28DE, [0x1205])
                 .Where(node => HidDevices.SamePhysicalLocation(node.PhysicalLocation, collection.PhysicalLocation))
-                .Select(node => new PhysicalDeviceIdentity
-                {
-                    InstancePath = node.InstancePath,
-                    LocationPath = node.PhysicalLocation, VendorId = "28DE", ProductId = "1205", RequiresHiding = true
-                }).ToArray());
+                .Select(PhysicalIdentities.FromNode).ToArray());
             if (Identities.Count == 0)
             {
                 throw new IOException("The Neptune controller has no correlated physical device nodes.");
@@ -112,7 +109,7 @@ internal sealed class NeptuneDevice : INeptuneDevice
             _request[3] = id;
             Send();
             Array.Clear(_request);
-            if (!HidD_GetFeature(_feature, _request, _request.Length) || _request[1] != 0x89)
+            if (!HidDevices.GetFeature(_feature, _request) || _request[1] != 0x89)
             {
                 return null;
             }
@@ -138,6 +135,26 @@ internal sealed class NeptuneDevice : INeptuneDevice
             _request[3] = id;
             BinaryPrimitives.WriteUInt16LittleEndian(_request.AsSpan(4), value);
             Send();
+        }
+    }
+
+    public void SetManagedMappings(bool managed)
+    {
+        lock (_gate)
+        {
+            // HC SteamController.SetLizardMode: 0x81 clears mappings, 0x85/0x8E restore desktop defaults.
+            Prepare(managed ? (byte)0x81 : (byte)0x85, 0);
+            Send();
+            if (managed)
+            {
+                WriteSetting(8, 7);
+                WriteSetting(7, 7);
+            }
+            else
+            {
+                Prepare(0x8E, 0);
+                Send();
+            }
         }
     }
 
@@ -193,7 +210,7 @@ internal sealed class NeptuneDevice : INeptuneDevice
             _request[3] = 1;
             Send();
             Array.Clear(_request);
-            if (!HidD_GetFeature(_feature, _request, _request.Length) || _request[1] != 0xAE)
+            if (!HidDevices.GetFeature(_feature, _request) || _request[1] != 0xAE)
             {
                 return "serial-unavailable";
             }
@@ -213,20 +230,13 @@ internal sealed class NeptuneDevice : INeptuneDevice
 
     private void Send()
     {
-        if (!HidD_SetFeature(_feature, _request, _request.Length))
+        if (!NativeHid.HidD_SetFeature(_feature, _request, _request.Length))
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError(),
                 "Valve Neptune feature command failed; completion is unknown.");
         }
     }
 
-    [DllImport("hid.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool HidD_SetFeature(SafeFileHandle handle, byte[] buffer, int length);
-
-    [DllImport("hid.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool HidD_GetFeature(SafeFileHandle handle, byte[] buffer, int length);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

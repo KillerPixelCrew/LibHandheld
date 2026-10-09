@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.Management;
-using System.Text.Json.Serialization;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Services;
@@ -23,25 +23,27 @@ internal sealed class OneXNativeService(
     private int _brightness = 100;
     private bool _chargeSupported;
     private IEmbeddedController? _ec;
-    private bool _ecUncertain;
+
     private string _effect = "solid";
-    private OneXRecoveryJournal? _journal;
-    private bool _lightingUncertain;
+    private DeviceRecoveryJournal? _journal;
+
     private OneXVendorTransport? _lights;
     private bool _manage = context.ControllerManagementEnabled;
+    private bool _takeoverActive;
     private IEmbeddedController? _takeoverEc;
     private bool _unknownOriginal;
     private OneXVendorTransport? _vibration;
-    private bool _vibrationUncertain;
+
     public override bool Suspendable => true;
+
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Describe();
 
     internal override IReadOnlyList<CapabilityState> States => Array.AsReadOnly(Descriptors.Select(item =>
     {
         var lights = item.Role is CapabilityRole.LightingBrightness or CapabilityRole.LightingEffect
             or CapabilityRole.LightingZoneColor;
-        var available = item.CapabilityId == "haptic.strength" ? _vibration is not null && !_vibrationUncertain
-            : lights ? _lights is not null && !_lightingUncertain : _ec is not null && !_ecUncertain;
+        var available = item.CapabilityId == "haptic.strength" ? _vibration is not null
+            : lights ? _lights is not null : _ec is not null;
         var value = _observed.GetValueOrDefault((item.CapabilityId, item.InstanceId));
         return new CapabilityState
         {
@@ -49,19 +51,35 @@ internal sealed class OneXNativeService(
             Available = available, ObservedValue = value,
             Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
             ObservedAt = value is null ? null : _observedAt.GetValueOrDefault((item.CapabilityId, item.InstanceId)),
-            DescriptorGeneration = 0, CycleGeneration = 0,
+
             Reason = available
                 ? null
-                : Missing("The model's native transport is unavailable or its previous write was uncertain.")
+                : Missing("The model's native transport is unavailable.")
         };
     }).ToArray());
+
+    internal override ValueTask DisposeAsync()
+    {
+        if (!ReferenceEquals(_takeoverEc, _ec))
+        {
+            _takeoverEc?.Dispose();
+        }
+
+        _takeoverEc = null;
+        _ec?.Dispose();
+        _ec = null;
+        _lights?.Dispose();
+        _lights = null;
+        _vibration?.Dispose();
+        _vibration = null;
+        return ValueTask.CompletedTask;
+    }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _journal = await OneXRecoveryJournal.Open(Path.Combine(context.StateDirectory, "onexplayer-controls"), token)
-            .ConfigureAwait(false);
+        _journal = context.Journal;
         try
         {
             _ec = openEc is not null
@@ -100,25 +118,13 @@ internal sealed class OneXNativeService(
         _chargeSupported = profile.Charge != OneXChargeKind.None && ReadChargeFirmwareSupport();
         if (_ec is not null)
         {
-            foreach (var entry in _journal.OutstandingEntries)
+            foreach (var entry in _journal.Entries<OneXRegisterState>())
             {
-                if (entry.FirmwareIdentity != context.Firmware)
-                {
-                    await _journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoredVerified, token)
-                        .ConfigureAwait(false);
-                    continue;
-                }
-
-                if (entry.Status != DeviceRecoveryStatus.Pending)
-                {
-                    _ecUncertain = true;
-                    continue;
-                }
-
-                await RestoreAsync(entry.ServiceId, entry.OriginalState, token).ConfigureAwait(false);
+                await _journal.ReconcileAsync<OneXRegisterState>(entry.ServiceId, context.Firmware,
+                    (original, ct) => RestoreAsync(entry.ServiceId, original, ct), token).ConfigureAwait(false);
             }
 
-            if (_manage && !_ecUncertain)
+            if (_manage)
             {
                 await TakeoverAsync(token).ConfigureAwait(false);
             }
@@ -139,13 +145,19 @@ internal sealed class OneXNativeService(
             return;
         }
 
-        if (enabled && !_ecUncertain)
+        if (enabled)
         {
             await TakeoverAsync(token).ConfigureAwait(false);
         }
-        else if (!enabled && _journal?.PendingOriginalFor("takeover") is { } original)
+        else if (!enabled && _journal?.PendingOriginalFor<OneXRegisterState>("takeover") is { } original)
         {
             await RestoreAsync("takeover", original, token).ConfigureAwait(false);
+        }
+        else if (!enabled && _takeoverActive && profile.Ec == OneXEcKind.Wmi)
+        {
+            token.ThrowIfCancellationRequested();
+            WriteTakeoverBit(_takeoverEc!, false);
+            _takeoverActive = false;
         }
     }
 
@@ -157,69 +169,38 @@ internal sealed class OneXNativeService(
             profile.ExtraTakeover is { } extra ? [0xF1, 0xF2, extra] : [0xF1, 0xF2];
         await CaptureAsync("takeover", addresses, !wmi, token).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
-        try
+        if (wmi)
         {
-            if (wmi)
-            {
-                var prior = _journal!.OriginalStateFor("takeover")?.Values[0];
-                // Preserve every unrelated bit; a missing read uses HC's documented takeover bit.
-                _takeoverEc!.WriteByte(0x04EB, (byte)((prior ?? 0) | 0x40));
-            }
-            else
-            {
-                _takeoverEc!.WriteByte(0xF1, 0x40);
-                await Task.Delay(50, token).ConfigureAwait(false);
-                _takeoverEc.WriteByte(0xF2, 2);
-                await Task.Delay(50, token).ConfigureAwait(false);
-                if (profile.ExtraTakeover is { } takeoverAddress)
-                {
-                    _takeoverEc.WriteByte(takeoverAddress, profile.ExtraValue);
-                }
-            }
+            WriteTakeoverBit(_takeoverEc!, true);
+            _takeoverActive = true;
         }
-        catch
+        else
         {
-            _ecUncertain = true;
-            throw;
+            _takeoverEc!.WriteByte(0xF1, 0x40);
+            await Task.Delay(50, token).ConfigureAwait(false);
+            _takeoverEc.WriteByte(0xF2, 2);
+            await Task.Delay(50, token).ConfigureAwait(false);
+            if (profile.ExtraTakeover is { } takeoverAddress)
+            {
+                _takeoverEc.WriteByte(takeoverAddress, profile.ExtraValue);
+            }
         }
     }
 
     private async ValueTask CaptureAsync(string id, ushort[] addresses, bool acpi, CancellationToken token)
     {
-        if (_journal!.EntryFor(id) is { } prior)
-        {
-            if (prior.Status != DeviceRecoveryStatus.Pending)
-            {
-                await _journal.BeginAsync(id, context.Firmware, prior.OriginalState, token).ConfigureAwait(false);
-            }
-
-            return;
-        }
-
         var transport = acpi ? _takeoverEc : _ec;
-        var values = new byte[addresses.Length];
-        try
+        var captured = await _journal!.BeginAsync(id, context.Firmware, () =>
         {
+            var values = new byte[addresses.Length];
             for (var index = 0; index < addresses.Length; index++)
             {
                 values[index] = transport!.ReadByte(addresses[index]);
             }
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            // Write support is independent of readback. The unavailable original is reported at release.
-            _unknownOriginal = true;
-            var fallback = id == "fan"
-                ? new OneXRegisterState
-                    { Addresses = [profile.FanMode], Values = [0], Acpi = acpi, UnknownOriginal = true }
-                : new OneXRegisterState
-                    { Addresses = addresses, Values = new byte[addresses.Length], Acpi = acpi, UnknownOriginal = true };
-            await _journal.BeginAsync(id, context.Firmware, fallback, token).ConfigureAwait(false);
-            return;
-        }
 
-        await _journal.BeginAsync(id, context.Firmware,
-            new OneXRegisterState { Addresses = addresses, Values = values, Acpi = acpi }, token).ConfigureAwait(false);
+            return new OneXRegisterState { Addresses = addresses, Values = values, Acpi = acpi };
+        }, token).ConfigureAwait(false);
+        _unknownOriginal |= captured is null;
     }
 
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
@@ -229,11 +210,11 @@ internal sealed class OneXNativeService(
         var sent = false;
         var lighting = command.CapabilityId is CapabilityIds.LightingBrightness or CapabilityIds.LightingEffect
             or CapabilityIds.LightingColor;
-        if (command.CapabilityId == "haptic.strength" ? _vibration is null || _vibrationUncertain
-            : lighting ? _lights is null || _lightingUncertain : _ec is null || _ecUncertain)
+        if (command.CapabilityId == "haptic.strength" ? _vibration is null
+            : lighting ? _lights is null : _ec is null)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
-                "The native transport is unavailable or requires an explicit reacquisition after an uncertain write.");
+                "The native transport is unavailable.");
         }
 
         try
@@ -329,29 +310,12 @@ internal sealed class OneXNativeService(
             }
 
             Observe(command.CapabilityId, command.InstanceId, value);
-            return CommandResults.Unverified(command);
+            return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            if (sent)
-            {
-                if (command.CapabilityId == "haptic.strength")
-                {
-                    _vibrationUncertain = true;
-                }
-                else if (lighting)
-                {
-                    _lightingUncertain = true;
-                }
-                else
-                {
-                    _ecUncertain = true;
-                }
-            }
-
             return sent
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message,
-                    RollbackResult.NotRequired)
+                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message)
                 : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
         }
     }
@@ -378,7 +342,23 @@ internal sealed class OneXNativeService(
 
     private Task Gap(CancellationToken token)
     {
-        return Task.Delay(profile.Lighting == OneXLightingKind.Serial ? 200 : 50, token);
+        return Task.Delay(LightingDelay(profile.Lighting), token);
+    }
+
+    internal static int LightingDelay(OneXLightingKind kind)
+    {
+        return kind is OneXLightingKind.Serial or OneXLightingKind.HidV1X2 ? 200 : 50;
+    }
+
+    internal static void WriteTakeoverBit(IEmbeddedController transport, bool enabled)
+    {
+        // HC X2/3 owns only bit 6. A failed live read cannot safely synthesize the other bits.
+        transport.Transaction(() =>
+        {
+            var current = transport.ReadByte(0x04EB);
+            transport.WriteByte(0x04EB, (byte)(enabled ? current | 0x40 : current & ~0x40));
+            return true;
+        });
     }
 
     private IReadOnlyList<byte> PrimarySides()
@@ -398,7 +378,7 @@ internal sealed class OneXNativeService(
     internal override ValueTask RefreshAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        if (_ec is not null && !_ecUncertain)
+        if (_ec is not null)
         {
             Read("fan.duty", profile.FanDuty, raw => CapabilityValue.Integer(Math.Clamp(
                 (int)Math.Round((raw - profile.MinimumDuty) * 100d / (profile.MaximumDuty - profile.MinimumDuty)), 0,
@@ -478,14 +458,20 @@ internal sealed class OneXNativeService(
         {
             if (_journal is not null)
             {
-                foreach (var entry in _journal.OutstandingEntries
-                             .Where(item => item.Status == DeviceRecoveryStatus.Pending).Reverse())
+                foreach (var entry in _journal.Entries<OneXRegisterState>().Reverse())
                 {
                     await RestoreAsync(entry.ServiceId, entry.OriginalState, token).ConfigureAwait(false);
                 }
             }
 
-            return _unknownOriginal || _journal?.OutstandingEntries.Count > 0
+            if (_takeoverActive && profile.Ec == OneXEcKind.Wmi)
+            {
+                token.ThrowIfCancellationRequested();
+                WriteTakeoverBit(_takeoverEc!, false);
+                _takeoverActive = false;
+            }
+
+            return _unknownOriginal || _journal?.Entries<OneXRegisterState>().Count > 0
                 ? Set(DeviceServiceState.ReleasedUnverified,
                     Missing("The original EC state could not be confirmed or restored."))
                 : Set(DeviceServiceState.Idle);
@@ -509,6 +495,12 @@ internal sealed class OneXNativeService(
 
     private async ValueTask RestoreAsync(string id, OneXRegisterState original, CancellationToken token)
     {
+        if (_journal!.EntryFor<OneXRegisterState>(id)?.FirmwareIdentity != context.Firmware)
+        {
+            await _journal.RetireAsync(id, "firmware changed", token).ConfigureAwait(false);
+            return;
+        }
+
         try
         {
             var transport = original.Acpi ? _takeoverEc ??= OpenAcpi() : _ec;
@@ -520,17 +512,26 @@ internal sealed class OneXNativeService(
             for (var index = 0; index < original.Addresses.Length; index++)
             {
                 token.ThrowIfCancellationRequested();
-                transport.WriteByte(original.Addresses[index], original.Values[index]);
+                if (id == "takeover" && profile.Ec == OneXEcKind.Wmi && original.Addresses[index] == 0x04EB)
+                {
+                    if (original.UnknownOriginal)
+                    {
+                        throw new IOException("The original takeover bit was not captured.");
+                    }
+
+                    WriteTakeoverBit(transport, (original.Values[index] & 0x40) != 0);
+                    _takeoverActive = false;
+                }
+                else
+                {
+                    transport.WriteByte(original.Addresses[index], original.Values[index]);
+                }
             }
 
             await _journal!.SetStatusAsync(id,
                 original.UnknownOriginal
                     ? DeviceRecoveryStatus.RestoredUnverified
                     : DeviceRecoveryStatus.RestoredVerified, token).ConfigureAwait(false);
-            if (original.UnknownOriginal)
-            {
-                _ecUncertain = true;
-            }
         }
         catch
         {
@@ -578,6 +579,11 @@ internal sealed class OneXNativeService(
                         "off", "solid", "rainbow", "monster-woke", "sunset", "neon", "dreamy", "cyberpunk", "colorful",
                         "classic", "aurora", "sun"
                     ];
+            if (profile.Lighting == OneXLightingKind.Serial)
+            {
+                effects = [.. effects, "aok-classic"];
+            }
+
             descriptors.Add(Choice(CapabilityIds.LightingEffect, CapabilityRole.LightingEffect, "Lighting effect",
                     effects, true) with
                 {
@@ -607,17 +613,13 @@ internal sealed class OneXNativeService(
         return openAcpi?.Invoke() ?? PawnIoEmbeddedController.OpenAcpi();
     }
 
-    private static CapabilityDisplay Label(string text)
-    {
-        return new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = text };
-    }
 
     private static CapabilityDescriptor Color(string zone, string label)
     {
         return new CapabilityDescriptor
         {
             CapabilityId = CapabilityIds.LightingColor, InstanceId = zone, Role = CapabilityRole.LightingZoneColor,
-            ValueKind = CapabilityValueKind.Color, Display = Label(label), SupportsWrite = true,
+            ValueKind = CapabilityValueKind.Color, Display = CapabilityDescriptors.Label(label), SupportsWrite = true,
             Persistence = CapabilityPersistence.DevicePersistent
         };
     }
@@ -627,7 +629,8 @@ internal sealed class OneXNativeService(
     {
         return new CapabilityDescriptor
         {
-            CapabilityId = id, Role = role, Display = Label(label), ValueKind = CapabilityValueKind.Integer,
+            CapabilityId = id, Role = role, Display = CapabilityDescriptors.Label(label),
+            ValueKind = CapabilityValueKind.Integer,
             Minimum = minimum,
             Maximum = maximum, Step = 1, Unit = unit, SupportsRead = true, SupportsWrite = write,
             Persistence = persistent ? CapabilityPersistence.DevicePersistent : CapabilityPersistence.Volatile
@@ -639,11 +642,13 @@ internal sealed class OneXNativeService(
     {
         return new CapabilityDescriptor
         {
-            CapabilityId = id, Role = role, Display = Label(label), ValueKind = CapabilityValueKind.Choice,
+            CapabilityId = id, Role = role, Display = CapabilityDescriptors.Label(label),
+            ValueKind = CapabilityValueKind.Choice,
             SupportsRead = true,
             SupportsWrite = true,
             Persistence = persistent ? CapabilityPersistence.DevicePersistent : CapabilityPersistence.Volatile,
-            Choices = Array.AsReadOnly(choices.Select(value => new CapabilityChoice(value, Label(value))).ToArray())
+            Choices = Array.AsReadOnly(choices
+                .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
         };
     }
 }
@@ -655,35 +660,3 @@ internal sealed record OneXRegisterState
     public bool Acpi { get; init; }
     public bool UnknownOriginal { get; init; }
 }
-
-internal sealed class OneXRecoveryJournal()
-    : DeviceRecoveryJournal<OneXRegisterState>(OneXRecoveryJson.Default.RecoveryDocument)
-{
-    internal static async ValueTask<OneXRecoveryJournal> Open(string directory, CancellationToken token)
-    {
-        var journal = new OneXRecoveryJournal();
-        await journal.LoadAsync(directory, token).ConfigureAwait(false);
-        return journal;
-    }
-
-    protected override void ValidateEntry(DeviceRecoveryEntry<OneXRegisterState> entry)
-    {
-        if (entry.ServiceId is not ("fan" or "takeover") || entry.OriginalState.Addresses.Length is < 1 or > 3
-                                                         || entry.OriginalState.Values.Length !=
-                                                         entry.OriginalState.Addresses.Length
-                                                         || entry.OriginalState.Addresses.Distinct().Count() !=
-                                                         entry.OriginalState.Addresses.Length
-                                                         || entry.OriginalState.Addresses.Any(address =>
-                                                             entry.ServiceId == "fan"
-                                                                 ? address is not (0x4A or 0x4B or 0xC4 or 0xC5 or 0x44A
-                                                                     or 0x44B)
-                                                                 : address is not (0xF1 or 0xF2 or 0x1E or 0xEB
-                                                                     or 0x04EB)))
-        {
-            throw new InvalidDataException("The ONEXPLAYER register recovery record is invalid.");
-        }
-    }
-}
-
-[JsonSerializable(typeof(DeviceRecoveryDocument<OneXRegisterState>), TypeInfoPropertyName = "RecoveryDocument")]
-internal partial class OneXRecoveryJson : JsonSerializerContext;

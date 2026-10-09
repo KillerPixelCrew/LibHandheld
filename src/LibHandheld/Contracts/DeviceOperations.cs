@@ -43,7 +43,7 @@ public sealed record DeviceOperationResult
     } = [];
 
     /// <summary>Whether the complete request was written successfully, with or without independent readback.</summary>
-    public bool Applied => Outcome is CommandOutcome.AppliedVerified or CommandOutcome.AppliedUnverified;
+    public bool Applied => Outcome is CommandOutcome.Applied;
 }
 
 /// <summary>A currently declared semantic control and its last native observation.</summary>
@@ -64,12 +64,6 @@ public sealed record DeviceControl(CapabilityDescriptor Descriptor, CapabilitySt
 /// <summary>One detached view of current device controls, taken under a single publication lock.</summary>
 public sealed record DeviceControlSnapshot
 {
-    /// <summary>Current acquisition cycle.</summary>
-    public required long CycleGeneration { get; init; }
-
-    /// <summary>Current descriptor replacement; zero before descriptors have arrived.</summary>
-    public required long DescriptorGeneration { get; init; }
-
     /// <summary>Declared controls and their matching current observations.</summary>
     public IReadOnlyList<DeviceControl> Controls
     {

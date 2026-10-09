@@ -22,7 +22,7 @@ public enum CapabilityReasonCode
     /// <summary>Another owner currently holds the resource.</summary>
     ResourceConflict,
 
-    /// <summary>The device engine released the resource, for example when controller management was turned off.</summary>
+    /// <summary>The plugin released the resource, for example when controller management was turned off.</summary>
     ResourceReleased,
 
     /// <summary>Not available on the current power source.</summary>
@@ -31,13 +31,10 @@ public enum CapabilityReasonCode
     /// <summary>The transport failed and the capability stays faulted until recovery.</summary>
     TransportFaulted,
 
-    /// <summary>The device generation changed and this state has not been refreshed.</summary>
-    GenerationChanged,
-
     /// <summary>The observation expired under the freshness policy.</summary>
     ObservationExpired,
 
-    /// <summary>The device engine runtime is unavailable, so nothing can be observed or commanded.</summary>
+    /// <summary>The plugin runtime is unavailable, so nothing can be observed or commanded.</summary>
     HostUnavailable,
 
     /// <summary>The firmware is outside the range this implementation was verified against.</summary>
@@ -54,8 +51,8 @@ public enum CapabilityReasonCode
 ///     A structured reason, carrying separate user-facing and diagnostic detail.
 /// </summary>
 /// <remarks>
-///     The split is deliberate. Detail may name a provider, a conflicting process, or a
-///     firmware version — useful in a log, wrong in an overlay tile. the consumer renders the code through its
+///     The split is deliberate. <see cref="Detail" /> may name a provider, a conflicting process, or a
+///     firmware version — useful in a log, wrong in an overlay tile. WSGM renders the code through its
 ///     own localized strings and shows the detail only in diagnostics.
 /// </remarks>
 /// <param name="Code">The stable reason.</param>

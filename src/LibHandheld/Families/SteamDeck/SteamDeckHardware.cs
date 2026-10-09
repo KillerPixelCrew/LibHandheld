@@ -3,8 +3,9 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Management;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
+using System.Text.Json;
 using LibHandheld.Internal.Transports;
+using LibHandheld.Internal.Windows;
 using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Families.SteamDeck;
@@ -20,7 +21,6 @@ internal interface ISteamDeckMemory : IDisposable
 /// <summary>The pinned InpOut ABI; the pre-existing driver must be ready before DLL loading.</summary>
 internal sealed class SteamDeckMemory : ISteamDeckMemory
 {
-    internal const string Digest = "5F27ED4D5CD58A1EE23DEEB802E09E73F3A1D884CE2135F6E827F67B171269E7";
     private readonly Lock _gate = new();
     private readonly FileStream _held;
     private readonly nint _library;
@@ -82,7 +82,7 @@ internal sealed class SteamDeckMemory : ISteamDeckMemory
             // The public void export silently discards IOCTL failure. The pinned driver's verified
             // ABI is a ushort port followed by one byte; acknowledge the actual driver dispatch.
             var request = new byte[] { 0x6C, 0, mode };
-            if (!DeviceIoControl(_readiness, 0x9C402008, request, 3, new byte[10], 10, out _, 0))
+            if (!NativeDevice.DeviceIoControl(_readiness, 0x9C402008, request, 3, new byte[10], 10, out _, 0))
             {
                 throw new Win32Exception(Marshal.GetLastPInvokeError(),
                     "Valve fan-mode dispatch failed; completion is unknown.");
@@ -119,21 +119,21 @@ internal sealed class SteamDeckMemory : ISteamDeckMemory
         }
     }
 
-    internal static SteamDeckMemory Open()
+    internal static SteamDeckMemory Open(string? path)
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "Resources", "InpOut", "inpoutx64.dll");
-        var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        path = Path.GetFullPath(path);
+        using var manifest = File.OpenRead(Path.Combine(Path.GetDirectoryName(path)!, "inpout.lock.json"));
+        using var pin = JsonDocument.Parse(manifest);
+        var digest = pin.RootElement.GetProperty("component").GetProperty("sha256").GetString()
+                     ?? throw new InvalidDataException("The InpOut payload pin is missing.");
+        var held = PinnedPayload.OpenHeld(path, digest);
         SafeFileHandle? readiness = null;
         nint library = 0;
         try
         {
-            if (Convert.ToHexString(SHA256.HashData(held)) != Digest)
-            {
-                throw new InvalidDataException("InpOut does not match its pinned payload.");
-            }
-
             // InpOut's DLL entry point may install a missing driver. Require the existing device first.
-            readiness = CreateFileW(@"\\.\inpoutx64", 0, 3, 0, 3, 0, 0);
+            readiness = NativeDevice.CreateFile(@"\\.\inpoutx64", 0, 3, 0, 3, 0, 0);
             if (readiness.IsInvalid)
             {
                 throw new IOException(
@@ -205,7 +205,7 @@ internal sealed class SteamDeckMemory : ISteamDeckMemory
                                                            address == selected + 0x16292 * 4))
                || (address, width) is (0xFE700C4C, 16) or (0xFE7003BD, 8) or (0xFE700C01, 8)
                or (0xFE700B92, 16) or (0xFE700B95, 16) or (0xFE700B97, 16)
-               or (0xFE7003B0, 16) or (0xFE70046E, 16) or (0xFE700B9F, 8);
+               or (0xFE7003B0, 16) or (0xFE70046E, 16) or (0xFE700B9F, 32) or (0xFE700C01, 8);
     }
 
     private T Export<T>(string name) where T : Delegate
@@ -213,14 +213,6 @@ internal sealed class SteamDeckMemory : ISteamDeckMemory
         return Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(_library, name));
     }
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern SafeFileHandle CreateFileW(string name, uint access, uint share, nint security,
-        uint disposition, uint flags, nint template);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, byte[] input, uint inputLength,
-        byte[] output, uint outputLength, out uint returned, nint overlapped);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate nint MapMemory(nint address, uint bytes, out nint handle);
@@ -295,9 +287,9 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
         }
     }
 
-    internal static VangoghPower Open()
+    internal static VangoghPower Open(string? path)
     {
-        var memory = SteamDeckMemory.Open();
+        var memory = SteamDeckMemory.Open(path);
         try
         {
             var candidates = PresentGpuRanges();
@@ -335,9 +327,13 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
             throw new IOException("The Valve SMU mailbox is not ready; no command was dispatched.");
         }
 
-        memory.Write(mmioBase + Response, 0, 32);
-        memory.Write(mmioBase + Argument, value, 32);
-        memory.Write(mmioBase + Command, command, 32);
+        HardwareBus.Run(HardwareBus.Pci, TimeSpan.FromSeconds(2), () =>
+        {
+            memory.Write(mmioBase + Response, 0, 32);
+            memory.Write(mmioBase + Argument, value, 32);
+            memory.Write(mmioBase + Command, command, 32);
+            return true;
+        });
         var status = WaitResponse(expires);
         if (status != 1)
         {
@@ -357,7 +353,8 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
     {
         for (;;)
         {
-            var value = memory.Read(mmioBase + Response, 32);
+            var value = HardwareBus.Run(HardwareBus.Pci, TimeSpan.FromSeconds(2),
+                () => memory.Read(mmioBase + Response, 32));
             if (value != 0)
             {
                 return value;
@@ -376,7 +373,7 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
     {
         lock (_gate)
         {
-            return HardwareBus.Run(@"Global\Access_PCI", TimeSpan.FromSeconds(2), action);
+            return action();
         }
     }
 

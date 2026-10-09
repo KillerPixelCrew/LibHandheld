@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Windows;
 using Microsoft.Win32.SafeHandles;
@@ -26,155 +26,62 @@ namespace LibHandheld.Families.MsiClaw;
 ///         unit's measurement (index 16 left, 15 right), which HC has reversed.
 ///     </para>
 /// </remarks>
-internal sealed unsafe class HidDescriptorGamepad : IDisposable
+internal sealed class HidDescriptorGamepad : IDisposable
 {
-    private const int HidpInput = 0;
-    private const ushort GenericDesktopPage = 0x01;
-    private const ushort ButtonPage = 0x09;
+    private readonly HidUsageReader _reader;
 
-    private readonly Axis _hat;
-    private readonly Axis _rx;
-    private readonly Axis _ry;
-    private readonly Axis _rz;
-    private readonly ushort[] _usages = new ushort[128];
-    private readonly Axis _x;
-    private readonly Axis _y;
-    private readonly Axis _z;
-    private nint _preparsed;
-
-    private HidDescriptorGamepad(nint preparsed, int inputLength, ReadOnlySpan<HidpValueCaps> values)
+    private HidDescriptorGamepad(HidUsageReader reader)
     {
-        _preparsed = preparsed;
-        InputLength = inputLength;
-        _x = Find(values, 0x30);
-        _y = Find(values, 0x31);
-        _z = Find(values, 0x32);
-        _rx = Find(values, 0x33);
-        _ry = Find(values, 0x34);
-        _rz = Find(values, 0x35);
-        _hat = Find(values, 0x39);
+        _reader = reader;
     }
 
-    /// <summary>The input report length the descriptor declares, report id included.</summary>
-    public int InputLength { get; }
+    public int InputLength => _reader.InputLength;
 
     public void Dispose()
     {
-        var preparsed = _preparsed;
-        _preparsed = 0;
-        if (preparsed != 0)
-        {
-            _ = NativeHid.HidD_FreePreparsedData(preparsed);
-        }
+        _reader.Dispose();
     }
 
-    /// <summary>Reads the descriptor of an open gamepad collection.</summary>
-    /// <exception cref="IOException">The descriptor lacks a stick axis or cannot be read.</exception>
-    /// <param name="handle">Borrowed open HID collection handle; it is neither closed nor retained by the decoder.</param>
-    /// <returns>A caller-owned decoder holding native preparsed data; dispose it after decoding stops.</returns>
     public static HidDescriptorGamepad Create(SafeFileHandle handle)
     {
-        if (!NativeHid.HidD_GetPreparsedData(handle, out var preparsed))
+        var reader = new HidUsageReader(handle);
+        if (!reader.HasValue(0x30) || !reader.HasValue(0x31) || !reader.HasValue(0x32) || !reader.HasValue(0x35))
         {
-            throw new IOException("The gamepad's HID descriptor could not be read.");
+            reader.Dispose();
+            throw new IOException("The gamepad HID descriptor has no X, Y, Z and Rz sticks.");
         }
 
-        try
-        {
-            if (NativeHid.HidP_GetCaps(preparsed, out var caps) != NativeHid.HIDP_STATUS_SUCCESS)
-            {
-                throw new IOException("The gamepad's HID capabilities could not be read.");
-            }
-
-            var values = new HidpValueCaps[Math.Max((int)caps.NumberInputValueCaps, 1)];
-            var count = (ushort)values.Length;
-            fixed (HidpValueCaps* pointer = values)
-            {
-                if (HidP_GetValueCaps(HidpInput, pointer, ref count, preparsed) != NativeHid.HIDP_STATUS_SUCCESS)
-                {
-                    throw new IOException("The gamepad's HID value capabilities could not be read.");
-                }
-            }
-
-            HidDescriptorGamepad gamepad = new(preparsed, caps.InputReportByteLength, values.AsSpan(0, count));
-            if (!gamepad._x.Present || !gamepad._y.Present || !gamepad._z.Present || !gamepad._rz.Present)
-            {
-                gamepad.Dispose();
-                throw new IOException("The gamepad's HID descriptor has no X, Y, Z and Rz sticks.");
-            }
-
-            preparsed = 0;
-            return gamepad;
-        }
-        finally
-        {
-            if (preparsed != 0)
-            {
-                _ = NativeHid.HidD_FreePreparsedData(preparsed);
-            }
-        }
+        return new HidDescriptorGamepad(reader);
     }
 
-    /// <summary>Decodes one input report using required stick usages; the reader filters MCU idle reports before this call.</summary>
-    /// <param name="report">Complete input report including report ID; its memory is used only during this call.</param>
-    /// <param name="timestamp">Observation time assigned to the sample and used to merge held OEM buttons.</param>
-    /// <param name="oemButtons">Optional OEM press latch, or null to omit OEM buttons.</param>
-    /// <param name="sample">Canonical complete sample on success; default on failure.</param>
-    /// <returns>True when required stick usages decode; false after disposal or an incompatible/unreadable report.</returns>
-    /// <remarks>Serialize decoding and disposal because usage scratch storage and preparsed data are shared.</remarks>
-    public bool TryDecode(
-        ReadOnlySpan<byte> report,
-        DateTimeOffset timestamp,
-        OemButtonLatch? oemButtons,
+    public bool TryDecode(ReadOnlySpan<byte> report, DateTimeOffset timestamp, OemButtonLatch? oemButtons,
         out CanonicalControllerSample sample)
     {
         sample = default;
-        if (_preparsed == 0
-            || !_x.TryRead(_preparsed, report, out var x)
-            || !_y.TryRead(_preparsed, report, out var y)
-            || !_z.TryRead(_preparsed, report, out var z)
-            || !_rz.TryRead(_preparsed, report, out var rz))
+        if (!_reader.TryValue(report, 0x30, out var x) || !_reader.TryValue(report, 0x31, out var y)
+                                                       || !_reader.TryValue(report, 0x32, out var z) ||
+                                                       !_reader.TryValue(report, 0x35, out var rz))
         {
             return false;
         }
 
-        // HC's DClawController skips a DirectInput state with RotationX/Y/Z all at 32767, the centred
-        // state DirectInput reports before the first HID report; raw HID has no such state, and the
-        // MCU's idle report (all 0xFF) is skipped by the reader instead.
-        var rx = _rx.TryRead(_preparsed, report, out var rxValue) ? rxValue : _rx.Minimum;
-        var ry = _ry.TryRead(_preparsed, report, out var ryValue) ? ryValue : _ry.Minimum;
-
-        var buttons = CanonicalButtons.None;
-        var length = (uint)_usages.Length;
-        fixed (ushort* usages = _usages)
-        fixed (byte* data = report)
+        var buttons = oemButtons?.Current(timestamp) ?? CanonicalButtons.None;
+        foreach (var usage in _reader.Usages(report, 9))
         {
-            if (HidP_GetUsages(HidpInput, ButtonPage, 0, usages, ref length, _preparsed, data, (uint)report.Length)
-                == NativeHid.HIDP_STATUS_SUCCESS)
-            {
-                for (var index = 0; index < length; index++)
-                {
-                    buttons |= Button(_usages[index] - 1);
-                }
-            }
+            buttons |= Button(usage - 1);
         }
 
-        if (_hat.TryRead(_preparsed, report, out var hat))
+        if (_reader.TryValue(report, 0x39, out var hat))
         {
-            buttons |= DecodeHat(hat - _hat.Minimum);
+            buttons |= HidUsageReader.Hat((int)(hat.Raw - hat.Minimum));
         }
 
-        buttons |= oemButtons?.Current(timestamp) ?? CanonicalButtons.None;
         sample = new CanonicalControllerSample
         {
-            Timestamp = timestamp,
-            Buttons = buttons,
-            LeftStickX = _x.Signed(x),
-            LeftStickY = -_y.Signed(y),
-            RightStickX = _z.Signed(z),
-            RightStickY = -_rz.Signed(rz),
-            LeftTrigger = _rx.Unsigned(rx),
-            RightTrigger = _ry.Unsigned(ry)
+            Timestamp = timestamp, Buttons = buttons, LeftStickX = x.Signed, LeftStickY = -y.Signed,
+            RightStickX = z.Signed, RightStickY = -rz.Signed,
+            LeftTrigger = _reader.TryValue(report, 0x33, out var rx) ? rx.Unsigned : 0,
+            RightTrigger = _reader.TryValue(report, 0x34, out var ry) ? ry.Unsigned : 0
         };
         return true;
     }
@@ -203,102 +110,10 @@ internal sealed unsafe class HidDescriptorGamepad : IDisposable
     }
 
     /// <summary>A POV value from the descriptor's logical minimum, clockwise from up in eighths.</summary>
-    /// <param name="position">Hat value relative to its logical minimum; 0–7 run clockwise from up.</param>
-    /// <returns>The cardinal/diagonal D-pad mask, or None outside 0–7.</returns>
+    /// <param name="position">Hat value relative to its logical minimum; 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“7 run clockwise from up.</param>
+    /// <returns>The cardinal/diagonal D-pad mask, or None outside 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“7.</returns>
     internal static CanonicalButtons DecodeHat(int position)
     {
-        return position switch
-        {
-            0 => CanonicalButtons.DPadUp,
-            1 => CanonicalButtons.DPadUp | CanonicalButtons.DPadRight,
-            2 => CanonicalButtons.DPadRight,
-            3 => CanonicalButtons.DPadRight | CanonicalButtons.DPadDown,
-            4 => CanonicalButtons.DPadDown,
-            5 => CanonicalButtons.DPadDown | CanonicalButtons.DPadLeft,
-            6 => CanonicalButtons.DPadLeft,
-            7 => CanonicalButtons.DPadLeft | CanonicalButtons.DPadUp,
-            _ => CanonicalButtons.None
-        };
-    }
-
-    private static Axis Find(ReadOnlySpan<HidpValueCaps> values, ushort usage)
-    {
-        foreach (var value in values)
-        {
-            var first = value.UsageOrMinimum;
-            var last = value.IsRange != 0 ? value.UsageMaximum : first;
-            if (value.UsagePage == GenericDesktopPage && usage >= first && usage <= last)
-            {
-                return new Axis(usage, value.LogicalMin, value.LogicalMax, value.BitSize);
-            }
-        }
-
-        return default;
-    }
-
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetValueCaps(int reportType, HidpValueCaps* valueCaps, ref ushort length,
-        nint preparsedData);
-
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetUsages(int reportType, ushort usagePage, ushort linkCollection,
-        ushort* usageList, ref uint usageLength, nint preparsedData, byte* report, uint reportLength);
-
-    [DllImport("hid.dll")]
-    private static extern int HidP_GetUsageValue(int reportType, ushort usagePage, ushort linkCollection,
-        ushort usage, out uint usageValue, nint preparsedData, byte* report, uint reportLength);
-
-    /// <summary>One Generic Desktop value and its logical range.</summary>
-    private readonly record struct Axis(ushort Usage, int Minimum, int Maximum, ushort BitSize)
-    {
-        public bool Present => Usage != 0 && Maximum > Minimum;
-
-        public bool TryRead(nint preparsed, ReadOnlySpan<byte> report, out int value)
-        {
-            value = 0;
-            if (!Present)
-            {
-                return false;
-            }
-
-            uint raw;
-            fixed (byte* data = report)
-            {
-                if (HidP_GetUsageValue(HidpInput, GenericDesktopPage, 0, Usage, out raw, preparsed, data,
-                        (uint)report.Length) != NativeHid.HIDP_STATUS_SUCCESS)
-                {
-                    return false;
-                }
-            }
-
-            // HidP returns the field's raw bits; a signed logical range needs them sign-extended.
-            value = Minimum < 0 && BitSize is > 0 and < 32 && (raw & (1u << (BitSize - 1))) != 0
-                ? (int)(raw | (uint.MaxValue << BitSize))
-                : (int)raw;
-            return true;
-        }
-
-        public float Signed(int value)
-        {
-            return Math.Clamp((value - Minimum) * 2f / (Maximum - Minimum) - 1f, -1f, 1f);
-        }
-
-        public float Unsigned(int value)
-        {
-            return Present ? Math.Clamp((value - Minimum) / (float)(Maximum - Minimum), 0f, 1f) : 0f;
-        }
-    }
-
-    /// <summary><c>HIDP_VALUE_CAPS</c> from hidpi.h, 72 bytes.</summary>
-    [StructLayout(LayoutKind.Explicit, Size = 72)]
-    private struct HidpValueCaps
-    {
-        [FieldOffset(0)] public ushort UsagePage;
-        [FieldOffset(12)] public byte IsRange;
-        [FieldOffset(18)] public ushort BitSize;
-        [FieldOffset(40)] public int LogicalMin;
-        [FieldOffset(44)] public int LogicalMax;
-        [FieldOffset(56)] public ushort UsageOrMinimum;
-        [FieldOffset(58)] public ushort UsageMaximum;
+        return HidUsageReader.Hat(position);
     }
 }

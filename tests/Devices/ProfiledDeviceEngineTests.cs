@@ -1,10 +1,7 @@
 using LibHandheld.Families.Gpd;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
-using LibHandheld.Internal.Testing;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Testing;
 
@@ -13,21 +10,21 @@ namespace LibHandheld.Tests.Devices;
 public sealed class ProfiledDeviceEngineTests
 {
     [Fact]
-    public async Task PairedPowerCommandsRestoreTheFirstOriginalAndRejectStaleGenerations()
+    public async Task PairedPowerCommandsRestoreTheFirstOriginalAndRejectExpiredDeadlines()
     {
         using var directory = new TemporaryDirectory();
         var power = new FakePower();
         await using var engine = Engine(power);
         var host = await Start(engine, directory.Root);
-        var stale = Command(host, CapabilityIds.PowerSustained, 20) with { ExpectedCycleGeneration = 0 };
+        var stale = Command(host, CapabilityIds.PowerSustained, 20) with { Deadline = Deadline.Expired };
         Assert.Equal(CommandOutcome.Rejected,
             (await engine.ExecuteCommandAsync(stale, CancellationToken.None)).Outcome);
         Assert.Empty(power.Writes);
-        Assert.Equal(CommandOutcome.AppliedUnverified,
+        Assert.Equal(CommandOutcome.Applied,
             (await engine.ExecuteCommandAsync(Command(host, CapabilityIds.PowerSustained, 20), CancellationToken.None))
             .Outcome);
         await engine.ExecuteCommandAsync(Command(host, CapabilityIds.PowerSustained, 18), CancellationToken.None);
-        await engine.StopAsync(new PluginStopContext(PluginStopReason.WsgmExiting, Deadline.Never),
+        await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
         Assert.Equal(new CpuPowerLimits(15, 20, 25), power.Writes[^1]);
         Assert.Equal(new CpuPowerLimits(20, 25, 25), power.Writes[0]);
@@ -40,13 +37,13 @@ public sealed class ProfiledDeviceEngineTests
         var power = new FakePower { RefuseRead = true };
         await using var engine = Engine(power);
         var host = await Start(engine, directory.Root);
-        Assert.Equal(CommandOutcome.AppliedUnverified,
+        Assert.Equal(CommandOutcome.Applied,
             (await engine.ExecuteCommandAsync(Command(host, CapabilityIds.PowerSustained, 20), CancellationToken.None))
             .Outcome);
         Assert.Single(power.Writes);
-        var stopped = await engine.StopAsync(new PluginStopContext(PluginStopReason.WsgmExiting, Deadline.Never),
+        var stopped = await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
-        Assert.Equal(PluginStopStatus.Unverified, stopped.Status);
+        Assert.Equal(EngineStopStatus.Unverified, stopped.Status);
     }
 
     [Fact]
@@ -60,28 +57,24 @@ public sealed class ProfiledDeviceEngineTests
         ec.Bytes[0xC311] = 20;
         var profile = GpdModels.All.Single(model => model.Definition.Id == "gpd-win4-6800u") with
         {
-            Controller = null, Motion = null, Touchpad = null, KeyboardChords = [], CreateNativeService = null
+            Controller = null, Motion = null, Touchpad = null, KeyboardChords = [], ServiceFactories = []
         };
         await using var engine = new ProfiledDeviceEngine(profile, () => power, _ => ec);
-        await engine.DetectAsync(new PluginDetectionContext
-        {
-            Identity = new DeviceIdentitySnapshot
-            {
-                SystemManufacturer = "GPD", SystemProduct = "G1618-04", ProcessorName = profile.Processors[0],
-                BiosVersion = "1"
-            }
-        }, CancellationToken.None);
         var host = new TestPluginHostAdapter(1);
-        await engine.StartAsync(new PluginStartContext
+        await engine.StartAsync(new EngineStartContext
         {
-            Host = host, CycleGeneration = 1, DeviceDefinitionId = profile.Definition.Id,
-            StateDirectory = directory.Root, ControllerManagementEnabled = false
+            Host = host,
+            Identity = new DeviceIdentitySnapshot
+                { SystemManufacturer = "GPD", SystemProduct = "G1618-04", BiosVersion = "1" },
+            DeviceDefinitionId = profile.Definition.Id,
+            StateDirectory = directory.Root, Journal = TestRecovery.Open(directory.Root),
+            ControllerManagementEnabled = false
         }, CancellationToken.None);
         Assert.Equal((byte)0x92, ec.Bytes[0x1060]);
         await engine.ExecuteCommandAsync(Command(host, "fan.duty", 50) with { PairedPowerLimitWatts = null },
             CancellationToken.None);
         Assert.Equal((byte)64, ec.Bytes[0xC311]);
-        await engine.StopAsync(new PluginStopContext(PluginStopReason.WsgmExiting, Deadline.Never),
+        await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
         Assert.Equal((byte)20, ec.Bytes[0xC311]);
         Assert.Equal((byte)0x12, ec.Bytes[0x1060]);
@@ -92,25 +85,20 @@ public sealed class ProfiledDeviceEngineTests
         return new ProfiledDeviceEngine(GpdModels.All.Single(model => model.Definition.Id == "gpd-win4-8840u") with
         {
             Fan = null, Controller = null, Motion = null, Touchpad = null, KeyboardChords = [],
-            CreateNativeService = null
+            ServiceFactories = []
         }, () => power, _ => throw new InvalidOperationException());
     }
 
     private static async Task<TestPluginHostAdapter> Start(ProfiledDeviceEngine engine, string directory)
     {
-        var detected = await engine.DetectAsync(new PluginDetectionContext
-        {
-            Identity = new DeviceIdentitySnapshot
-            {
-                SystemManufacturer = "GPD", SystemProduct = "G1618-04",
-                ProcessorName = "AMD Ryzen 7 8840U w/ Radeon 780M Graphics", BiosVersion = "1"
-            }
-        }, CancellationToken.None);
         var host = new TestPluginHostAdapter(1);
-        await engine.StartAsync(new PluginStartContext
+        await engine.StartAsync(new EngineStartContext
         {
-            Host = host, CycleGeneration = 1, DeviceDefinitionId = detected.DeviceDefinitionId!,
-            StateDirectory = directory, ControllerManagementEnabled = false
+            Host = host,
+            Identity = new DeviceIdentitySnapshot
+                { SystemManufacturer = "GPD", SystemProduct = "G1618-04", BiosVersion = "1" },
+            DeviceDefinitionId = "gpd-win4-8840u",
+            StateDirectory = directory, Journal = TestRecovery.Open(directory), ControllerManagementEnabled = false
         }, CancellationToken.None);
         return host;
     }
@@ -121,7 +109,6 @@ public sealed class ProfiledDeviceEngineTests
         {
             CommandId = Guid.NewGuid(), CapabilityId = id, RequestedValue = CapabilityValue.Integer(value),
             PairedPowerLimitWatts = 25,
-            ExpectedCycleGeneration = 1, ExpectedDescriptorGeneration = host.DescriptorSets[^1].Generation,
             Deadline = Deadline.Never
         };
     }

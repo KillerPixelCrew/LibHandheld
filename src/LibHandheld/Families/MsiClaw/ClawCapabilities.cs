@@ -1,6 +1,6 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Families.MsiClaw;
 
@@ -14,16 +14,6 @@ namespace LibHandheld.Families.MsiClaw;
 /// </remarks>
 internal static class ClawApplied
 {
-    public static CapabilityCommandResult Result(
-        CapabilityCommand command,
-        CapabilityValue written,
-        bool confirmed)
-    {
-        return confirmed
-            ? CommandResults.Verified(command, written)
-            : CommandResults.Unverified(command);
-    }
-
     public static CapabilityCommandResult Failed(CapabilityCommand command, string operation, Exception exception,
         CancellationToken cancellationToken)
     {
@@ -33,8 +23,7 @@ internal static class ClawApplied
             exception is OperationCanceledException && cancellationToken.IsCancellationRequested
                 ? CapabilityReasonCode.Quiescing
                 : CapabilityReasonCode.TransportFaulted,
-            $"The {operation} write failed after it began: {exception.GetType().Name}.",
-            RollbackResult.NotRequired);
+            $"The {operation} write failed after it began: {exception.GetType().Name}.");
     }
 
     public static CapabilityCommandResult Refused(CapabilityCommand command, string operation, Exception exception,
@@ -261,9 +250,7 @@ internal sealed class ClawPowerCapability(
         }
 
         _targetScenario = (byte)value;
-        var confirmed = await TryReadAsync(cancellationToken).ConfigureAwait(false) is { } readback
-                        && readback.Scenario == value;
-        return ClawApplied.Result(command, CapabilityValue.Choice(scenario), confirmed);
+        return CommandResults.Applied(command);
     }
 
     /// <summary>Writes the captured scenario, then the captured pair, as HC applies a profile.</summary>
@@ -311,11 +298,7 @@ internal sealed class ClawPowerCapability(
         }
 
         _target = (sustainedWatts, boostWatts);
-        var confirmed = await TryReadAsync(cancellationToken).ConfigureAwait(false) is { } readback
-                        && readback.SustainedWatts == sustainedWatts
-                        && readback.BoostWatts == boostWatts;
-        var value = command.CapabilityId == CapabilityIds.PowerSustained ? sustainedWatts : boostWatts;
-        return ClawApplied.Result(command, CapabilityValue.Integer(value), confirmed);
+        return CommandResults.Applied(command);
     }
 
     /// <summary>
@@ -335,17 +318,6 @@ internal sealed class ClawPowerCapability(
         }
     }
 
-    private async ValueTask<PowerPair?> TryReadAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await ReadAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-        {
-            return null;
-        }
-    }
 
     private ValueTask WriteDataAsync(byte address, int value, CancellationToken cancellationToken)
     {
@@ -422,17 +394,7 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
         }
 
         _written = new ChargeLimitState(percent, wanted);
-        bool confirmed;
-        try
-        {
-            confirmed = (await ReadAsync(cancellationToken).ConfigureAwait(false)).RawValue == wanted;
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-        {
-            confirmed = false;
-        }
-
-        return ClawApplied.Result(command, CapabilityValue.Integer(percent), confirmed);
+        return CommandResults.Applied(command);
     }
 
     /// <summary>The register value for an enforced limit: Battery Master and the percentage.</summary>
@@ -464,6 +426,8 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
     private readonly IMsiWmiTransport _transport = transport ?? throw new ArgumentNullException(nameof(transport));
     private IReadOnlyList<CurvePoint>? _writtenCurve;
     private (bool Custom, bool Full)? _writtenMode;
+
+    internal int? WrittenDuty { get; private set; }
 
     public async ValueTask<FanSnapshot> ReadSnapshotAsync(CancellationToken cancellationToken)
     {
@@ -528,6 +492,59 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
             temperature[1]);
     }
 
+    public async ValueTask<CapabilityCommandResult> ApplyDutyAsync(CapabilityCommand command, int percent,
+        CancellationToken token)
+    {
+        if (percent is < 0 or > 100)
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
+                "Fan duty is outside 0-100 percent.");
+        }
+
+        var dispatched = false;
+        try
+        {
+            byte custom = 0, full = 0;
+            try
+            {
+                custom = ClawApplied.Byte(await _transport.InvokeGetterAsync("Get_AP", 1, token).ConfigureAwait(false),
+                    1, "fan mode");
+                full = ClawApplied.Byte(
+                    await _transport.InvokeGetterAsync("Get_Data", ClawHardwareFacts.FanFullSpeedAddress, token)
+                        .ConfigureAwait(false), 1, "fan mode");
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException && !token.IsCancellationRequested)
+            {
+                DeviceTrace.Warn("fans",
+                    $"Fan flags were unreadable; HC's default flag bytes apply: {exception.Message}");
+            }
+
+            token.ThrowIfCancellationRequested();
+            foreach (var channel in FanChannels)
+            {
+                var package = new byte[ClawHardwareFacts.WmiPackageLength];
+                package[0] = checked((byte)channel);
+                package.AsSpan(1, 8).Fill(checked((byte)Math.Round(percent * 150d / 100)));
+                dispatched = true;
+                await _transport.InvokeSetterAsync("Set_Fan", package, token).ConfigureAwait(false);
+            }
+
+            await WriteRawFlagAsync(ClawHardwareFacts.FanCustomAddress, SetFlag(custom, true), token)
+                .ConfigureAwait(false);
+            await WriteRawFlagAsync(ClawHardwareFacts.FanFullSpeedAddress, SetFlag(full, false), token)
+                .ConfigureAwait(false);
+            WrittenDuty = percent;
+            _writtenMode = (true, false);
+            return CommandResults.Applied(command);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return dispatched
+                ? ClawApplied.Failed(command, "fan duty", exception, token)
+                : ClawApplied.Refused(command, "fan duty", exception, token);
+        }
+    }
+
     public async ValueTask<CapabilityCommandResult> ApplyModeAsync(
         CapabilityCommand command,
         string mode,
@@ -569,10 +586,7 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
         }
 
         _writtenMode = (custom, full);
-        var confirmed = await TryReadSnapshotAsync(cancellationToken).ConfigureAwait(false) is { } readback
-                        && Flag(readback.CustomFlag) == custom
-                        && Flag(readback.FullSpeedFlag) == full;
-        return ClawApplied.Result(command, CapabilityValue.Choice(mode), confirmed);
+        return CommandResults.Applied(command);
     }
 
     /// <summary>Writes one curve to both fan channels.</summary>
@@ -583,7 +597,10 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
     ///     from HC's eight-byte <c>SetFanTable</c>; see PROVENANCE.md.
     /// </remarks>
     /// <param name="command">Validated host command used for result identity.</param>
-    /// <param name="curve">Exactly six nondecreasing temperature/duty points, each within 0–100 °C/percent.</param>
+    /// <param name="curve">
+    ///     Exactly six nondecreasing temperature/duty points, each within 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“100
+    ///     Ãƒâ€šÃ‚Â°C/percent.
+    /// </param>
     /// <param name="cancellationToken">Cancels reads/writes; cancellation after dispatch can leave partial effects.</param>
     /// <returns>
     ///     Validation/preparation rejection, indeterminate failed write, or accepted curve with optional readback
@@ -624,10 +641,7 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
         }
 
         _writtenCurve = [.. curve];
-        var confirmed = await TryReadSnapshotAsync(cancellationToken).ConfigureAwait(false) is { } readback
-                        && DecodeCurve(readback.Left).SequenceEqual(curve)
-                        && DecodeCurve(readback.Right).SequenceEqual(curve);
-        return ClawApplied.Result(command, CapabilityValue.Curve([.. curve]), confirmed);
+        return CommandResults.Applied(command);
     }
 
     /// <summary>Writes the captured tables and flags back.</summary>
@@ -703,17 +717,6 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
         return new FanTable(duties, temperatures);
     }
 
-    private async ValueTask<FanSnapshot?> TryReadSnapshotAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-        {
-            return null;
-        }
-    }
 
     private async ValueTask<FanTable> ReadTableAsync(byte channel, CancellationToken cancellationToken)
     {
@@ -862,17 +865,7 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
 
         _profile = payload;
         Current = wanted;
-        byte[]? readback = null;
-        try
-        {
-            readback = await _transport.ReadProfileAsync(profileAddress, 32, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-        {
-        }
-
-        return ClawApplied.Result(command, Value(command, wanted),
-            readback is not null && readback.SequenceEqual(payload));
+        return CommandResults.Applied(command);
     }
 
     internal static byte[] Encode(LightingState state)
@@ -909,18 +902,6 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
         return new LightingState(profile[4], ReadColor(profile, 5), ReadColor(profile, 17), ReadColor(profile, 29));
     }
 
-    private static CapabilityValue Value(CapabilityCommand command, LightingState state)
-    {
-        return command.CapabilityId == CapabilityIds.LightingBrightness
-            ? CapabilityValue.Integer(state.Brightness)
-            : CapabilityValue.Color(command.InstanceId switch
-            {
-                CapabilityInstances.RightRing => state.RightRingColor,
-                CapabilityInstances.LeftRing => state.LeftRingColor,
-                CapabilityInstances.Buttons => state.ButtonsColor,
-                _ => throw new InvalidOperationException("Unknown lighting zone.")
-            });
-    }
 
     private static int ReadColor(byte[] payload, int offset)
     {

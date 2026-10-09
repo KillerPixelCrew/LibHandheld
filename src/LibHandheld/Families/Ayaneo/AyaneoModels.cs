@@ -1,7 +1,7 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
+using LibHandheld.Internal.Windows;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
 
@@ -96,11 +96,11 @@ internal static class AyaneoModels
             motion: Motion(1, 1, -1, -1, 1, -1)),
         Model("kun", "AYANEO KUN", ["KUN", "AYANEO KUN"], 3, 54,
             lighting: AyaneoLighting.Kun, chords: Kun()),
-        Model("flip-kb", "AYANEO FLIP KB", ["FLIP KB"], 3, 28, confirmation: false, motion: FlipMotion),
+        Model("flip-kb", "AYANEO FLIP KB", ["FLIP KB"], 3, 28, motion: FlipMotion),
         Model("flip-ds", "AYANEO FLIP DS", ["FLIP DS"], 3, 28, lighting: AyaneoLighting.None,
             confirmation: false, secondary: true, motion: FlipMotion, chords: FlipScreen(false)),
         Model("flip-1s-kb", "AYANEO FLIP 1S KB", ["FLIP 1S KB"], 3, 28,
-            confirmation: false, motion: CeiiMotion, chords: Modern()),
+            motion: CeiiMotion, chords: Modern()),
         Model("flip-1s-ds", "AYANEO FLIP 1S DS", ["FLIP 1S DS"], 3, 28,
             lighting: AyaneoLighting.None, confirmation: false, secondary: true,
             motion: CeiiMotion, chords: FlipScreen(true)),
@@ -122,16 +122,32 @@ internal static class AyaneoModels
     ]);
 
     internal static IReadOnlyList<HandheldDefinition> Definitions { get; } =
-        Array.AsReadOnly(All.Select(model => model.Profile.Definition).ToArray());
+        Array.AsReadOnly(All.Select(model => model.Profile.DeclaredDefinition).ToArray());
 
     internal static string? Match(DeviceIdentitySnapshot identity)
     {
-        return All.SingleOrDefault(model => model.Profile.Matches(identity))?.Profile.Definition.Id;
+        string? selected = null;
+        foreach (var model in All)
+        {
+            if (!model.Profile.Matches(identity))
+            {
+                continue;
+            }
+
+            if (selected is not null)
+            {
+                return null;
+            }
+
+            selected = model.Profile.Definition.Id;
+        }
+
+        return selected;
     }
 
-    internal static IDeviceEngine CreateEngine(HandheldDefinition definition)
+    internal static NativeEngine CreateEngine(HandheldDefinition definition)
     {
-        return new ProfiledDeviceEngine(All.Single(model => model.Profile.Definition == definition).Profile);
+        return new ProfiledDeviceEngine(All.Single(model => model.Profile.Definition.Id == definition.Id).Profile);
     }
 
     private static AyaneoModel Model(string id, string name, string[] products, int minimum, int maximum,
@@ -160,6 +176,17 @@ internal static class AyaneoModels
             },
             Cpu = cpu,
             MinimumWatts = minimum, MaximumWatts = maximum,
+            // HC AYANEODevice declares these three equal sustained/slow targets.
+            PowerPresets = new[]
+            {
+                new DevicePowerPreset("battery", "Battery", 8, 8, DevicePowerMode.BetterBattery),
+                new DevicePowerPreset("balanced", "Balanced", 15, 15, DevicePowerMode.Balanced),
+                new DevicePowerPreset("performance", "Performance", 28, 28, DevicePowerMode.BestPerformance)
+            }.Select(preset => preset with
+            {
+                SustainedWatts = Math.Clamp(preset.SustainedWatts, minimum, maximum),
+                SlowWatts = Math.Clamp(preset.SlowWatts, minimum, maximum)
+            }).ToArray(),
             Fan = protocol == AyaneoEcProtocol.None
                 ? null
                 : fan ?? (protocol == AyaneoEcProtocol.CEii
@@ -168,16 +195,19 @@ internal static class AyaneoModels
             Controller = light == AyaneoLighting.SuperJoy ? ModularController : Controller,
             Motion = motion ?? (protocol == AyaneoEcProtocol.CEii ? CeiiMotion : CecMotion),
             KeyboardChords = chords ?? Cec(protocol == AyaneoEcProtocol.CEii),
-            CreateOemSource = id == "kun" ? () => new AyaneoKunMouseSource() : null,
+            CreateOemSource = id == "kun" ? () => new OemMouseChordSource() : null,
             NativeOemReplacesChords = []
         }, protocol, light, confirmation, secondary, modular);
         return model with
         {
             Profile = model.Profile with
             {
-                CreateNativeService = protocol == AyaneoEcProtocol.None
-                    ? null
-                    : context => new AyaneoNativeService(model, context)
+                NativeRoles = protocol == AyaneoEcProtocol.None
+                    ? []
+                    : AyaneoNativeService.Describe(model).Select(item => item.Role).Distinct().ToArray(),
+                ServiceFactories = protocol == AyaneoEcProtocol.None
+                    ? []
+                    : [context => new AyaneoNativeService(model, context)]
             }
         };
     }

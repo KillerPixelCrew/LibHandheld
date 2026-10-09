@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: MIT
-
 using System.Diagnostics;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Testing;
 

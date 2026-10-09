@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Ports;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Windows;
@@ -11,14 +12,20 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
 {
     private readonly Lock _gate = new();
     private readonly bool[] _held = new bool[5];
-    private readonly long[] _pulseUntil = new long[5];
+    private readonly HidReportSource _hidSource = new();
+    private readonly OemButtonLatch[] _pulses = [new(), new(), new()];
+    private readonly SemaphoreSlim _resend = new(0, 1);
+    private Task? _configuration;
     private volatile bool _connected;
+
+    private int _hidReportLength;
     private Action<string, CanonicalButtons, bool>? _publish;
-    private Task? _pulseReader;
+    private Timer? _pulseTimer;
     private Task? _reader;
     private SerialPort? _serial;
     private CancellationTokenSource? _stop;
     private FileStream? _stream;
+    private OneXVendorTransport? _vendor;
     public bool IsConnected => _connected;
 
     public ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish, CancellationToken token)
@@ -27,29 +34,55 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
         _publish = publish;
         if (profile.SerialButtons)
         {
-            _serial = OneXSerial.Open(true);
+            _serial = TryOpenSerial(() => OneXSerial.Open(true));
         }
 
         if (_serial is null)
         {
             var v2 = profile.SerialButtons;
-            var collection = HidDevices.Enumerate(v2 ? (ushort)0x1A2C : (ushort)0x1A86,
-                    v2 ? [0xB001] : [0xFE00, 0x1305])
-                .FirstOrDefault(item =>
-                    item.UsagePage == (v2 ? 0xFF01 : 0xFF00) && item.Usage == 1 && item.InputLength is 64 or 65);
+            var collection = HidDevices.Unique(HidDevices.Enumerate(v2 ? (ushort)0x1A2C : (ushort)0x1A86,
+                v2 ? [0xB001] : [0xFE00, 0x1305]), item =>
+                item.UsagePage == (v2 ? 0xFF01 : 0xFF00) && item.Usage == 1 && item.InputLength is 64 or 65);
             if (collection is null)
             {
                 return ValueTask.FromResult(false);
             }
 
             _stream = HidDevices.OpenStream(collection);
+            _hidReportLength = collection.InputLength;
         }
 
         _stop = new CancellationTokenSource();
+        _pulseTimer = new Timer(_ => ReleaseExpiredPulses(), null, Timeout.Infinite, Timeout.Infinite);
+        if (profile.VendorButtons && profile.HasRearButtons)
+        {
+            try
+            {
+                _vendor = OneXVendorTransport.Open(OneXLightingKind.HidV1);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                _vendor = null;
+            }
+
+            if (_vendor is not null)
+            {
+                _configuration = Task.Run(() => ConfigureAsync(_stop.Token), CancellationToken.None);
+            }
+        }
+
         _connected = true;
-        _reader = Task.Run(() => ReadAsync(_stop.Token), CancellationToken.None);
-        _pulseReader = Task.Run(() => PulseAsync(_stop.Token), CancellationToken.None);
-        return ValueTask.FromResult(true);
+        if (_serial is not null)
+        {
+            _reader = ReadAsync(_stop.Token);
+        }
+        else
+        {
+            _connected = _hidSource.Start(_stream!, _hidReportLength, ParseHid, ReaderStopped, token);
+            _stream = null;
+        }
+
+        return ValueTask.FromResult(_connected);
     }
 
     public async ValueTask StopAsync(CancellationToken token)
@@ -57,20 +90,40 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
         _stop?.Cancel();
         _stream?.Dispose();
         _serial?.Dispose();
+        await _hidSource.StopAsync(token).ConfigureAwait(false);
         if (_reader is not null)
         {
             await _reader.WaitAsync(token).ConfigureAwait(false);
         }
 
-        if (_pulseReader is not null)
+        if (_configuration is not null)
         {
-            await _pulseReader.WaitAsync(token).ConfigureAwait(false);
+            await _configuration.WaitAsync(token).ConfigureAwait(false);
         }
+
+        Timer? pulseTimer;
+        lock (_gate)
+        {
+            pulseTimer = _pulseTimer;
+            _pulseTimer = null;
+        }
+
+        if (pulseTimer is not null)
+        {
+            await pulseTimer.DisposeAsync().ConfigureAwait(false);
+        }
+
+        _vendor?.Dispose();
+        _vendor = null;
 
         ReleaseAll();
         _connected = false;
         _reader = null;
-        _pulseReader = null;
+        _configuration = null;
+        while (_resend.Wait(0))
+        {
+        }
+
         _stop?.Dispose();
         _stop = null;
         _stream = null;
@@ -81,6 +134,47 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
     public ValueTask DisposeAsync()
     {
         return StopAsync(CancellationToken.None);
+    }
+
+    internal static SerialPort? TryOpenSerial(Func<SerialPort?> open)
+    {
+        try
+        {
+            return open();
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // HC falls back to HID when the selected serial port is busy or denied.
+            return null;
+        }
+    }
+
+    private async Task ConfigureAsync(CancellationToken token)
+    {
+        try
+        {
+            // HC waits for the controller firmware after opening the vendor collection.
+            await Task.Delay(4000, token).ConfigureAwait(false);
+            var frames = OneXCommandCodec.ControllerConfiguration(profile);
+            while (true)
+            {
+                foreach (var frame in frames)
+                {
+                    _vendor!.Write(frame, token);
+                    await Task.Delay(50, token).ConfigureAwait(false);
+                }
+
+                await _resend.WaitAsync(token).ConfigureAwait(false);
+                await Task.Delay(200, token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // A failed dispatch is uncertain. End this writer; status reports cannot retry it.
+        }
     }
 
     private async Task ReadAsync(CancellationToken token)
@@ -94,14 +188,10 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
             {
                 if (_serial is { } serial)
                 {
-                    int count;
-                    try
+                    var count = await serial.BaseStream.ReadAsync(buffer, token).ConfigureAwait(false);
+                    if (count == 0)
                     {
-                        count = serial.Read(buffer, 0, buffer.Length);
-                    }
-                    catch (TimeoutException)
-                    {
-                        continue;
+                        break;
                     }
 
                     for (var index = 0; index < count; index++)
@@ -126,16 +216,6 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
                         }
                     }
                 }
-                else
-                {
-                    var count = await _stream!.ReadAsync(buffer, token).ConfigureAwait(false);
-                    if (count == 0)
-                    {
-                        break;
-                    }
-
-                    ParseHid(buffer.AsSpan(0, count));
-                }
             }
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException
@@ -144,20 +224,47 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
         }
         finally
         {
-            _connected = false;
-            ReleaseAll();
+            ReaderStopped();
         }
+    }
+
+    private void ReaderStopped()
+    {
+        _connected = false;
+        _stop?.Cancel();
+        ReleaseAll();
     }
 
     internal void ParseHid(ReadOnlySpan<byte> report)
     {
         var frame = report.Length == 65 && report[0] == 0 ? report[1..] : report;
-        if (frame.Length < 14 || frame[0] != 0xB2 || frame[1] != 0x3F || frame[^2] != 0x3F || frame[^1] != 0xB2)
+        if (frame.Length < 14 || frame[1] != 0x3F || frame[^2] != 0x3F || frame[^1] != frame[0])
+        {
+            return;
+        }
+
+        if (RequestsConfiguration(profile, frame))
+        {
+            if (_configuration is { IsCompleted: false } && _resend.CurrentCount == 0)
+            {
+                _resend.Release();
+            }
+
+            return;
+        }
+
+        if (frame[0] != 0xB2)
         {
             return;
         }
 
         Edge(frame[6], frame[12] == 1, false);
+    }
+
+    internal static bool RequestsConfiguration(OneXProtocolProfile model, ReadOnlySpan<byte> frame)
+    {
+        return model.VendorButtons && model.HasRearButtons && frame.Length >= 6 && frame[0] == 0xB8
+               && (model.SimpleVibration ? frame[3] == 0xFE : frame[5] == 0x20);
     }
 
     private void Edge(byte code, bool down, bool serial)
@@ -173,7 +280,8 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
             var pulse = index < 3 && (profile.X2 || serial);
             if (pulse && down)
             {
-                _pulseUntil[index] = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 5;
+                _pulses[index].Pulse(serial ? OemButtonLatch.HoldDuration : TimeSpan.FromMilliseconds(100));
+                SchedulePulse();
             }
 
             if (pulse && !down)
@@ -203,31 +311,42 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
         return !model.HasRearButtons && index >= 3 ? -1 : index;
     }
 
-    private async Task PulseAsync(CancellationToken token)
+    private void ReleaseExpiredPulses()
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(20));
-        try
+        var now = Stopwatch.GetTimestamp();
+        lock (_gate)
         {
-            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            for (var index = 0; index < _pulses.Length; index++)
             {
-                var now = Stopwatch.GetTimestamp();
-                lock (_gate)
+                if (_held[index] && _pulses[index].PulseDeadline != 0 && !_pulses[index].PulseHeld(now))
                 {
-                    for (var index = 0; index < _pulseUntil.Length; index++)
-                    {
-                        if (_held[index] && _pulseUntil[index] != 0 && now >= _pulseUntil[index])
-                        {
-                            _held[index] = false;
-                            _pulseUntil[index] = 0;
-                            Publish(index, false);
-                        }
-                    }
+                    _held[index] = false;
+                    _pulses[index].Clear();
+                    Publish(index, false);
                 }
             }
+
+            SchedulePulse();
         }
-        catch (OperationCanceledException)
+    }
+
+    private void SchedulePulse()
+    {
+        var next = long.MaxValue;
+        foreach (var pulse in _pulses)
         {
+            var deadline = pulse.PulseDeadline;
+            if (deadline != 0)
+            {
+                next = Math.Min(next, deadline);
+            }
         }
+
+        var delay = next == long.MaxValue
+            ? Timeout.Infinite
+            : (int)Math.Clamp(Math.Ceiling((next - Stopwatch.GetTimestamp()) * 1000d / Stopwatch.Frequency), 1,
+                int.MaxValue);
+        _pulseTimer?.Change(delay, Timeout.Infinite);
     }
 
     private void Publish(int index, bool down)
@@ -255,7 +374,12 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
                 }
             }
 
-            Array.Clear(_pulseUntil);
+            foreach (var pulse in _pulses)
+            {
+                pulse.Clear();
+            }
+
+            SchedulePulse();
         }
     }
 }

@@ -2,12 +2,12 @@ using System.Text.Json.Serialization;
 
 namespace LibHandheld.Contracts;
 
-/// <summary>How the consumer carries a remembered capability value from one game to the next.</summary>
+/// <summary>How WSGM carries a remembered capability value from one game to the next.</summary>
 [JsonConverter(typeof(JsonStringEnumConverter<CapabilityProfileScope>))]
 public enum CapabilityProfileScope
 {
     /// <summary>
-    ///     the consumer resolves the running game's value and writes it when the game changes. Every value
+    ///     WSGM resolves the running game's value and writes it when the game changes. Every value
     ///     published before version 11 behaves this way.
     /// </summary>
     Switched,
@@ -19,7 +19,7 @@ public enum CapabilityProfileScope
     GlobalOnly,
 
     /// <summary>
-    ///     The publisher's driver keeps per-application values itself. the consumer writes the Global value
+    ///     The publisher's driver keeps per-application values itself. WSGM writes the Global value
     ///     through commands and hands every game's overrides, with its executables, to the publisher,
     ///     which stores them natively so the driver applies them when the game starts.
     /// </summary>

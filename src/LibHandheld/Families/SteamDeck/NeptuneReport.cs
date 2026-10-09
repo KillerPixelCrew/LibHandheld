@@ -1,5 +1,5 @@
 using System.Buffers.Binary;
-using LibHandheld.Internal.Input;
+using LibHandheld.Contracts;
 
 namespace LibHandheld.Families.SteamDeck;
 

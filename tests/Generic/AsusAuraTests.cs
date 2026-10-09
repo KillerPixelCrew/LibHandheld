@@ -1,9 +1,6 @@
 using LibHandheld.Families.Generic;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Testing;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Tests.Generic;
@@ -74,9 +71,9 @@ public sealed class AsusAuraTests
             Assert.Null(state.ObservedValue);
             Assert.Equal(HardwareStateQuality.Unknown, state.Quality);
         });
-        var generation = controller.Generation;
+        controller.AcknowledgeDescriptors();
         controller.Refresh(CancellationToken.None);
-        Assert.Equal(generation, controller.Generation);
+        Assert.False(controller.DescriptorsChanged);
         controller.Close();
         Assert.True(transport.Disposed);
     }
@@ -88,9 +85,11 @@ public sealed class AsusAuraTests
         var transport = new FakeTransport();
         var aura = new AsusAuraController(() => [module], _ => transport);
         var service =
-            new GenericAsusService(new ProfiledFeatureContext("unused", "firmware", new TestPluginHostAdapter(1)), aura,
+            new GenericAsusService(
+                new ProfiledFeatureContext("unused", "firmware", new TestPluginHostAdapter(1))
+                    { Journal = TestRecovery.Open("unused") }, aura,
                 false);
-        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(1, Deadline.Never,
+        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
             new ProfiledCycleIdentity("firmware"));
         await service.AcquireAsync(cycle, CancellationToken.None);
         Assert.DoesNotContain(service.Descriptors,
@@ -113,7 +112,7 @@ public sealed class AsusAuraTests
         var result =
             controller.Execute(Command(CapabilityIds.LightingColor, module.ZoneId, CapabilityValue.Color(0x123456)),
                 CancellationToken.None);
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(new byte[] { 0x41, 0xE4, 0xC5, 0xBD, 0xB3, 0xB4, 0xB5 },
             transport.Packets.Select(packet => packet[1]));
         Assert.All(transport.Packets, packet =>
@@ -141,12 +140,12 @@ public sealed class AsusAuraTests
             return transport;
         });
         controller.Refresh(CancellationToken.None);
-        var generation = controller.Generation;
+        controller.AcknowledgeDescriptors();
         found = [];
         controller.Refresh(CancellationToken.None);
         Assert.Empty(controller.Descriptors);
         Assert.True(opened[0].Disposed);
-        Assert.True(controller.Generation > generation);
+        Assert.True(controller.DescriptorsChanged);
         found = [module];
         controller.Refresh(CancellationToken.None);
         Assert.Equal(2, opened.Count);
@@ -185,7 +184,7 @@ public sealed class AsusAuraTests
         return new CapabilityCommand
         {
             CommandId = Guid.NewGuid(), CapabilityId = id, InstanceId = instance, RequestedValue = value,
-            ExpectedCycleGeneration = 1, ExpectedDescriptorGeneration = 1, Deadline = Deadline.Never
+            Deadline = Deadline.Never
         };
     }
 

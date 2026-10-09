@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: MIT
-
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Windows;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -23,16 +25,10 @@ internal sealed partial class AllyDeviceEngine
                 $"Capability '{command.CapabilityId}' is not available.");
         }
 
-        AllyIdentityState identity;
-        try
+        var identity = _cycleIdentity! with
         {
-            identity = await _hardware.Identity.ReadAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            return CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted,
-                $"Identity revalidation failed: {ex.GetType().Name}.");
-        }
+            OnAcPower = _hardware.OnAcPower?.Invoke() ?? WindowsMachineIdentity.OnAcPower()
+        };
 
         var refusal = Refusal(service, identity) ?? Validate(command, descriptor, identity.OnAcPower);
         if (refusal is not null)
@@ -53,21 +49,40 @@ internal sealed partial class AllyDeviceEngine
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             return CommandResults.Indeterminate(command, CapabilityReasonCode.Quiescing,
-                "The command was cancelled after hardware application began.", RollbackResult.NotRequired);
+                "The command was cancelled after hardware application began.");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                DiagnosticText.FromException("The capability handler failed after admission", ex),
-                RollbackResult.NotRequired);
+                DiagnosticText.FromException("The capability handler failed after admission", ex));
         }
 
-        if (result.Outcome is CommandOutcome.AppliedVerified or CommandOutcome.AppliedUnverified
+        if (result.Outcome is CommandOutcome.Applied
             && command.RequestedValue is { } requested)
         {
             // What was written stands in for a readback the firmware cannot give (SDK: an unverified
             // write earns Observed at best). It lives only for this cycle.
-            _written[(command.CapabilityId, command.InstanceId)] = requested;
+            _observedValues.Written(command.CapabilityId, requested, command.InstanceId);
+            if (command.CapabilityId is CapabilityIds.PowerSustained or CapabilityIds.PowerBoost
+                && DevicePowerPair.TryResolve(command, _descriptorSet!.Descriptors, out var sustained, out var boost,
+                    out _))
+            {
+                _observedValues.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
+                _observedValues.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
+            }
+            else if (command.CapabilityId == CapabilityIds.Scenario)
+            {
+                _observedValues.Forget(CapabilityIds.PowerSustained);
+                _observedValues.Forget(CapabilityIds.PowerBoost);
+                _observedValues.Forget(CapabilityIds.FanCurve);
+                _observedValues.Forget("fan.duty");
+                _observedValues.Forget(CapabilityIds.FanMode);
+            }
+            else if (command.CapabilityId == CapabilityIds.FanMode && requested.ChoiceValue == FanModes.Automatic)
+            {
+                _observedValues.Forget("fan.duty");
+                _observedValues.Forget(CapabilityIds.FanCurve);
+            }
         }
 
         return result;
@@ -83,7 +98,7 @@ internal sealed partial class AllyDeviceEngine
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power!
                 .PrepareWriteAsync,
-            CapabilityIds.FanCurve => _fans!.PrepareWriteAsync,
+            CapabilityIds.FanCurve or "fan.duty" => _fans!.PrepareWriteAsync,
             CapabilityIds.FanMode when value.ChoiceValue == FanModes.Automatic => _fans!.PrepareWriteAsync,
             _ => null
         };
@@ -122,6 +137,9 @@ internal sealed partial class AllyDeviceEngine
                     .ConfigureAwait(false);
             case CapabilityIds.ChargeLimit:
                 return _charge!.Capability!.Apply(command, value.IntegerValue!.Value);
+            case "fan.duty":
+                return await _fans!.Capability!.ApplyDutyAsync(command, value.IntegerValue!.Value, cancellationToken)
+                    .ConfigureAwait(false);
             case CapabilityIds.FanCurve:
 
                 return await _fans!.Capability!.ApplyCurveAsync(command, value.CurveValue, cancellationToken)
@@ -164,7 +182,7 @@ internal sealed partial class AllyDeviceEngine
         }
 
         // There is no custom-mode firmware switch. The next curve command changes the fans.
-        return CommandResults.Unverified(command);
+        return CommandResults.Applied(command);
     }
 
     private DeviceService<AllyIdentityState>? ServiceFor(string capabilityId)
@@ -173,7 +191,7 @@ internal sealed partial class AllyDeviceEngine
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power,
             CapabilityIds.ChargeLimit => _charge,
-            CapabilityIds.FanMode or CapabilityIds.FanCurve or CapabilityIds.FanReading => _fans,
+            CapabilityIds.FanMode or CapabilityIds.FanCurve or CapabilityIds.FanReading or "fan.duty" => _fans,
             CapabilityIds.LightingBrightness or CapabilityIds.LightingEffect or CapabilityIds.LightingSpeed
                 or CapabilityIds.LightingColor => _lighting,
             CapabilityIds.Controller or CapabilityIds.Rumble => _controller,
@@ -186,7 +204,7 @@ internal sealed partial class AllyDeviceEngine
     {
         if (!identity.ExactMachineMatch)
         {
-            return new CapabilityReason(CapabilityReasonCode.GenerationChanged,
+            return new CapabilityReason(CapabilityReasonCode.Unsupported,
                 "The live identity no longer matches the Ally model.", true);
         }
 
@@ -207,53 +225,14 @@ internal sealed partial class AllyDeviceEngine
 
     private CapabilityReason? Validate(CapabilityCommand command, CapabilityDescriptor descriptor, bool onAcPower)
     {
-        if (_descriptorSet is null || command.ExpectedDescriptorGeneration != _descriptorSet.Generation
-                                   || command.ExpectedCycleGeneration != _cycleGeneration)
+        if (command.RequestedValue is null && descriptor.SupportsAction)
         {
-            return new CapabilityReason(CapabilityReasonCode.GenerationChanged,
-                "The command targets a descriptor or device generation that is no longer current.", true);
+            return new CapabilityReason(CapabilityReasonCode.Unsupported, "Rumble is driven through haptic frames.");
         }
 
-        if (!DeviceWriteBudget.IsAvailable(command.Deadline))
-        {
-            return new CapabilityReason(CapabilityReasonCode.Quiescing,
-                "The command deadline leaves too little time for a hardware write.", true);
-        }
-
-        if (onAcPower ? !descriptor.AvailableOnAc : !descriptor.AvailableOnDc)
-        {
-            return new CapabilityReason(CapabilityReasonCode.UnavailableOnPowerSource,
-                "The capability is unavailable on this power source.");
-        }
-
-        if (command.RequestedValue is not { } value)
-        {
-            return descriptor.SupportsAction
-                ? new CapabilityReason(CapabilityReasonCode.Unsupported, "Rumble is driven through haptic frames.")
-                : new CapabilityReason(CapabilityReasonCode.Unsupported, "The capability is not an action.");
-        }
-
-        if (!descriptor.SupportsWrite)
-        {
-            return new CapabilityReason(CapabilityReasonCode.Unsupported, "The capability is read-only.");
-        }
-
-        if (value.Kind != descriptor.ValueKind)
-        {
-            return new CapabilityReason(CapabilityReasonCode.Unsupported,
-                $"Value kind {value.Kind} does not match {descriptor.ValueKind}.");
-        }
-
-        if (!CapabilityValueValidation.ValueMatches(value, descriptor, out var invalid))
-        {
-            return OutOfRange(invalid!);
-        }
-
-        // WSGM decides both limits of the pair; a command that does not carry a valid one is refused.
-        return DevicePowerPair.Peer(_descriptorSet.Descriptors, command.CapabilityId) is not null
-               && !DevicePowerPair.TryResolve(command, _descriptorSet.Descriptors, out _, out _, out var pairError)
-            ? OutOfRange(pairError!)
-            : null;
+        return _descriptorSet is null
+            ? new CapabilityReason(CapabilityReasonCode.HostUnavailable)
+            : CommandAdmission.Validate(command, descriptor, _descriptorSet.Descriptors, onAcPower);
     }
 
     private static CapabilityReason OutOfRange(string detail)

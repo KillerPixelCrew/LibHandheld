@@ -1,5 +1,6 @@
 using System.Numerics;
 using Windows.Devices.Sensors;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
 

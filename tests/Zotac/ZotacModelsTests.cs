@@ -1,7 +1,6 @@
 using System.Numerics;
 using System.Text;
 using LibHandheld.Families.Zotac;
-using LibHandheld.Internal.Identity;
 
 namespace LibHandheld.Tests.Zotac;
 
@@ -39,5 +38,14 @@ public sealed class ZotacModelsTests
         Assert.Equal((byte)1, color[7]);
         Assert.Equal(new byte[] { 0x12, 0x34, 0x56 }, color[10..13]);
         Assert.Equal(new byte[] { 0x12, 0x34, 0x56 }, color[37..40]);
+    }
+
+    [Fact]
+    public void VramEncodingRefusesOverflowBeforeDispatch()
+    {
+        Assert.Equal((byte)176, ZotacNativeService.EncodeVram(32, 12));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ZotacNativeService.EncodeVram(64, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ZotacNativeService.EncodeVram(64, 12));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ZotacNativeService.EncodeVram(16, 13));
     }
 }

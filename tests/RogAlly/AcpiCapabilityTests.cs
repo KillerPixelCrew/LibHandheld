@@ -1,8 +1,7 @@
-// SPDX-License-Identifier: MIT
-
 using LibHandheld.Families.RogAlly.Tests.Fakes;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Lifecycle;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly.Tests;
 
@@ -40,9 +39,8 @@ public sealed class AcpiCapabilityTests
         var result = await power.ApplyLimitsAsync(Command(CapabilityValue.Integer(22)), 22, 22,
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Null(result.Reason);
-        Assert.Null(result.ReadbackValue);
         Assert.Equal(22, acpi.Scalar(AsusAcpiId.SustainedPower));
         Assert.Equal(22, acpi.Scalar(AsusAcpiId.SlowPower));
         Assert.Equal(22, acpi.Scalar(AsusAcpiId.FastPower));
@@ -72,8 +70,7 @@ public sealed class AcpiCapabilityTests
         var result = await power.ApplyLimitsAsync(Command(CapabilityValue.Integer(10), CapabilityIds.PowerBoost),
             10, 10, CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
-        Assert.Null(result.ReadbackValue);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal((10, 10, 10), (acpi.Scalar(AsusAcpiId.SustainedPower), acpi.Scalar(AsusAcpiId.SlowPower),
             acpi.Scalar(AsusAcpiId.FastPower)));
     }
@@ -99,8 +96,7 @@ public sealed class AcpiCapabilityTests
         var result = await power.ApplyLimitsAsync(Command(CapabilityValue.Integer(20)), 20, 20,
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
-        Assert.Null(result.ReadbackValue);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
     }
 
     [Fact]
@@ -114,7 +110,7 @@ public sealed class AcpiCapabilityTests
         var result = await power.ApplyLimitsAsync(Command(CapabilityValue.Integer(10)), 10, 10,
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(10, acpi.Scalar(AsusAcpiId.SustainedPower));
     }
 
@@ -128,7 +124,7 @@ public sealed class AcpiCapabilityTests
             Command(CapabilityValue.Choice(Scenarios.Silent), CapabilityIds.Scenario),
             Scenarios.Silent, CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(2, acpi.Scalar(AsusAcpiId.PerformanceMode));
         Assert.Equal((AsusAcpiId.PerformanceMode, 2u), acpi.Writes.Single());
     }
@@ -164,7 +160,7 @@ public sealed class AcpiCapabilityTests
         var acpi = new FakeAsusAcpi();
         var charge = new AllyChargeLimitCapability(acpi);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified,
+        Assert.Equal(CommandOutcome.Applied,
             charge.Apply(Command(CapabilityValue.Integer(80), CapabilityIds.ChargeLimit), 80).Outcome);
         Assert.Equal(80, charge.Read());
         Assert.Equal(CommandOutcome.Rejected,
@@ -180,7 +176,7 @@ public sealed class AcpiCapabilityTests
 
         var result = charge.Apply(Command(CapabilityValue.Integer(80), CapabilityIds.ChargeLimit), 80);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal([(AsusAcpiId.ChargeLimit, 80u)], acpi.Writes);
     }
 
@@ -231,7 +227,7 @@ public sealed class AcpiCapabilityTests
         var result = await fans.ApplyCurveAsync(Command(CapabilityValue.Curve(points), CapabilityIds.FanCurve), points,
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.False(fans.HasMidFan);
         Assert.Equal([AsusAcpiId.CpuFanCurve, AsusAcpiId.GpuFanCurve], acpi.BufferWrites.Select(write => write.Id));
     }
@@ -250,7 +246,7 @@ public sealed class AcpiCapabilityTests
         var result = await fans.ApplyCurveAsync(Command(CapabilityValue.Curve(points), CapabilityIds.FanCurve), points,
             CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(2, acpi.BufferWrites.Count);
     }
 
@@ -267,7 +263,7 @@ public sealed class AcpiCapabilityTests
             Command(CapabilityValue.Curve(points), CapabilityIds.FanCurve), points, CancellationToken.None);
 
         Assert.True(fans.HasMidFan);
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(3, acpi.BufferWrites.Count);
     }
 
@@ -283,7 +279,7 @@ public sealed class AcpiCapabilityTests
             Command(CapabilityValue.Choice(FanModes.Automatic), CapabilityIds.FanMode),
             new AllyFanSnapshot(captured, captured, null, 0), CancellationToken.None);
 
-        Assert.Equal(CommandOutcome.AppliedUnverified, result.Outcome);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(captured, acpi.Curve(AsusAcpiId.CpuFanCurve));
     }
 
@@ -331,8 +327,6 @@ public sealed class AcpiCapabilityTests
             PairedPowerLimitWatts = capabilityId is CapabilityIds.PowerSustained or CapabilityIds.PowerBoost
                 ? value.IntegerValue
                 : null,
-            ExpectedDescriptorGeneration = 1,
-            ExpectedCycleGeneration = 1,
             Deadline = Deadline.After(TimeSpan.FromSeconds(10))
         };
     }

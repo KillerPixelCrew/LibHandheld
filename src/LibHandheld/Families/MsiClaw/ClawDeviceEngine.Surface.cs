@@ -1,7 +1,6 @@
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Settings;
 
 namespace LibHandheld.Families.MsiClaw;
 
@@ -14,74 +13,6 @@ internal sealed partial class ClawDeviceEngine
     ///     unit leaves empty is dropped by WSGM rather than declared conditionally, so the layout stays
     ///     one static fact.
     /// </remarks>
-    private static readonly IReadOnlyList<CapabilitySection> OverlaySections =
-    [
-        DeviceSections.Power with
-        {
-            Categories =
-            [
-                new CapabilityCategory
-                {
-                    CategoryId = CategoryIds.Limits,
-                    Key = SettingSectionKey.Custom,
-                    CustomTitle = "Limits",
-                    SortOrder = 0
-                },
-                new CapabilityCategory
-                {
-                    CategoryId = CategoryIds.Charging,
-                    Key = SettingSectionKey.Custom,
-                    CustomTitle = "Charging",
-                    SortOrder = 1
-                },
-                // Fans and thermals were their own Cooling section; folded in here so Power is one
-                // page instead of two that both read as "power" to the user (maintainer-directed).
-                // The readings that used to follow them moved to Info for the same reason: this is
-                // the page for changing how the device behaves, not for watching it.
-                new CapabilityCategory
-                {
-                    CategoryId = CategoryIds.Control,
-                    Key = SettingSectionKey.Custom,
-                    CustomTitle = "Fans",
-                    SortOrder = 2
-                }
-            ]
-        },
-        DeviceSections.Rgb with
-        {
-            Categories =
-            [
-                new CapabilityCategory
-                {
-                    CategoryId = CategoryIds.Zones,
-                    Key = SettingSectionKey.Custom,
-                    CustomTitle = "Zones",
-                    SortOrder = 0
-                }
-            ]
-        },
-        DeviceSections.Info with
-        {
-            Categories =
-            [
-                new CapabilityCategory
-                {
-                    CategoryId = CategoryIds.Ownership,
-                    Key = SettingSectionKey.Custom,
-                    CustomTitle = "Plugin ownership",
-                    SortOrder = 0
-                },
-                new CapabilityCategory
-                {
-                    CategoryId = CategoryIds.Readings,
-                    Key = SettingSectionKey.Custom,
-                    CustomTitle = "Readings",
-                    SortOrder = 1
-                }
-            ]
-        }
-    ];
-
     private void BuildCapabilitySurface()
     {
         if (_power is null || _chargeLimit is null || _fans is null || _telemetry is null
@@ -100,9 +31,7 @@ internal sealed partial class ClawDeviceEngine
                     section: SectionIds.Power, category: CategoryIds.Limits, order: 0) with
                 {
                     PowerPresets = Model.PowerPresets,
-                    PairedPowerLimitId = CapabilityIds.PowerBoost,
-                    Prominence = CapabilityProminence.Primary,
-                    LayoutPair = new CapabilityLayoutPair(CapabilityIds.PowerBoost)
+                    PairedPowerLimitId = CapabilityIds.PowerBoost
                 },
             IntegerDescriptor(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
                 DisplayKey.BoostPowerLimit, Model.MinimumWatts, Model.MaximumWatts, CapabilityUnit.Watt, true,
@@ -136,6 +65,11 @@ internal sealed partial class ClawDeviceEngine
                 SectionIds.Power,
                 CategoryIds.Control),
             FanCurveDescriptor(1),
+            IntegerDescriptor("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100,
+                    CapabilityUnit.Percent, true, section: SectionIds.Power) with
+                {
+                    SupportsRead = false
+                },
             IntegerDescriptor(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness,
                 DisplayKey.Brightness, 0, 100, CapabilityUnit.Percent, true,
                 persistence: CapabilityPersistence.DevicePersistent,
@@ -197,9 +131,6 @@ internal sealed partial class ClawDeviceEngine
         EnsureUniqueCapabilityKeys(descriptors);
         _descriptorSet = new CapabilityDescriptorSet
         {
-            Generation = 1,
-            CycleGeneration = _cycleGeneration,
-            Sections = OverlaySections,
             Descriptors = descriptors
         };
     }
@@ -242,9 +173,8 @@ internal sealed partial class ClawDeviceEngine
         {
             CapabilityId = CapabilityIds.FanCurve,
             Role = CapabilityRole.FanCurve,
-            SectionId = SectionIds.Power,
-            CategoryId = CategoryIds.Control,
-            SortOrder = order,
+
+
             ValueKind = CapabilityValueKind.Curve,
             Display = new CapabilityDisplay { Key = DisplayKey.FanCurve },
             Minimum = 0,
@@ -266,11 +196,10 @@ internal sealed partial class ClawDeviceEngine
             CapabilityId = CapabilityIds.LightingColor,
             InstanceId = instance,
             Role = CapabilityRole.LightingZoneColor,
-            SectionId = SectionIds.Lighting,
-            CategoryId = CategoryIds.Zones,
-            SortOrder = order,
+
+
             ValueKind = CapabilityValueKind.Color,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = label },
+            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
             SupportsRead = true,
             SupportsWrite = true,
             Persistence = CapabilityPersistence.DevicePersistent
@@ -310,9 +239,7 @@ internal sealed partial class ClawDeviceEngine
                     Quality = value is null
                         ? HardwareStateQuality.Unknown
                         : HardwareStateQuality.Observed,
-                    ObservedAt = value is null ? null : DateTimeOffset.UtcNow,
-                    DescriptorGeneration = _descriptorSet.Generation,
-                    CycleGeneration = _cycleGeneration
+                    ObservedAt = value is null ? null : DateTimeOffset.UtcNow
                 },
                 cancellationToken).AsTask().WaitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -351,6 +278,8 @@ internal sealed partial class ClawDeviceEngine
             {
                 return _fans!.LastObserved is { } value ? FanMode(value) : null;
             }
+            case "fan.duty":
+                return _fanCapability?.WrittenDuty is { } duty ? CapabilityValue.Integer(duty) : null;
             case CapabilityIds.FanCurve:
             {
                 // The left channel stands for both. Every write installs one curve on the pair, so the
@@ -425,7 +354,7 @@ internal sealed partial class ClawDeviceEngine
         return new OemControlDescriptor
         {
             ControlId = id,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = label },
+            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
             Placement = placement,
             SupportsLongPress = supportsLongPress,
             RequiresControllerAcquisition = requiresController
@@ -451,10 +380,8 @@ internal sealed partial class ClawDeviceEngine
             CapabilityId = id,
             InstanceId = instance,
             Role = role,
-            SectionId = section,
-            CategoryId = category,
-            SortOrder = order,
-            Prominence = writable ? CapabilityProminence.Normal : CapabilityProminence.Compact,
+
+
             ValueKind = CapabilityValueKind.Integer,
             Display = new CapabilityDisplay { Key = display },
             SupportsRead = true,
@@ -481,9 +408,8 @@ internal sealed partial class ClawDeviceEngine
         {
             CapabilityId = id,
             Role = role,
-            SectionId = section,
-            CategoryId = category,
-            SortOrder = order,
+
+
             ValueKind = CapabilityValueKind.Choice,
             Display = new CapabilityDisplay { Key = display },
             SupportsRead = true,
@@ -494,7 +420,7 @@ internal sealed partial class ClawDeviceEngine
                     choice,
                     new CapabilityDisplay
                     {
-                        Key = DisplayKey.Custom, CustomLabel = choice switch
+                        Key = DisplayKey.Custom, CustomText = choice switch
                         {
                             "comfort" => "Comfort", "green" => "Green", "eco" => "Eco", "sport" => "Sport",
                             "user" => "User", "inactive" => "Inactive", "automatic" => "Automatic",
@@ -527,9 +453,8 @@ internal sealed partial class ClawDeviceEngine
         {
             CapabilityId = id,
             Role = role,
-            SectionId = section,
-            CategoryId = category,
-            SortOrder = order,
+
+
             ValueKind = CapabilityValueKind.None,
             Display = new CapabilityDisplay { Key = display },
             SupportsRead = false,

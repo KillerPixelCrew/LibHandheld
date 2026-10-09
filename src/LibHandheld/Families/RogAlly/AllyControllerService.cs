@@ -1,13 +1,13 @@
-// SPDX-License-Identifier: MIT
-
 using System.ComponentModel;
 using System.Numerics;
-using LibHandheld.Internal.Capabilities;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Windows;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -104,7 +104,7 @@ internal sealed class ControllerService(
     KeyboardOemService keyboard,
     AllyOemButtonState buttons,
     IDeviceSink host,
-    AllyRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Controller)
+    DeviceRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Controller)
 {
     /// <summary>What the Ally's motors can do: two rumble motors, no trigger haptics.</summary>
     /// <remarks>
@@ -142,10 +142,6 @@ internal sealed class ControllerService(
                 "Controller management is disabled."));
         }
 
-        if (ReconciliationBlockReason is not null)
-        {
-            return Set(DeviceServiceState.Faulted, ReconciliationBlockReason);
-        }
 
         if (!context.Identity.ExactMachineMatch)
         {
@@ -172,13 +168,13 @@ internal sealed class ControllerService(
             // After a wake the XInput slot and the pad's device nodes come back a few seconds late, and
             // not together. Nothing is final here: the pad is taken as soon as both are there, as HC takes
             // it on arrival. Giving up on the first look left the controller dead after a wake.
-            host.Trace(DeviceTraceLevel.Warn, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 "the ASUS XInput pad and its device nodes are not both present yet; waiting for them.");
             _reconnect.Start(AttachWhenBackAsync, OnReconnectFailed);
             return Set(DeviceServiceState.Degraded, Missing("The Ally gamepad is not present yet."));
         }
 
-        host.Trace(DeviceTraceLevel.Info, "controller",
+        DeviceTrace.Write(DeviceTraceLevel.Info, "controller",
             $"devices={topology.PhysicalDevices.Count}, observed=[{topology.Observed}]");
         _topology = topology;
         await ConfigureAsync(context, cancellationToken).ConfigureAwait(false);
@@ -188,7 +184,7 @@ internal sealed class ControllerService(
         }
         catch (Exception ex)
         {
-            host.Trace(DeviceTraceLevel.Error, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Error, "controller",
                 DiagnosticText.FromException("controller acquisition failed", ex));
             await ReleaseControllerAsync(context.Deadline, CancellationToken.None).ConfigureAwait(false);
             throw;
@@ -245,7 +241,7 @@ internal sealed class ControllerService(
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            host.Trace(DeviceTraceLevel.Debug, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Debug, "controller",
                 DiagnosticText.FromException("zero rumble failed", ex));
         }
         finally
@@ -259,7 +255,7 @@ internal sealed class ControllerService(
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            host.Trace(DeviceTraceLevel.Warn, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 DiagnosticText.FromException("The controller reader did not stop cleanly", ex));
         }
 
@@ -270,7 +266,7 @@ internal sealed class ControllerService(
 
         if (_configured && await RestoreConfigurationAsync(deadline).ConfigureAwait(false) is { } restoreFailure)
         {
-            host.Trace(DeviceTraceLevel.Warn, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 restoreFailure.Detail ?? "The firmware's controller tables were not all written back.");
         }
 
@@ -327,12 +323,12 @@ internal sealed class ControllerService(
         var rearWritten = false;
         if (!await vendor.IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
-            host.Trace(DeviceTraceLevel.Warn, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 "no vendor collection for the controller tables; M1 and M2 stay unavailable.");
         }
         else if (!DeviceWriteBudget.IsAvailable(context.Deadline))
         {
-            host.Trace(DeviceTraceLevel.Warn, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 "too little time to write the controller tables; M1 and M2 stay unavailable this cycle.");
         }
         else
@@ -348,7 +344,7 @@ internal sealed class ControllerService(
             var refused = await WriteTablesAsync(AllyProtocol.GameModeConfiguration, cancellationToken)
                 .ConfigureAwait(false);
             rearWritten = !refused.Contains(AllyProtocol.RearKeyboardMapping);
-            host.Trace(rearWritten ? DeviceTraceLevel.Info : DeviceTraceLevel.Error, "controller", rearWritten
+            DeviceTrace.Write(rearWritten ? DeviceTraceLevel.Info : DeviceTraceLevel.Error, "controller", rearWritten
                 ? "controller tables written; left rear sends F17, right rear F18."
                 : "the M1/M2 table was not written.");
         }
@@ -379,8 +375,8 @@ internal sealed class ControllerService(
             catch (Exception ex) when (ex is IOException or Win32Exception or InvalidOperationException)
             {
                 refused.Add(report);
-                host.Trace(DeviceTraceLevel.Warn, "controller", $"table {report[2]:X2}/{report[3]:X2} "
-                                                                + DiagnosticText.FromException("refused", ex));
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "controller", $"table {report[2]:X2}/{report[3]:X2} "
+                                                                       + DiagnosticText.FromException("refused", ex));
             }
         }
 
@@ -445,7 +441,7 @@ internal sealed class ControllerService(
             return;
         }
 
-        host.Trace(DeviceTraceLevel.Warn, "controller", detail + "; waiting for the pad to come back.");
+        DeviceTrace.Write(DeviceTraceLevel.Warn, "controller", detail + "; waiting for the pad to come back.");
         _ = Set(DeviceServiceState.Degraded, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
         if (_context is { } context)
         {
@@ -483,7 +479,7 @@ internal sealed class ControllerService(
     private void OnReconnectFailed(Exception exception)
     {
         var detail = DiagnosticText.FromException("Taking the pad again failed", exception);
-        host.Trace(DeviceTraceLevel.Error, "controller",
+        DeviceTrace.Write(DeviceTraceLevel.Error, "controller",
             detail + "; turn controller management off and on to try again.");
         Fault(new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
     }
@@ -509,7 +505,7 @@ internal sealed class ControllerService(
             .ConfigureAwait(false);
         _topology = topology;
         await StartReadingAsync(topology, cancellationToken).ConfigureAwait(false);
-        host.Trace(DeviceTraceLevel.Info, "controller", $"the pad is back: {topology.Observed}.");
+        DeviceTrace.Write(DeviceTraceLevel.Info, "controller", $"the pad is back: {topology.Observed}.");
         _ = Set(DeviceServiceState.Owned);
         return true;
     }

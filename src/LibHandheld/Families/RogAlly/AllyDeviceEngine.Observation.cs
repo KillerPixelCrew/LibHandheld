@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: MIT
-
 using System.ComponentModel;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 

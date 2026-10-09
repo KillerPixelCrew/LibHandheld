@@ -1,7 +1,6 @@
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Input;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Windows;
 
@@ -12,7 +11,7 @@ internal sealed class ControllerService(
     IClawControllerSource source,
     MotionService motion,
     IDeviceSink host,
-    ClawRecoveryJournal journal,
+    DeviceRecoveryJournal journal,
     ClawModel model,
     Func<TimeSpan, CancellationToken, Task> delay) : DeviceService<ClawIdentityState>(ServiceIds.Controller)
 {
@@ -69,7 +68,7 @@ internal sealed class ControllerService(
         delay ?? throw new ArgumentNullException(nameof(delay));
 
     private readonly IDeviceSink _host = host ?? throw new ArgumentNullException(nameof(host));
-    private readonly ClawRecoveryJournal _journal = journal ?? throw new ArgumentNullException(nameof(journal));
+    private readonly DeviceRecoveryJournal _journal = journal ?? throw new ArgumentNullException(nameof(journal));
     private readonly IClawMcuTransport _mcu = mcu ?? throw new ArgumentNullException(nameof(mcu));
     private readonly MotionService _motion = motion ?? throw new ArgumentNullException(nameof(motion));
     private readonly SemaphoreSlim _outputSerializer = new(1, 1);
@@ -99,10 +98,7 @@ internal sealed class ControllerService(
         }
 
         _context = context;
-        if (ReconciliationBlockReason is not null)
-        {
-            return Set(DeviceServiceState.Faulted, ReconciliationBlockReason);
-        }
+
 
         // Exact machine identity is the only gate. The MCU revision is deliberately not one: the
         // mode switch and the hide list are not addressed writes, and gating them on the revision
@@ -110,12 +106,12 @@ internal sealed class ControllerService(
         var identity = context.Identity;
         if (!identity.ExactMachineMatch)
         {
-            _host.Trace(
+            DeviceTrace.Write(
                 DeviceTraceLevel.Warn,
                 "controller",
                 "acquire refused at the identity gate: the Claw model identity no longer matches.");
             return Set(DeviceServiceState.Passive, new CapabilityReason(
-                CapabilityReasonCode.GenerationChanged,
+                CapabilityReasonCode.Unsupported,
                 "Exact device identity no longer matches the Claw implementation."));
         }
 
@@ -125,7 +121,7 @@ internal sealed class ControllerService(
             // After a wake the pad comes back a few seconds late. Nothing is final here: it is taken as
             // soon as it is there, as HC takes it on Device_Inserted. Giving up on the first look left
             // the controller dead after a wake.
-            _host.Trace(DeviceTraceLevel.Warn, "controller", "no Claw controller yet; waiting for it.");
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller", "no Claw controller yet; waiting for it.");
             _reconnect.Start(ReacquireAsync, OnReacquireFailed);
             return Set(DeviceServiceState.Degraded, new CapabilityReason(
                 CapabilityReasonCode.PrerequisiteMissing,
@@ -134,7 +130,7 @@ internal sealed class ControllerService(
 
         // Traced before the gates below, which would reduce the mode, product and endpoints to one
         // sentence about a prerequisite.
-        _host.Trace(
+        DeviceTrace.Write(
             DeviceTraceLevel.Info,
             "controller",
             $"discovered mode={observed.Mode}, product=0x{observed.ProductId:X4}, "
@@ -145,7 +141,7 @@ internal sealed class ControllerService(
         if (string.IsNullOrWhiteSpace(_original.PhysicalLocation)
             || !HidDevices.SamePhysicalLocation(observed.PhysicalLocation, _original.PhysicalLocation))
         {
-            _host.Trace(
+            DeviceTrace.Write(
                 DeviceTraceLevel.Warn,
                 "controller",
                 "acquire refused: composite USB location did not match the one first observed. "
@@ -170,7 +166,7 @@ internal sealed class ControllerService(
                 ClawFirmwareIdentities.Mcu,
                 ClawRecoveryValues.ControllerMode(ReleaseMode),
                 cancellationToken).ConfigureAwait(false);
-            _host.Trace(
+            DeviceTrace.Write(
                 DeviceTraceLevel.Info,
                 "controller",
                 $"switching MCU mode {CurrentTopology.Mode} -> DirectInput at '{_original.PhysicalLocation}'.");
@@ -184,7 +180,7 @@ internal sealed class ControllerService(
             }
             catch (Exception ex)
             {
-                _host.Trace(
+                DeviceTrace.Write(
                     DeviceTraceLevel.Error,
                     "controller",
                     $"mode switch to DirectInput failed: {ex.GetType().Name}: {ex.Message}");
@@ -195,7 +191,7 @@ internal sealed class ControllerService(
             // The switch reports success by returning a topology, but the topology is what the
             // hardware actually settled into. Those differed on the reference unit, and nothing
             // said so.
-            _host.Trace(
+            DeviceTrace.Write(
                 CurrentTopology.Mode is ClawControllerMode.DirectInput
                     ? DeviceTraceLevel.Info
                     : DeviceTraceLevel.Warn,
@@ -206,7 +202,7 @@ internal sealed class ControllerService(
         }
         else
         {
-            _host.Trace(
+            DeviceTrace.Write(
                 DeviceTraceLevel.Info,
                 "controller",
                 "controller already in DirectInput; no mode switch needed.");
@@ -219,7 +215,7 @@ internal sealed class ControllerService(
             var detail = "No exact DirectInput physical interface identity was available for "
                          + $"handoff. Mode={CurrentTopology.Mode}, product=0x{CurrentTopology.ProductId:X4}, "
                          + $"endpoints=[{CurrentTopology.ObservedEndpoints}]";
-            _host.Trace(DeviceTraceLevel.Warn, "controller", detail);
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller", detail);
             await RestoreAfterFailedAcquireAsync(context.Deadline).ConfigureAwait(false);
             return Set(DeviceServiceState.Passive, new CapabilityReason(
                 CapabilityReasonCode.PrerequisiteMissing,
@@ -241,7 +237,7 @@ internal sealed class ControllerService(
         }
         catch (Exception ex)
         {
-            _host.Trace(
+            DeviceTrace.Write(
                 DeviceTraceLevel.Error,
                 "controller",
                 $"controller acquisition failed before physical-device handoff completed: "
@@ -250,7 +246,7 @@ internal sealed class ControllerService(
             throw;
         }
 
-        _host.Trace(
+        DeviceTrace.Write(
             DeviceTraceLevel.Info,
             "controller",
             $"owned: published {CurrentTopology.PhysicalDevices.Count} physical identities for hiding, "
@@ -279,7 +275,7 @@ internal sealed class ControllerService(
         }
 
         var detail = DiagnosticText.FromException("The controller reader stopped", exception);
-        _host.Trace(DeviceTraceLevel.Warn, "controller", detail + "; waiting for the pad to come back.");
+        DeviceTrace.Write(DeviceTraceLevel.Warn, "controller", detail + "; waiting for the pad to come back.");
         _ = Set(DeviceServiceState.Degraded, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
         if (_context is { } context)
         {
@@ -329,7 +325,7 @@ internal sealed class ControllerService(
             cancellationToken).ConfigureAwait(false);
         if (result.State is DeviceServiceState.Owned)
         {
-            _host.Trace(DeviceTraceLevel.Info, "controller", "the pad is back.");
+            DeviceTrace.Write(DeviceTraceLevel.Info, "controller", "the pad is back.");
         }
 
         return result.State is not DeviceServiceState.Degraded;
@@ -341,7 +337,7 @@ internal sealed class ControllerService(
     private void OnReacquireFailed(Exception exception)
     {
         var detail = DiagnosticText.FromException("Taking the pad again failed", exception);
-        _host.Trace(DeviceTraceLevel.Error, "controller",
+        DeviceTrace.Write(DeviceTraceLevel.Error, "controller",
             detail + "; turn controller management off and on to try again.");
         _ = Set(DeviceServiceState.Faulted, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
     }
@@ -381,7 +377,7 @@ internal sealed class ControllerService(
             CurrentTopology = null;
             if (_journal.HasUnrestoredMutation(ServiceId))
             {
-                _host.Trace(DeviceTraceLevel.Warn, "controller",
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                     "the controller disappeared before its original mode could be put back.");
                 await _journal.SetStatusAsync(
                     ServiceId,
@@ -398,7 +394,7 @@ internal sealed class ControllerService(
         {
             // Nothing is written and the entry is left as it is: the next start reads the mode and
             // puts it back.
-            _host.Trace(DeviceTraceLevel.Warn, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 "too little time to put the original controller mode back; the next start restores it.");
             status = null;
         }
@@ -414,14 +410,14 @@ internal sealed class ControllerService(
                 if (restored.Mode != ReleaseMode
                     || !HidDevices.SamePhysicalLocation(restored.PhysicalLocation, _original.PhysicalLocation))
                 {
-                    _host.Trace(DeviceTraceLevel.Warn, "controller",
+                    DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                         $"mode switch back settled at {restored.Mode} at '{restored.PhysicalLocation}'.");
                     status = DeviceRecoveryStatus.RestoredUnverified;
                 }
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                _host.Trace(DeviceTraceLevel.Warn, "controller",
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                     $"the original controller mode could not be put back: {ex.GetType().Name}: {ex.Message}");
                 status = DeviceRecoveryStatus.RestoreFailed;
             }
@@ -484,7 +480,7 @@ internal sealed class ControllerService(
         // HC's sleeps add almost two seconds; the mode switch after them needs its own budget.
         if (context.Deadline.Remaining < TimeSpan.FromSeconds(6))
         {
-            _host.Trace(DeviceTraceLevel.Info, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Info, "controller",
                 "paddle mapping skipped: the acquisition deadline leaves no room for HC's write spacing.");
             return;
         }
@@ -500,13 +496,13 @@ internal sealed class ControllerService(
             await _delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
             await _mcu.SyncToRomAsync(cancellationToken).ConfigureAwait(false);
             await _delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
-            _host.Trace(DeviceTraceLevel.Info, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Info, "controller",
                 $"paddle mapping written at 0x{layout.M1DirectInput:X4}/0x{layout.M2DirectInput:X4} and synced to ROM.");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
         {
             // HC does not check these writes either; the controller is still taken.
-            _host.Trace(DeviceTraceLevel.Warn, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 $"paddle mapping write failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -527,7 +523,7 @@ internal sealed class ControllerService(
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 // The device may already be gone; acquisition cleanup and mode restoration continue.
-                _host.Trace(
+                DeviceTrace.Write(
                     DeviceTraceLevel.Warn,
                     "controller",
                     $"zero-rumble write during release failed: {ex.GetType().Name}: {ex.Message}");
@@ -553,7 +549,7 @@ internal sealed class ControllerService(
         {
             // The physical source may have vanished. Continue to the mode restoration, which is the
             // cleanup step that keeps external input usable.
-            _host.Trace(DeviceTraceLevel.Warn, "controller",
+            DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 $"the controller source did not stop cleanly: {ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -620,7 +616,6 @@ internal sealed class ControllerService(
                 CapabilityReason reason = new(
                     CapabilityReasonCode.TransportFaulted,
                     "Controller topology vanished during acquisition rollback.");
-                ReconciliationBlockReason = reason;
                 Fault(reason);
                 await _journal.SetStatusAsync(
                     ServiceId,
@@ -637,7 +632,6 @@ internal sealed class ControllerService(
             CapabilityReason reason = new(
                 CapabilityReasonCode.TransportFaulted,
                 "Controller acquisition rollback failed.");
-            ReconciliationBlockReason = reason;
             Fault(reason);
             await _journal.SetStatusAsync(
                 ServiceId,

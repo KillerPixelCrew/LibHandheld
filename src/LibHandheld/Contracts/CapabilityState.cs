@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using LibHandheld.Internal.Capabilities;
 
 namespace LibHandheld.Contracts;
 
@@ -6,10 +7,10 @@ namespace LibHandheld.Contracts;
 ///     How much a reported hardware value can be trusted.
 /// </summary>
 /// <remarks>
-///     The distinction that matters most is Observed versus Verified: a
-///     successful command result is not a hardware readback. A device engine that accepted a command and got no
-///     error has Observed at best; only an independent read of the value it wrote earns
-///     Verified. Collapsing the two would let the UI show a value the hardware never took.
+///     The distinction that matters most is <see cref="Observed" /> versus <see cref="Verified" />: a
+///     successful command result is not a hardware readback. A plugin that accepted a command and got no
+///     error has <see cref="Observed" /> at best; only an independent read of the value it wrote earns
+///     <see cref="Verified" />. Collapsing the two would let the UI show a value the hardware never took.
 /// </remarks>
 [JsonConverter(typeof(JsonStringEnumConverter<HardwareStateQuality>))]
 public enum HardwareStateQuality
@@ -31,12 +32,12 @@ public enum HardwareStateQuality
 }
 
 /// <summary>
-///     The live state of one capability as reported by the device engine.
+///     The live state of one capability as reported by the plugin.
 /// </summary>
 /// <remarks>
 ///     Versioned separately from the descriptor because it changes constantly while the descriptor does
-///     not. It carries only what the device engine observed; the consumer's desired value and UI progress live in
-///     the consumer's capability projection and are never mixed in here — a device engine does not own what the
+///     not. It carries only what the plugin observed; WSGM's desired value and UI progress live in
+///     WSGM's capability projection and are never mixed in here â€” a plugin does not own what the
 ///     user asked for.
 /// </remarks>
 public sealed record CapabilityState
@@ -54,29 +55,23 @@ public sealed record CapabilityState
     public CapabilityReason? Reason { get; init; }
 
     /// <summary>The last read or successfully written value, or null when unknown or action-only.</summary>
-    /// <remarks>Must match the descriptor's value shape; Quality records its evidence.</remarks>
+    /// <remarks>Must match the descriptor's value shape; <see cref="Quality" /> records its evidence.</remarks>
     public CapabilityValue? ObservedValue { get; init; }
 
-    /// <summary>How much ObservedValue can be trusted.</summary>
+    /// <summary>How much <see cref="ObservedValue" /> can be trusted.</summary>
     public required HardwareStateQuality Quality { get; init; }
 
     /// <summary>When the read or accepted write was observed, in UTC; null when no observation exists.</summary>
     public DateTimeOffset? ObservedAt { get; init; }
-
-    /// <summary>Descriptor generation this state was produced against.</summary>
-    public required long DescriptorGeneration { get; init; }
-
-    /// <summary>Process/reconnect cycle generation this state was produced against.</summary>
-    public required long CycleGeneration { get; init; }
 }
 
 /// <summary>
 ///     A capability value in whichever shape its descriptor declares.
 /// </summary>
 /// <remarks>
-///     Exactly the field selected by Kind carries a value; unused scalar fields stay null
+///     Exactly the field selected by <see cref="Kind" /> carries a value; unused scalar fields stay null
 ///     and unused curves stay empty. Construction and factory methods do not validate descriptor bounds.
-///     Validate with CapabilityValueValidation before accepting a value. Collection
+///     Validate with <see cref="CapabilityValueValidation" /> before accepting a value. Collection
 ///     properties retain the supplied list, which must not be mutated after publication.
 /// </remarks>
 public sealed record CapabilityValue
@@ -84,48 +79,40 @@ public sealed record CapabilityValue
     /// <summary>Which field carries the value.</summary>
     public required CapabilityValueKind Kind { get; init; }
 
-    /// <summary>Value when Kind is CapabilityValueKind.Boolean.</summary>
+    /// <summary>Value when <see cref="Kind" /> is <see cref="CapabilityValueKind.Boolean" />.</summary>
     public bool? BooleanValue { get; init; }
 
-    /// <summary>Value when Kind is CapabilityValueKind.Integer.</summary>
+    /// <summary>Value when <see cref="Kind" /> is <see cref="CapabilityValueKind.Integer" />.</summary>
     public int? IntegerValue { get; init; }
 
-    /// <summary>Selected option when Kind is CapabilityValueKind.Choice.</summary>
+    /// <summary>Selected option when <see cref="Kind" /> is <see cref="CapabilityValueKind.Choice" />.</summary>
     public string? ChoiceValue { get; init; }
 
-    /// <summary>Packed 24-bit RGB when Kind is CapabilityValueKind.Color.</summary>
+    /// <summary>Packed 24-bit RGB when <see cref="Kind" /> is <see cref="CapabilityValueKind.Color" />.</summary>
     public int? ColorValue { get; init; }
 
-    /// <summary>Curve points when Kind is CapabilityValueKind.Curve.</summary>
-    public IReadOnlyList<CurvePoint> CurveValue
-    {
-        get;
-        init
-        {
-            ArgumentNullException.ThrowIfNull(value);
-            field = Array.AsReadOnly([.. value]);
-        }
-    } = [];
+    /// <summary>Curve points when <see cref="Kind" /> is <see cref="CapabilityValueKind.Curve" />.</summary>
+    public IReadOnlyList<CurvePoint> CurveValue { get; init; } = [];
 
     /// <summary>
-    ///     Text when Kind is CapabilityValueKind.Text.
+    ///     Text when <see cref="Kind" /> is <see cref="CapabilityValueKind.Text" />.
     /// </summary>
     /// <remarks>
-    ///     Bounded by the descriptor's CapabilityDescriptor.MaximumLength and checked
-    ///     against PlainText before it reaches any surface.
+    ///     Bounded by the descriptor's <see cref="CapabilityDescriptor.MaximumLength" /> and checked
+    ///     against <see cref="PlainText" /> before it reaches any surface.
     /// </remarks>
     public string? TextValue { get; init; }
 
-    /// <summary>Creates a CapabilityValueKind.None value, which carries no field.</summary>
+    /// <summary>Creates a <see cref="CapabilityValueKind.None" /> value, which carries no field.</summary>
     /// <returns>The value.</returns>
     public static CapabilityValue None()
     {
         return new CapabilityValue { Kind = CapabilityValueKind.None };
     }
 
-    /// <summary>Creates a CapabilityValueKind.Boolean value.</summary>
+    /// <summary>Creates a <see cref="CapabilityValueKind.Boolean" /> value.</summary>
     /// <param name="value">The boolean.</param>
-    /// <returns>The value with BooleanValue set.</returns>
+    /// <returns>The value with <see cref="BooleanValue" /> set.</returns>
     public static CapabilityValue Boolean(bool value)
     {
         return new CapabilityValue
@@ -135,9 +122,9 @@ public sealed record CapabilityValue
         };
     }
 
-    /// <summary>Creates a CapabilityValueKind.Integer value.</summary>
+    /// <summary>Creates a <see cref="CapabilityValueKind.Integer" /> value.</summary>
     /// <param name="value">The integer.</param>
-    /// <returns>The value with IntegerValue set.</returns>
+    /// <returns>The value with <see cref="IntegerValue" /> set.</returns>
     public static CapabilityValue Integer(int value)
     {
         return new CapabilityValue
@@ -147,9 +134,9 @@ public sealed record CapabilityValue
         };
     }
 
-    /// <summary>Creates a CapabilityValueKind.Choice value.</summary>
+    /// <summary>Creates a <see cref="CapabilityValueKind.Choice" /> value.</summary>
     /// <param name="value">The selected option.</param>
-    /// <returns>The value with ChoiceValue set.</returns>
+    /// <returns>The value with <see cref="ChoiceValue" /> set.</returns>
     public static CapabilityValue Choice(string value)
     {
         return new CapabilityValue
@@ -159,9 +146,9 @@ public sealed record CapabilityValue
         };
     }
 
-    /// <summary>Creates a CapabilityValueKind.Color value.</summary>
+    /// <summary>Creates a <see cref="CapabilityValueKind.Color" /> value.</summary>
     /// <param name="value">Packed 24-bit RGB.</param>
-    /// <returns>The value with ColorValue set.</returns>
+    /// <returns>The value with <see cref="ColorValue" /> set.</returns>
     public static CapabilityValue Color(int value)
     {
         return new CapabilityValue
@@ -171,9 +158,9 @@ public sealed record CapabilityValue
         };
     }
 
-    /// <summary>Creates a CapabilityValueKind.Curve value.</summary>
+    /// <summary>Creates a <see cref="CapabilityValueKind.Curve" /> value.</summary>
     /// <param name="points">The curve points. The list is stored as given, not copied.</param>
-    /// <returns>The value with CurveValue set.</returns>
+    /// <returns>The value with <see cref="CurveValue" /> set.</returns>
     public static CapabilityValue Curve(IReadOnlyList<CurvePoint> points)
     {
         return new CapabilityValue
@@ -183,9 +170,9 @@ public sealed record CapabilityValue
         };
     }
 
-    /// <summary>Creates a CapabilityValueKind.Text value.</summary>
+    /// <summary>Creates a <see cref="CapabilityValueKind.Text" /> value.</summary>
     /// <param name="value">The text. Validation against the descriptor stays with the caller.</param>
-    /// <returns>The value with TextValue set.</returns>
+    /// <returns>The value with <see cref="TextValue" /> set.</returns>
     public static CapabilityValue Text(string value)
     {
         return new CapabilityValue

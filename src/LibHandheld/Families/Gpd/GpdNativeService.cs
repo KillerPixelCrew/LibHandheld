@@ -1,17 +1,15 @@
 using System.Buffers.Binary;
-using System.Text.Json.Serialization;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.Gpd;
 
-/// <summary>Persistent controller preferences and temporary rear-key acquisition share one serialized codec.</summary>
-internal sealed class GpdNativeService(ProfiledFeatureContext context, bool manageRearKeys = true)
+/// <summary>Reads WinControls preferences; only an explicit user command writes its durable table.</summary>
+internal sealed class GpdNativeService()
     : ProfiledFeatureService("gpd-controls")
 {
-    private GpdControlsJournal? _journal;
-    private bool _manage = context.ControllerManagementEnabled;
     private GpdControlsProtocol? _protocol;
     private GpdControlsSnapshot? _snapshot;
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _snapshot is null ? [] : Describe(_snapshot);
@@ -22,151 +20,43 @@ internal sealed class GpdNativeService(ProfiledFeatureContext context, bool mana
         {
             CapabilityId = descriptor.CapabilityId, Available = State == DeviceServiceState.Owned,
             ObservedValue = Value(descriptor.CapabilityId, _snapshot), Quality = HardwareStateQuality.Observed,
-            ObservedAt = DateTimeOffset.UtcNow, DescriptorGeneration = 0, CycleGeneration = 0
+            ObservedAt = DateTimeOffset.UtcNow
         }).ToArray();
 
     public override bool Suspendable => true;
 
-    public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+    public override ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
         _protocol = GpdControlsProtocol.Open();
         if (_protocol is null)
         {
-            return Set(DeviceServiceState.Passive, Missing("The GPD WinControls collection is not present."));
-        }
-
-        _snapshot = _protocol.Read(token);
-        _journal = await GpdControlsJournal.Open(Path.Combine(context.StateDirectory, "gpd-controls"), token)
-            .ConfigureAwait(false);
-        if (_journal.EntryFor("rear-keys") is { } entry)
-        {
-            if (entry.FirmwareIdentity != Binding())
-            {
-                await _journal.SetStatusAsync("rear-keys", DeviceRecoveryStatus.RestoredVerified, token)
-                    .ConfigureAwait(false);
-            }
-            else if (entry.Status == DeviceRecoveryStatus.Pending)
-            {
-                await RestoreRearAsync(token).ConfigureAwait(false);
-            }
-            else
-            {
-                return Set(DeviceServiceState.Passive,
-                    Missing(
-                        "GPD rear-key restoration was uncertain; an explicit ownership transition is required before another configuration write."));
-            }
-        }
-
-        if (_manage && manageRearKeys)
-        {
-            await CaptureRearAsync(token).ConfigureAwait(false);
-        }
-
-        return Set(DeviceServiceState.Owned);
-    }
-
-    internal override async ValueTask SetControllerManagementAsync(bool enabled, CancellationToken token)
-    {
-        _manage = enabled;
-        if (_snapshot is null || !manageRearKeys || _protocol is null)
-        {
-            return;
-        }
-
-        if (enabled)
-        {
-            await CaptureRearAsync(token).ConfigureAwait(false);
-            _ = Set(DeviceServiceState.Owned);
-        }
-        else
-        {
-            await RestoreRearAsync(token).ConfigureAwait(false);
-        }
-    }
-
-    private async ValueTask CaptureRearAsync(CancellationToken token)
-    {
-        var snapshot = _protocol!.Read(token);
-        _snapshot = snapshot;
-        var binding = Binding();
-        if (_journal!.EntryFor("rear-keys") is { Status: not DeviceRecoveryStatus.Pending } prior &&
-            prior.FirmwareIdentity == binding)
-        {
-            await _journal.BeginAsync("rear-keys", binding, prior.OriginalState, token).ConfigureAwait(false);
-        }
-
-        if (_journal!.EntryFor("rear-keys")?.FirmwareIdentity != binding)
-        {
-            await _journal.BeginAsync("rear-keys", binding, new GpdRearRecovery
-            {
-                Version2 = snapshot.Version2,
-                Buttons = snapshot.Version2 ? snapshot.Configuration[160..552] : snapshot.Configuration[50..66],
-                Delays = snapshot.Version2 ? [] : snapshot.Configuration[80..96]
-            }, token).ConfigureAwait(false);
-        }
-
-        var next = (byte[])snapshot.Configuration.Clone();
-        if (snapshot.Version2)
-        {
-            ConfigureMacro(next, 160, 0x44, 0x0F);
-            ConfigureMacro(next, 356, 0x45, 0x15);
-        }
-        else
-        {
-            next.AsSpan(50, 16).Clear();
-            next.AsSpan(80, 16).Clear();
-            // Two unique chords, matching HC's Windows keyboard path; remaining macro slots are cleared.
-            BinaryPrimitives.WriteUInt16LittleEndian(next.AsSpan(50, 2), 0x44); // F11
-            BinaryPrimitives.WriteUInt16LittleEndian(next.AsSpan(52, 2), 0x0F); // L
-            BinaryPrimitives.WriteUInt16LittleEndian(next.AsSpan(58, 2), 0x45); // F12
-            BinaryPrimitives.WriteUInt16LittleEndian(next.AsSpan(60, 2), 0x15); // R
-        }
-
-        if (!next.AsSpan().SequenceEqual(snapshot.Configuration))
-        {
-            _protocol.Write(snapshot, next, token);
-            _snapshot = snapshot with { Configuration = next };
-        }
-    }
-
-    private async ValueTask RestoreRearAsync(CancellationToken token)
-    {
-        if (_journal?.PendingOriginalFor("rear-keys") is not { } original || _protocol is null)
-        {
-            return;
+            return ValueTask.FromResult(Set(DeviceServiceState.Passive,
+                Missing("The GPD WinControls collection is not present.")));
         }
 
         try
         {
-            var snapshot = _protocol.Read(token);
-            var next = (byte[])snapshot.Configuration.Clone();
-            original.Buttons.CopyTo(next, original.Version2 ? 160 : 50);
-            if (!original.Version2)
-            {
-                original.Delays.CopyTo(next, 80);
-            }
-
-            if (!next.AsSpan().SequenceEqual(snapshot.Configuration))
-            {
-                _protocol.Write(snapshot, next, token);
-            }
-
-            _snapshot = snapshot with { Configuration = next };
-            await _journal.SetStatusAsync("rear-keys", DeviceRecoveryStatus.RestoredVerified, token)
-                .ConfigureAwait(false);
+            _snapshot = _protocol.Read(token);
         }
         catch
         {
-            await _journal.SetStatusAsync("rear-keys", DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                .ConfigureAwait(false);
+            _protocol.Dispose();
+            _protocol = null;
             throw;
         }
+
+        return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
 
     internal override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
     {
+        if (State == DeviceServiceState.Owned)
+        {
+            _protocol ??= GpdControlsProtocol.Open();
+        }
+
         if (_protocol is null || _snapshot is null || State != DeviceServiceState.Owned)
         {
             return ValueTask.FromResult(CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
@@ -181,66 +71,43 @@ internal sealed class GpdNativeService(ProfiledFeatureContext context, bool mana
             Apply(next, snapshot.Version2, command);
             if (next.AsSpan().SequenceEqual(snapshot.Configuration))
             {
-                return ValueTask.FromResult(CommandResults.Verified(command, command.RequestedValue!));
+                return ValueTask.FromResult(CommandResults.Applied(command));
             }
 
             dispatched = true;
             _protocol.Write(snapshot, next, token);
             _snapshot = snapshot with { Configuration = next };
-            return ValueTask.FromResult(CommandResults.Unverified(command));
+            return ValueTask.FromResult(CommandResults.Applied(command));
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            _ = Set(DeviceServiceState.Faulted,
-                new CapabilityReason(CapabilityReasonCode.TransportFaulted, exception.Message));
+            _protocol?.Dispose();
+            _protocol = null;
             return ValueTask.FromResult(dispatched
                 ? CommandResults.Indeterminate(command,
-                    CapabilityReasonCode.TransportFaulted, exception.Message, RollbackResult.NotRequired)
+                    CapabilityReasonCode.TransportFaulted, exception.Message)
                 : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message));
         }
     }
 
-    public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+    public override ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
-        try
-        {
-            await RestoreRearAsync(token).ConfigureAwait(false);
-            return _journal?.OutstandingEntries.Count > 0
-                ? Set(DeviceServiceState.ReleasedUnverified,
-                    Missing("The original GPD rear-button configuration remains unresolved."))
-                : Set(DeviceServiceState.Idle);
-        }
-        finally
-        {
-            _protocol?.Dispose();
-            _protocol = null;
-            _snapshot = null;
-        }
+        DisposeHandles();
+        return ValueTask.FromResult(Set(DeviceServiceState.Idle));
     }
 
-    private string Binding()
+    internal override ValueTask DisposeAsync()
     {
-        return $"{context.Firmware}|{_snapshot!.Firmware}";
+        DisposeHandles();
+        return ValueTask.CompletedTask;
     }
 
-    private static void ConfigureMacro(byte[] config, int offset, ushort first, ushort second)
+    private void DisposeHandles()
     {
-        var region = config.AsSpan(offset, 196);
-        region.Clear();
-        region[0] = 2;
-        region[1] = 2;
-        BinaryPrimitives.WriteUInt16LittleEndian(region.Slice(4, 2), first);
-        BinaryPrimitives.WriteUInt16LittleEndian(region.Slice(8, 2), 50);
-        BinaryPrimitives.WriteUInt16LittleEndian(region.Slice(10, 2), second);
-        BinaryPrimitives.WriteUInt16LittleEndian(region.Slice(14, 2), 50);
-        ushort sum = 0;
-        foreach (var value in region.Slice(4, 12))
-        {
-            sum += value;
-        }
-
-        BinaryPrimitives.WriteUInt16LittleEndian(region.Slice(2, 2), sum);
+        _protocol?.Dispose();
+        _protocol = null;
+        _snapshot = null;
     }
 
     private static IReadOnlyList<CapabilityDescriptor> Describe(GpdControlsSnapshot snapshot)
@@ -260,7 +127,8 @@ internal sealed class GpdNativeService(ProfiledFeatureContext context, bool mana
             result.Add(new CapabilityDescriptor
             {
                 CapabilityId = CapabilityIds.LightingColor, Role = CapabilityRole.LightingZoneColor,
-                ValueKind = CapabilityValueKind.Color, Display = Label("Lighting color"), SupportsRead = true,
+                ValueKind = CapabilityValueKind.Color, Display = CapabilityDescriptors.Label("Lighting color"),
+                SupportsRead = true,
                 SupportsWrite = true,
                 Persistence = CapabilityPersistence.DevicePersistent
             });
@@ -339,19 +207,17 @@ internal sealed class GpdNativeService(ProfiledFeatureContext context, bool mana
         };
     }
 
-    private static CapabilityDisplay Label(string value)
-    {
-        return new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = value };
-    }
 
     private static CapabilityDescriptor Choice(string id, CapabilityRole role, string label, string[] choices)
     {
         return new CapabilityDescriptor
         {
-            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice, Display = Label(label),
+            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice,
+            Display = CapabilityDescriptors.Label(label),
             SupportsRead = true,
             SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent,
-            Choices = Array.AsReadOnly(choices.Select(value => new CapabilityChoice(value, Label(value))).ToArray())
+            Choices = Array.AsReadOnly(choices
+                .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
         };
     }
 
@@ -360,41 +226,9 @@ internal sealed class GpdNativeService(ProfiledFeatureContext context, bool mana
         return new CapabilityDescriptor
         {
             CapabilityId = id, Role = CapabilityRole.GenericRange, ValueKind = CapabilityValueKind.Integer,
-            Display = Label(label),
+            Display = CapabilityDescriptors.Label(label),
             SupportsRead = true, SupportsWrite = true, Minimum = -10, Maximum = 10, Step = 1,
             Persistence = CapabilityPersistence.DevicePersistent
         };
     }
 }
-
-internal sealed record GpdRearRecovery
-{
-    public bool Version2 { get; init; }
-    public required byte[] Buttons { get; init; }
-    public required byte[] Delays { get; init; }
-}
-
-internal sealed class GpdControlsJournal()
-    : DeviceRecoveryJournal<GpdRearRecovery>(GpdRecoveryJson.Default.RecoveryDocument)
-{
-    internal static async ValueTask<GpdControlsJournal> Open(string directory, CancellationToken token)
-    {
-        var journal = new GpdControlsJournal();
-        await journal.LoadAsync(directory, token).ConfigureAwait(false);
-        return journal;
-    }
-
-    protected override void ValidateEntry(DeviceRecoveryEntry<GpdRearRecovery> entry)
-    {
-        if (entry.ServiceId != "rear-keys" || entry.OriginalState.Buttons.Length !=
-                                           (entry.OriginalState.Version2 ? 392 : 16)
-                                           || entry.OriginalState.Delays.Length !=
-                                           (entry.OriginalState.Version2 ? 0 : 16))
-        {
-            throw new InvalidDataException("The GPD rear-button recovery state is invalid.");
-        }
-    }
-}
-
-[JsonSerializable(typeof(DeviceRecoveryDocument<GpdRearRecovery>), TypeInfoPropertyName = "RecoveryDocument")]
-internal partial class GpdRecoveryJson : JsonSerializerContext;

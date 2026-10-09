@@ -1,19 +1,15 @@
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
-using LibHandheld.Internal.Settings;
-using LibHandheld.Internal.Testing;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Families.MsiClaw.Tests.Fakes;
 
-internal sealed class ControllablePluginHostAdapter(long cycleGeneration) : IDeviceSink
+internal sealed class ControllablePluginHostAdapter(long fixtureId) : IDeviceSink
 {
     private readonly TaskCompletionSource _controllerSampleEntered =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private readonly List<(string Scope, string Message)> _faults = [];
     private readonly Lock _gate = new();
-    private readonly TestPluginHostAdapter _inner = new(cycleGeneration);
+    private readonly TestPluginHostAdapter _inner = new(fixtureId);
 
     private readonly TaskCompletionSource _oemEventEntered =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -51,7 +47,6 @@ internal sealed class ControllablePluginHostAdapter(long cycleGeneration) : IDev
 
     public Task OemEventEntered => _oemEventEntered.Task;
 
-    public long CycleGeneration => _inner.CycleGeneration;
 
     public ValueTask PublishDescriptorsAsync(
         CapabilityDescriptorSet descriptors,
@@ -121,12 +116,16 @@ internal sealed class ControllablePluginHostAdapter(long cycleGeneration) : IDev
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask PublishSettingsManifestAsync(
-        PluginSettingsManifest manifest,
-        CancellationToken cancellationToken)
+    public void ReportFault(string scope, string message)
     {
-        return _inner.PublishSettingsManifestAsync(manifest, cancellationToken);
+        lock (_gate)
+        {
+            _faults.Add((scope, message));
+        }
+
+        _inner.Trace(DeviceTraceLevel.Error, scope, message);
     }
+
 
     public void Trace(DeviceTraceLevel level, string scope, string message)
     {
@@ -136,15 +135,5 @@ internal sealed class ControllablePluginHostAdapter(long cycleGeneration) : IDev
     public void TraceChange(DeviceTraceLevel level, string scope, string key, string message)
     {
         _inner.Trace(level, scope, message);
-    }
-
-    public void ReportFault(string scope, string message)
-    {
-        lock (_gate)
-        {
-            _faults.Add((scope, message));
-        }
-
-        _inner.Trace(DeviceTraceLevel.Error, scope, message);
     }
 }

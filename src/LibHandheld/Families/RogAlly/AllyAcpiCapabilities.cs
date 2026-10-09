@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: MIT
-
 using System.ComponentModel;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -55,7 +56,6 @@ internal sealed class AllyPowerCapability(
 
     private readonly AllyModel _model = model ?? throw new ArgumentNullException(nameof(model));
 
-    private AllyPowerState _written = new(null, null, null, null);
 
     public int Minimum => _model.MinimumWatts;
 
@@ -72,22 +72,6 @@ internal sealed class AllyPowerCapability(
             Scalar(AsusAcpiId.PerformanceMode) is { } mode && AllyModels.ScenarioName(mode) is not null
                 ? mode
                 : null);
-    }
-
-    /// <summary>The last value written this cycle, falling back to the firmware before the first write.</summary>
-    /// <remarks>
-    ///     HC never reads these back and simply writes (<c>ROGAlly.cs:694-702</c>). Where the firmware is
-    ///     silent, what this cycle last wrote is the best available statement of the device's state.
-    /// </remarks>
-    /// <returns>Each last-written value when present, otherwise its current firmware reading; this is not write verification.</returns>
-    public AllyPowerState Effective()
-    {
-        var read = Read();
-        return new AllyPowerState(
-            _written.Sustained ?? read.Sustained,
-            _written.Slow ?? read.Slow,
-            _written.Fast ?? read.Fast,
-            _written.Mode ?? read.Mode);
     }
 
     /// <summary>Writes the pair a power-limit command carries, as WSGM decided it.</summary>
@@ -137,9 +121,8 @@ internal sealed class AllyPowerCapability(
         {
             _ = _acpi.Write(AsusAcpiId.PerformanceMode, target);
             // A mode change resets the limits; the next limit command publishes its own pair.
-            _written = new AllyPowerState(null, null, null, target);
             await _delay(ModeSettle, cancellationToken).ConfigureAwait(false);
-            return CommandResults.Unverified(command);
+            return CommandResults.Applied(command);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -165,7 +148,6 @@ internal sealed class AllyPowerCapability(
         await _delay(ModeSettle, cancellationToken).ConfigureAwait(false);
         await WriteLimitsAsync(original.Sustained!.Value, original.Slow!.Value, original.Fast!.Value,
             cancellationToken).ConfigureAwait(false);
-        _written = original;
         return true;
     }
 
@@ -179,8 +161,7 @@ internal sealed class AllyPowerCapability(
         try
         {
             await WriteLimitsAsync(sustained, slow, fast, cancellationToken).ConfigureAwait(false);
-            _written = _written with { Sustained = sustained, Slow = slow, Fast = fast };
-            return CommandResults.Unverified(command);
+            return CommandResults.Applied(command);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -204,7 +185,7 @@ internal sealed class AllyPowerCapability(
 
     private int? Watts(AsusAcpiId id)
     {
-        return Scalar(id) is { } watts && AllyRecoveryJournal.IsValidWatts(watts) ? watts : null;
+        return Scalar(id) is { } watts && AllyRecoveryRules.IsValidWatts(watts) ? watts : null;
     }
 
     private bool InRange(int watts)
@@ -225,10 +206,9 @@ internal sealed class AllyPowerCapability(
 internal sealed class AllyChargeLimitCapability(IAsusAcpi acpi)
 {
     /// <summary>
-    ///     Lower bound offered to the user. HC accepts 0-100; a ceiling below 40 % is refused here so a
-    ///     slip of the slider cannot leave the device unable to charge. The lab report may widen it.
+    ///     HC AsusACPI.SetChargeLimit accepts the complete 0-100 percent range.
     /// </summary>
-    internal const int MinimumPercent = 40;
+    internal const int MinimumPercent = 0;
 
     internal const int MaximumPercent = 100;
 
@@ -253,13 +233,13 @@ internal sealed class AllyChargeLimitCapability(IAsusAcpi acpi)
         try
         {
             _ = _acpi.Write(AsusAcpiId.ChargeLimit, (uint)percent);
-            return CommandResults.Unverified(command);
+            return CommandResults.Applied(command);
         }
         catch (Exception ex) when (ex is IOException or Win32Exception)
         {
             DeviceTrace.Failure("charge-limit", "Charge limit write failed", ex);
             return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                "The charge limit write failed.", RollbackResult.NotRequired);
+                "The charge limit write failed.");
         }
     }
 }
@@ -296,9 +276,9 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
     /// <summary>Whether the firmware answered any curve query when the service started.</summary>
     public bool CurvesReadable { get; private set; }
 
-    /// <summary>The CPU curve this cycle last wrote, for firmware that cannot report it.</summary>
-    public byte[]? WrittenCpu { get; private set; }
+    internal bool HasCustomWrite { get; private set; }
 
+    /// <summary>The CPU curve this cycle last wrote, for firmware that cannot report it.</summary>
     public void Probe()
     {
         var mode = Mode();
@@ -347,7 +327,8 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
             var point = points[index];
             if (point.Input is < MinimumTemperature or > MaximumTemperature || point.Output is < 0 or > 100)
             {
-                error = $"Fan points must be {MinimumTemperature}-{MaximumTemperature} °C and 0-100 %.";
+                error =
+                    $"Fan points must be {MinimumTemperature}-{MaximumTemperature} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°C and 0-100 %.";
                 return false;
             }
 
@@ -372,6 +353,19 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
         return true;
     }
 
+    public ValueTask<CapabilityCommandResult> ApplyDutyAsync(CapabilityCommand command, int percent,
+        CancellationToken token)
+    {
+        if (percent is < 0 or > 100)
+        {
+            return ValueTask.FromResult(CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
+                "Fan duty is outside 0-100 percent."));
+        }
+
+        var curve = AsusAcpiProtocol.FlatFanCurve(percent);
+        return WriteAllAsync(command, curve, curve, token);
+    }
+
     public async ValueTask<CapabilityCommandResult> ApplyCurveAsync(
         CapabilityCommand command,
         IReadOnlyList<CurvePoint> points,
@@ -394,15 +388,20 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
     /// </param>
     /// <param name="cancellationToken">Cancels channel-spacing delays without reverting completed writes.</param>
     /// <returns>Unverified after the curve writes return, or indeterminate after failure; no readback or rollback occurs.</returns>
-    public ValueTask<CapabilityCommandResult> ApplyAutomaticAsync(
+    public async ValueTask<CapabilityCommandResult> ApplyAutomaticAsync(
         CapabilityCommand command,
         AllyFanSnapshot? original,
         CancellationToken cancellationToken)
     {
         var cpu = original?.Cpu ?? DefaultCpuCurve;
         var gpu = original?.Gpu ?? DefaultGpuCurve;
-        return WriteAllAsync(command, cpu, gpu, cancellationToken,
-            original?.Mid);
+        var result = await WriteAllAsync(command, cpu, gpu, cancellationToken, original?.Mid).ConfigureAwait(false);
+        if (result.Outcome == CommandOutcome.Applied)
+        {
+            HasCustomWrite = false;
+        }
+
+        return result;
     }
 
     /// <summary>Writes HC's factory tables, the state HC returns the fans to (<c>ROGAlly.cs:466-478</c>).</summary>
@@ -412,7 +411,7 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
     {
         await WriteChannelsAsync(DefaultCpuCurve, DefaultGpuCurve, DefaultCpuCurve, cancellationToken)
             .ConfigureAwait(false);
-        WrittenCpu = DefaultCpuCurve;
+        HasCustomWrite = false;
     }
 
     public async ValueTask<bool> RestoreAsync(AllyFanSnapshot original, CancellationToken cancellationToken)
@@ -424,7 +423,7 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
 
         await WriteChannelsAsync(original.Cpu!, original.Gpu!, original.Mid, cancellationToken)
             .ConfigureAwait(false);
-        WrittenCpu = original.Cpu;
+        HasCustomWrite = false;
         return true;
     }
 
@@ -437,9 +436,9 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
     {
         try
         {
+            HasCustomWrite = true;
             await WriteChannelsAsync(cpu, gpu, mid ?? cpu, cancellationToken).ConfigureAwait(false);
-            WrittenCpu = cpu;
-            return CommandResults.Unverified(command);
+            return CommandResults.Applied(command);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -506,6 +505,6 @@ internal static class AllyApplied
             exception is OperationCanceledException && cancellationToken.IsCancellationRequested
                 ? CapabilityReasonCode.Quiescing
                 : CapabilityReasonCode.TransportFaulted,
-            DiagnosticText.FromException($"The {operation} write failed", exception), RollbackResult.NotRequired);
+            DiagnosticText.FromException($"The {operation} write failed", exception));
     }
 }

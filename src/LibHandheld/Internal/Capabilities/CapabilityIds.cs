@@ -65,11 +65,11 @@ internal static class SourceOwnership
     public const string Device = "device";
 
     /// <summary>The plugin acquired the source.</summary>
-    public const string Plugin = "plugin";
+    public const string Managed = "managed";
 
     /// <summary>The acquisition failed or this unit does not expose the source.</summary>
     public const string Unavailable = "unavailable";
 
     /// <summary>The three choices, resting state first.</summary>
-    public static IReadOnlyList<string> Choices { get; } = Array.AsReadOnly<string>([Device, Plugin, Unavailable]);
+    public static IReadOnlyList<string> Choices { get; } = Array.AsReadOnly<string>([Device, Managed, Unavailable]);
 }

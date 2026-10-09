@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Management;
 using System.Runtime.InteropServices;
-using LibHandheld.Internal.Identity;
-using Microsoft.Win32;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.LegionGo;
 
@@ -21,6 +21,7 @@ internal interface ILegionWmi : IDisposable
 
 internal sealed class LegionWmi : ILegionWmi
 {
+    private readonly Dictionary<string, ManagementObject> _providers = new(StringComparer.Ordinal);
     private bool? _fans;
     private bool? _features;
     private bool? _modes;
@@ -70,6 +71,12 @@ internal sealed class LegionWmi : ILegionWmi
 
     public void Dispose()
     {
+        foreach (var provider in _providers.Values)
+        {
+            provider.Dispose();
+        }
+
+        _providers.Clear();
     }
 
     private static bool HasMethod(string provider, string method)
@@ -86,7 +93,7 @@ internal sealed class LegionWmi : ILegionWmi
         }
     }
 
-    private static int? ReadInteger(string provider, string method, string outputName,
+    private int? ReadInteger(string provider, string method, string outputName,
         params (string Name, object Value)[] values)
     {
         try
@@ -101,52 +108,46 @@ internal sealed class LegionWmi : ILegionWmi
         }
     }
 
-    private static ManagementBaseObject? Invoke(string provider, string method,
+    private ManagementBaseObject? Invoke(string provider, string method,
         params (string Name, object Value)[] values)
     {
-        using var query = new ManagementObjectSearcher(@"root\WMI", $"SELECT * FROM {provider}");
-        using var collection = query.Get();
-        foreach (ManagementObject instance in collection)
+        if (!_providers.TryGetValue(provider, out var instance))
         {
-            using (instance)
-            using (var arguments = instance.GetMethodParameters(method))
+            instance = WmiProvider.TryOpen(@"root\WMI", $"SELECT * FROM {provider}");
+            if (instance is not null)
             {
-                foreach (var value in values)
-                {
-                    arguments[value.Name] = value.Value;
-                }
-
-                return instance.InvokeMethod(method, arguments,
-                    new InvokeMethodOptions { Timeout = TimeSpan.FromSeconds(2) });
+                _providers.Add(provider, instance);
             }
         }
 
-        throw new IOException($"Lenovo WMI provider {provider} is unavailable.");
+        if (instance is null)
+        {
+            throw new IOException($"Lenovo WMI provider {provider} is unavailable.");
+        }
+
+        using var arguments = instance.GetMethodParameters(method);
+        foreach (var value in values)
+        {
+            arguments[value.Name] = value.Value;
+        }
+
+        try
+        {
+            return WmiProvider.Invoke(instance, method, arguments);
+        }
+        catch
+        {
+            _providers.Remove(provider);
+            instance.Dispose();
+            throw;
+        }
     }
 }
 
 internal static class LegionIdentity
 {
-    public static DeviceIdentitySnapshot Read()
-    {
-        using var key = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS");
-        return new DeviceIdentitySnapshot
-        {
-            SystemManufacturer = Value(key, "SystemManufacturer"),
-            SystemProduct = Value(key, "SystemProductName"),
-            SystemSku = Value(key, "SystemSKU"),
-            BaseboardProduct = Value(key, "BaseBoardProduct"),
-            BiosVersion = Value(key, "BIOSVersion")
-        };
-    }
-
     public static string Binding(DeviceIdentitySnapshot identity)
     {
         return $"{identity.SystemProduct}|{identity.BaseboardProduct}|{identity.BiosVersion}";
-    }
-
-    private static string? Value(RegistryKey? key, string name)
-    {
-        return key?.GetValue(name) is string value ? IdentityText.Normalize(value) : null;
     }
 }

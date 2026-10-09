@@ -35,6 +35,9 @@ internal sealed class AsusAuraTransport : IAsusAuraTransport
         _handle = HidDevices.Open(_collection, false);
     }
 
+    internal static IReadOnlyCollection<ushort> Products { get; } =
+        [AsusAuraProtocol.Lightbar, AsusAuraProtocol.Keyboard, 0x1970, 0x1A9A, AsusAuraProtocol.Xg2025];
+
     public void Send(byte[] packet)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -72,11 +75,19 @@ internal sealed class AsusAuraTransport : IAsusAuraTransport
 
     internal static IReadOnlyList<AsusAuraModule> Discover()
     {
-        var candidates = HidDevices.Enumerate(AsusAuraProtocol.Vendor,
-                [AsusAuraProtocol.Lightbar, AsusAuraProtocol.Keyboard, AsusAuraProtocol.Xg2025])
-            .Where(collection => Matches(collection) && !string.IsNullOrWhiteSpace(collection.PhysicalLocation)
-                                                     && HidDevices.AnswersFeature(collection,
-                                                         AsusAuraProtocol.ReportId(collection.ProductId)));
+        return Modules(DiscoverCollections());
+    }
+
+    internal static IReadOnlyList<HidCollection> DiscoverCollections()
+    {
+        return HidDevices.Enumerate(AsusAuraProtocol.Vendor,
+            Products);
+    }
+
+    internal static IReadOnlyList<AsusAuraModule> Modules(IReadOnlyList<HidCollection> collections)
+    {
+        var candidates = collections.Where(collection => Matches(collection)
+                                                         && !string.IsNullOrWhiteSpace(collection.PhysicalLocation));
         return Array.AsReadOnly(candidates.GroupBy(collection => (collection.ProductId, collection.PhysicalLocation))
             .Select(group => group.OrderBy(collection => ApplicationOrder(collection))
                 .ThenBy(collection => collection.DevicePath, StringComparer.OrdinalIgnoreCase).First())

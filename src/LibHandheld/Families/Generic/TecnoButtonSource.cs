@@ -1,6 +1,5 @@
-using LibHandheld.Internal.Capabilities;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Generic;
@@ -15,54 +14,40 @@ internal sealed class TecnoButtonSource : IProfiledOemSource
         ("keyboard-switch", "Keyboard switch", 7, 32, CanonicalButtons.None)
     ];
 
-    private volatile bool _connected;
-    private Task? _reader;
-    private CancellationTokenSource? _stop;
-    private FileStream? _stream;
+    private readonly HidReportSource _source = new();
+    private byte _held;
+    private Action<string, CanonicalButtons, bool>? _publish;
 
-    internal static IReadOnlyList<OemControlDescriptor> Controls { get; } = Array.AsReadOnly(Fields.Select(field =>
+    internal static IReadOnlyList<OemControlDescriptor> Controls { get; } = Fields.Select(field =>
         new OemControlDescriptor
         {
             ControlId = field.Id,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = field.Label },
-            Placement = OemControlPlacement.Front,
-            RequiresControllerAcquisition = true
-        }).ToArray());
+            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = field.Label },
+            Placement = OemControlPlacement.Front, RequiresControllerAcquisition = true
+        }).ToArray();
 
-    public bool IsConnected => _connected;
+    public bool IsConnected => _source.IsConnected;
 
     public ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var candidates = HidDevices.Enumerate(0x2993, [0x2001]).Where(collection => collection.UsagePage == 0xFFA0 &&
-            collection.Usage == 1
-            && collection.InputLength >= 8 && !string.IsNullOrEmpty(collection.PhysicalLocation)).ToArray();
-        if (candidates.Length != 1)
+        var collection = HidDevices.Unique(HidDevices.Enumerate(0x2993, [0x2001]), item =>
+            item.UsagePage == 0xFFA0 && item.Usage == 1 && item.InputLength >= 8
+            && !string.IsNullOrEmpty(item.PhysicalLocation));
+        if (collection is null)
         {
             return ValueTask.FromResult(false);
         }
 
-        _stream = HidDevices.OpenStream(candidates[0]);
-        _stop = new CancellationTokenSource();
-        _connected = true;
-        _reader = ReadAsync(_stream, candidates[0].InputLength, publish, _stop.Token);
-        return ValueTask.FromResult(true);
+        _publish = publish;
+        return ValueTask.FromResult(_source.Start(HidDevices.OpenStream(collection), collection.InputLength,
+            HandleReport, () => Emit(0), token));
     }
 
     public async ValueTask StopAsync(CancellationToken token)
     {
-        _stop?.Cancel();
-        _stream?.Dispose();
-        if (_reader is not null)
-        {
-            await _reader.WaitAsync(token).ConfigureAwait(false);
-        }
-
-        _reader = null;
-        _stream = null;
-        _stop?.Dispose();
-        _stop = null;
-        _connected = false;
+        await _source.StopAsync(token).ConfigureAwait(false);
+        _publish = null;
     }
 
     public ValueTask DisposeAsync()
@@ -89,55 +74,25 @@ internal sealed class TecnoButtonSource : IProfiledOemSource
         return result;
     }
 
-    private async Task ReadAsync(FileStream stream, int length, Action<string, CanonicalButtons, bool> publish,
-        CancellationToken token)
+    private void HandleReport(ReadOnlySpan<byte> report)
     {
-        var report = new byte[length];
-        var previous = new bool[Fields.Length];
-        try
+        if (report.Length >= 8 && report[0] == 0x74)
         {
-            while (await stream.ReadAsync(report, token).ConfigureAwait(false) == report.Length)
+            Emit(Decode(report));
+        }
+    }
+
+    private void Emit(byte current)
+    {
+        for (var index = 0; index < Fields.Length; index++)
+        {
+            var mask = 1 << index;
+            if (((current ^ _held) & mask) != 0)
             {
-                if (report[0] != 0x74)
-                {
-                    continue;
-                }
-
-                var current = Decode(report);
-                for (var index = 0; index < Fields.Length; index++)
-                {
-                    var field = Fields[index];
-                    var down = (current & (1 << index)) != 0;
-                    if (down == previous[index])
-                    {
-                        continue;
-                    }
-
-                    previous[index] = down;
-                    publish(field.Id, field.Button, down);
-                }
+                _publish?.Invoke(Fields[index].Id, Fields[index].Button, (current & mask) != 0);
             }
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-        }
-        catch (ObjectDisposedException) when (token.IsCancellationRequested)
-        {
-        }
-        catch (IOException)
-        {
-        }
-        finally
-        {
-            for (var index = 0; index < Fields.Length; index++)
-            {
-                if (previous[index])
-                {
-                    publish(Fields[index].Id, Fields[index].Button, false);
-                }
-            }
 
-            _connected = false;
-        }
+        _held = current;
     }
 }

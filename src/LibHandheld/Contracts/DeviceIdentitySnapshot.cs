@@ -1,16 +1,15 @@
 namespace LibHandheld.Contracts;
 
 /// <summary>
-///     The normalized machine facts a <c>DeviceDefinition</c>'s identity observations are matched
-///     against.
+///     The normalized machine facts a device definition's identity observations are matched against.
 /// </summary>
 /// <remarks>
-///     This is the observed half of identity: a manifest's HardwareMatchRule list and the
-///     device engine's own detection are the predicates, this records what the machine actually reports.
-///     Producing it is platform work owned by Device Lab and the consumer's runtime; the contract only fixes which
+///     This is the observed half of identity. The backend's exact model predicates match what the
+///     machine actually reports.
+///     Producing it is platform work owned by Device Lab and WSGM's runtime; the contract only fixes which
 ///     facts exist and how they compare, so both sides agree on what "matched" means.
 ///     <para>
-///         Every value arrives already normalized through IdentityText. Comparison is ordinal
+///         Every value arrives with normalized whitespace. Comparison is ordinal
 ///         and case-insensitive on the normalized form, so a vendor that changes casing or padding between
 ///         firmware revisions does not silently stop matching.
 ///     </para>

@@ -1,11 +1,12 @@
-// SPDX-License-Identifier: MIT
-
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Windows.Devices.Sensors;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 

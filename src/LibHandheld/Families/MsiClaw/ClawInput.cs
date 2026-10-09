@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Windows;
 
@@ -336,7 +337,7 @@ internal sealed class FirmwareChordSuppressor : IFirmwareChordSuppressor
     private readonly NativeKeyboard.Input[] _batch = new NativeKeyboard.Input[4];
     private readonly NativeKeyboard.Input[] _cleanup = new NativeKeyboard.Input[1];
     private readonly KeyboardHookHandler _handler;
-    private readonly LowLevelKeyboardHook _hook = new("WSGM Claw firmware chord suppressor");
+    private readonly LowLevelHook _hook = new(13, "LibHandheld Claw firmware chords");
     private readonly FirmwareChordStateMachine _state = new();
     private Action<FirmwareChord>? _chord;
 
@@ -356,13 +357,13 @@ internal sealed class FirmwareChordSuppressor : IFirmwareChordSuppressor
         _chord = chord;
         return _hook.StartAsync(_handler, fault, cancellationToken,
             () => _state.InitializePreexisting(
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_LWIN),
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_RWIN),
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_CONTROL),
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_MENU),
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_SHIFT),
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_G),
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_TAB)),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_LWIN),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_RWIN),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_CONTROL),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_MENU),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_SHIFT),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_G),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_TAB)),
             _state.Reset);
     }
 
@@ -385,9 +386,9 @@ internal sealed class FirmwareChordSuppressor : IFirmwareChordSuppressor
         if (!injected && !key.Down && key.VirtualKey is NativeKeyboard.VK_G or NativeKeyboard.VK_TAB)
         {
             _state.SynchronizeModifiers(
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_CONTROL),
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_MENU),
-                LowLevelKeyboardHook.IsKeyDown(NativeKeyboard.VK_SHIFT));
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_CONTROL),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_MENU),
+                LowLevelHook.IsKeyDown(NativeKeyboard.VK_SHIFT));
         }
 
         var decision = _state.Observe(key.VirtualKey, key.Down, injected);

@@ -1,8 +1,6 @@
-using LibHandheld.Families.Generic;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Internal.Runtime;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
 
@@ -18,6 +16,13 @@ internal static class ZotacModels
             { HardwareAccess = DeviceHardwareAccess.PawnIo },
         SourceFamilyId = "GamingZone", Manufacturers = ["PC PARTNER LIMITED", "ZOTAC"], Products = ["G0A1W"],
         Cpu = CpuPowerKind.Amd, MinimumWatts = 8, MaximumWatts = 30,
+        // HC GamingZone.DevicePowerProfiles, equal sustained/slow targets.
+        PowerPresets =
+        [
+            new DevicePowerPreset("battery", "Battery", 8, 8, DevicePowerMode.BetterBattery),
+            new DevicePowerPreset("balanced", "Balanced", 15, 15, DevicePowerMode.Balanced),
+            new DevicePowerPreset("performance", "Performance", 28, 28, DevicePowerMode.BestPerformance)
+        ],
         Fan = new EcFanProfile(0x4E, 0x4F, [0x044B], 255, 0x044A),
         Controller = new StandardControllerProfile([new ControllerUsbId(0x1EE9, 0x1590)]),
         Motion = new StandardMotionProfile(new MotionAxisMap(0, 2, 1, 1, 1, -1), new MotionAxisMap(0, 2, 1, 1, 1, 1)),
@@ -31,7 +36,12 @@ internal static class ZotacModels
         ],
         CreateOemSource = () => new ZotacWheelSource(), NativeOemReplacesChords = [],
         OemControls = ZotacWheelSource.Controls,
-        CreateNativeService = context => new ZotacNativeService(context)
+        NativeRoles =
+        [
+            CapabilityRole.LightingEffect, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffectSpeed,
+            CapabilityRole.LightingZoneColor, CapabilityRole.GenericRange
+        ],
+        ServiceFactories = [context => new ZotacNativeService(context)]
     };
 
     // HHD selects the system product, HC the baseboard. Both represent the same physical model.
@@ -42,7 +52,7 @@ internal static class ZotacModels
 
     internal static IReadOnlyList<HandheldDefinition> GetDefinitions()
     {
-        return [Zone.Definition];
+        return [Zone.DeclaredDefinition];
     }
 
     internal static ProfiledDeviceModel? Match(DeviceIdentitySnapshot identity)
@@ -58,16 +68,8 @@ internal static class ZotacModels
                 : null;
     }
 
-    internal static IDeviceEngine CreateEngine(HandheldDefinition definition)
+    internal static NativeEngine CreateEngine(HandheldDefinition definition)
     {
-        return new ZotacDeviceEngine(definition);
-    }
-
-    private sealed class ZotacDeviceEngine(HandheldDefinition definition) : ProfiledEngineSelector(definition)
-    {
-        protected override ProfiledDeviceModel? Select(DeviceIdentitySnapshot identity)
-        {
-            return Match(identity);
-        }
+        return new ProfiledDeviceEngine(Zone);
     }
 }

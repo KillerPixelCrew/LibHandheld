@@ -1,7 +1,4 @@
 using System.Buffers.Binary;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Lifecycle;
 
 namespace LibHandheld.Families.MsiClaw.Tests.Fakes;
 
@@ -71,7 +68,6 @@ internal sealed class FakeIdentityReader : IClawIdentityReader
             ExactMachineMatch = true,
             Model = ClawModels.Claw8A2Vm,
             WmiAvailable = true,
-            LegacyRecoveryBinding = "ec:1T52EMS1.109;msi-acpi:8.0",
             OnAcPower = true
         };
     }

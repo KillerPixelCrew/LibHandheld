@@ -1,14 +1,13 @@
 using System.Globalization;
-using LibHandheld.Internal.Identity;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Lifecycle;
 
 namespace LibHandheld.Families.MsiClaw;
 
 /// <summary>Reviewed shared MSI identifiers and protocol addresses; per-model variations live in ClawModels.</summary>
 internal static class ClawHardwareFacts
 {
-    public const string PackageId = "wsgm.device.msi.claw";
+    public const string PackageId = "msi-claw";
 
     public const string Manufacturer = "MICRO-STAR INTERNATIONAL CO., LTD.";
     public const ushort UsbVendorId = 0x0DB0;
@@ -71,13 +70,7 @@ internal sealed record ClawIdentityState
     public string? RecoveryBinding =>
         Snapshot.BiosVersion is { Length: > 0 } bios ? ClawFirmwareIdentities.Bios(bios) : null;
 
-    /// <summary>
-    ///     The binding earlier builds wrote, built from this start's reads only to migrate their entries: the
-    ///     EC version, or the BIOS version where the EC's cannot be decoded, and the MSI_ACPI interface, for
-    ///     example <c>ec:1T52EMS1.109;msi-acpi:8.0</c>. Null when the provider is unavailable.
-    /// </summary>
-    public string? LegacyRecoveryBinding { get; init; }
-
+    /// <summary>Whether the current power source is AC.</summary>
     public required bool OnAcPower { get; init; }
 }
 
@@ -146,14 +139,9 @@ internal sealed record ControllerTopology(
     IReadOnlyList<PhysicalDeviceIdentity> PhysicalDevices,
     string ObservedEndpoints = "");
 
-/// <summary>Reads immutable cycle identity and the separately changing AC-line status.</summary>
+/// <summary>Reads the changing AC-line status; immutable identity comes from the caller.</summary>
 internal interface IClawIdentityReader
 {
-    /// <summary>Reads identity at start, resume and controller reacquisition without claiming mutable services.</summary>
-    /// <param name="cancellationToken">Cancels waiting for identity observations.</param>
-    /// <returns>Model match, provider availability, recovery bindings and current power source.</returns>
-    ValueTask<ClawIdentityState> ReadAsync(CancellationToken cancellationToken);
-
     /// <summary>Reads the current power source without replacing the cycle identity.</summary>
     /// <returns>True on AC or when the power source is unknown; false on known battery power.</returns>
     bool ReadOnAcPower();

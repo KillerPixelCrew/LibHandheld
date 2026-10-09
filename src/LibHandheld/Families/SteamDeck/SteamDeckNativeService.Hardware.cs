@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Transports;
@@ -7,8 +8,13 @@ namespace LibHandheld.Families.SteamDeck;
 
 internal readonly record struct DeckFirmware(ushort Version, byte Board, bool Oled, bool ChargeLimit)
 {
-    internal static DeckFirmware? Match(ushort firmware, byte board)
+    internal static DeckFirmware? Match(ushort firmware, byte board, byte pdcs = 0)
     {
+        if (pdcs != 0)
+        {
+            return null;
+        }
+
         return (firmware, board) switch
         {
             (0xB030, 6) => new DeckFirmware(firmware, board, false, false),
@@ -40,9 +46,10 @@ internal sealed partial class SteamDeckNativeService
         new()
         {
             CapabilityId = "fan.mode", Role = CapabilityRole.FanMode, ValueKind = CapabilityValueKind.Choice,
-            Display = Label("Fan mode"), SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
+            Display = CapabilityDescriptors.Label("Fan mode"), SupportsWrite = true,
+            Persistence = CapabilityPersistence.Volatile,
             Choices = Array.AsReadOnly(new[] { "automatic", "custom", "full-speed" }
-                .Select(mode => new CapabilityChoice(mode, Label(mode))).ToArray())
+                .Select(mode => new CapabilityChoice(mode, CapabilityDescriptors.Label(mode))).ToArray())
         },
         Range("fan.duty", CapabilityRole.FanDuty, "Target fan speed", 0, 100, CapabilityUnit.Percent, true),
         Range("fan.target-rpm", CapabilityRole.FanTargetRpm, "Target fan RPM", 0, MaximumFanRpm, CapabilityUnit.Rpm,
@@ -78,13 +85,14 @@ internal sealed partial class SteamDeckNativeService
 
         try
         {
-            _memory = (openMemory ?? SteamDeckMemory.Open)();
+            _memory = openMemory is null ? SteamDeckMemory.Open(context.Resources.InpOutPath) : openMemory();
             var firmware = checked((ushort)_memory.Read(0xFE700C4C, 16));
             var board = checked((byte)_memory.Read(0xFE7003BD, 8));
-            _firmware = DeckFirmware.Match(firmware, board)
+            var pdcs = checked((byte)_memory.Read(0xFE700C01, 8));
+            _firmware = DeckFirmware.Match(firmware, board, pdcs)
                         ?? throw new NotSupportedException(
                             $"Valve EC firmware 0x{firmware:X4}, board 0x{board:X2} is not supported by the documented interface.");
-            _hardwareIdentity = context.Firmware + $"|ValveEC:{firmware:X4}:{board:X2}";
+            _hardwareIdentity = context.Firmware + $"|ValveEC:{firmware:X4}:{board:X2}:{pdcs:X2}";
             await RestoreHardwareAsync(token).ConfigureAwait(false);
             _hardwareReason = null;
             RefreshHardware();
@@ -113,7 +121,7 @@ internal sealed partial class SteamDeckNativeService
 
         try
         {
-            HardwareBus.Run(@"Global\Access_ISABUS.HTP.Method", TimeSpan.FromSeconds(2), () =>
+            HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
             {
                 _fanRpm = checked((int)_memory.Read(FanRpm, 16));
                 _rpmAt = DateTimeOffset.UtcNow;
@@ -125,7 +133,7 @@ internal sealed partial class SteamDeckNativeService
                 _temperatureAt = DateTimeOffset.UtcNow;
                 if (_firmware.Value.ChargeLimit)
                 {
-                    var charge = _memory.Read(ChargeLimit, 8);
+                    var charge = _memory.Read(ChargeLimit, 32);
                     _chargeLimit = charge <= 100 ? (int)charge : null;
                     _chargeAt = _chargeLimit is null ? null : DateTimeOffset.UtcNow;
                 }
@@ -165,9 +173,8 @@ internal sealed partial class SteamDeckNativeService
                         "fan.target-rpm" => command.RequestedValue!.IntegerValue,
                         _ => mode == "full-speed" ? MaximumFanRpm : _fanTarget
                     };
-                    if (_journal.EntryFor("deck-fan") is null)
-                    {
-                        var original = HardwareBus.Run(@"Global\Access_ISABUS.HTP.Method", TimeSpan.FromSeconds(2),
+                    await _journal.BeginAsync("deck-fan", _hardwareIdentity,
+                        () => HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2),
                             () => new SteamDeckOriginal
                             {
                                 Addresses = [FanTarget, FanGain, FanRamp],
@@ -176,18 +183,11 @@ internal sealed partial class SteamDeckNativeService
                                     ReadOriginalMemory(FanTarget, 16), ReadOriginalMemory(FanGain, 16),
                                     ReadOriginalMemory(FanRamp, 16)
                                 ]
-                            });
-                        await _journal.BeginAsync("deck-fan", _hardwareIdentity, original, token).ConfigureAwait(false);
-                    }
-                    else if (_journal.EntryFor("deck-fan") is { Status: not DeviceRecoveryStatus.Pending } fanEntry)
-                    {
-                        await _journal.BeginAsync("deck-fan", _hardwareIdentity, fanEntry.OriginalState, token)
-                            .ConfigureAwait(false);
-                    }
+                            }), token).ConfigureAwait(false);
 
                     token.ThrowIfCancellationRequested();
                     dispatched = true;
-                    HardwareBus.Run(@"Global\Access_ISABUS.HTP.Method", TimeSpan.FromSeconds(2), () =>
+                    HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
                     {
                         _memory.Write(FanGain, 10, 16);
                         _memory.Write(FanRamp, mode == "automatic" ? 20u : 10u, 16);
@@ -211,28 +211,14 @@ internal sealed partial class SteamDeckNativeService
                             "This Valve EC firmware has no charge-ceiling support.");
                     }
 
-                    if (_journal.EntryFor("deck-charge") is null)
-                    {
-                        var original = ReadOriginalMemory(ChargeLimit, 8);
-                        if (original > 100)
-                        {
-                            original = uint.MaxValue;
-                        }
-
-                        await _journal.BeginAsync("deck-charge", _hardwareIdentity,
-                                new SteamDeckOriginal { Addresses = [ChargeLimit], Memory = [original] }, token)
-                            .ConfigureAwait(false);
-                    }
-                    else if (_journal.EntryFor("deck-charge") is
-                             { Status: not DeviceRecoveryStatus.Pending } chargeEntry)
-                    {
-                        await _journal.BeginAsync("deck-charge", _hardwareIdentity, chargeEntry.OriginalState, token)
-                            .ConfigureAwait(false);
-                    }
+                    await _journal.BeginAsync("deck-charge", _hardwareIdentity,
+                            () => new SteamDeckOriginal
+                                { Addresses = [ChargeLimit], Memory = [ReadOriginalMemory(ChargeLimit, 32)] }, token)
+                        .ConfigureAwait(false);
 
                     token.ThrowIfCancellationRequested();
                     dispatched = true;
-                    _memory.Write(ChargeLimit, checked((uint)command.RequestedValue!.IntegerValue!.Value), 8);
+                    _memory.Write(ChargeLimit, checked((uint)command.RequestedValue!.IntegerValue!.Value), 32);
                     _chargeLimit = command.RequestedValue.IntegerValue;
                     _chargeAt = DateTimeOffset.UtcNow;
                     break;
@@ -241,13 +227,13 @@ internal sealed partial class SteamDeckNativeService
                         "This capability is published through its native input stream.");
             }
 
-            return CommandResults.Unverified(command);
+            return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return dispatched
                 ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                    exception.Message, RollbackResult.NotRequired)
+                    exception.Message)
                 : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
         }
     }
@@ -261,19 +247,20 @@ internal sealed partial class SteamDeckNativeService
 
         foreach (var id in new[] { "deck-fan", "deck-charge" })
         {
-            if (_journal.EntryFor(id) is not { Status: DeviceRecoveryStatus.Pending } entry)
+            if (_journal.EntryFor<SteamDeckOriginal>(id) is not { } entry)
             {
                 continue;
             }
 
             if (entry.FirmwareIdentity != _hardwareIdentity)
             {
-                throw new InvalidOperationException("Pending Valve EC state belongs to another firmware identity.");
+                await _journal.RetireAsync(id, "firmware changed", token).ConfigureAwait(false);
+                continue;
             }
 
             try
             {
-                var verified = HardwareBus.Run(@"Global\Access_ISABUS.HTP.Method", TimeSpan.FromSeconds(2), () =>
+                var verified = HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
                 {
                     if (id == "deck-fan")
                     {
@@ -288,12 +275,19 @@ internal sealed partial class SteamDeckNativeService
                         }
 
                         _memory.Write(entry.OriginalState.Addresses[i], entry.OriginalState.Memory[i],
-                            id == "deck-charge" ? 8 : 16);
+                            id == "deck-charge" ? 32 : 16);
                     }
 
                     // Firmware has no documented fan-mode readback: the native automatic baseline remains unverified.
-                    return id == "deck-charge" && entry.OriginalState.Memory[0] != uint.MaxValue
-                                               && _memory.Read(ChargeLimit, 8) == entry.OriginalState.Memory[0];
+                    try
+                    {
+                        return id == "deck-charge" && entry.OriginalState.Memory[0] != uint.MaxValue
+                                                   && _memory.Read(ChargeLimit, 32) == entry.OriginalState.Memory[0];
+                    }
+                    catch (Exception exception) when (exception is not OutOfMemoryException)
+                    {
+                        return false;
+                    }
                 });
                 await _journal.SetStatusAsync(id,
                         verified ? DeviceRecoveryStatus.RestoredVerified : DeviceRecoveryStatus.RestoredUnverified,
@@ -376,8 +370,7 @@ internal sealed partial class SteamDeckNativeService
                     {
                         "fan.mode" => _modeAt, "fan.duty" or "fan.target-rpm" => _targetAt, "fan.rpm" => _rpmAt,
                         "charge.limit" => _chargeAt, "battery.temperature" => _temperatureAt, _ => null
-                    },
-                DescriptorGeneration = 0, CycleGeneration = 0
+                    }
             };
         }
     }
@@ -387,7 +380,8 @@ internal sealed partial class SteamDeckNativeService
     {
         return new CapabilityDescriptor
         {
-            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Integer, Display = Label(label),
+            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Integer,
+            Display = CapabilityDescriptors.Label(label),
             Minimum = minimum, Maximum = maximum, Step = 1, Unit = unit, SupportsRead = true, SupportsWrite = write,
             Persistence = CapabilityPersistence.Volatile
         };

@@ -1,9 +1,10 @@
 using System.Management;
 using System.Runtime.InteropServices;
-using System.Text.Json.Serialization;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Zotac;
 
@@ -20,12 +21,11 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         Color("main", "Main lighting color"), Color("secondary", "Secondary lighting color")
     ];
 
-    private readonly Dictionary<(string, string?), CapabilityValue> _observed = [];
+    private readonly ObservedValues _observed = new();
     private ZotacCommandTransport? _hid;
-    private ZotacRecoveryJournal? _journal;
+    private DeviceRecoveryJournal? _journal;
     private bool _manage = context.ControllerManagementEnabled;
     private uint _ram;
-    private bool _rearChanged;
     private ManagementObject? _uma;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Array.AsReadOnly(Lighting.Concat(new[]
@@ -39,14 +39,20 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
 
     internal override IReadOnlyList<CapabilityState> States => Array.AsReadOnly(Descriptors.Select(descriptor =>
     {
-        var available = descriptor.CapabilityId == "firmware.vram-addition" ? _uma is not null : _hid is not null;
-        _observed.TryGetValue((descriptor.CapabilityId, descriptor.InstanceId), out var value);
+        var available = descriptor.CapabilityId == "firmware.vram-addition"
+            ? _uma is not null && _ram < 64
+            : State == DeviceServiceState.Owned;
+        var value = _observed.Value(descriptor.CapabilityId, descriptor.InstanceId);
         return new CapabilityState
         {
             CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
             Available = available, ObservedValue = value,
+            Reason = descriptor.CapabilityId == "firmware.vram-addition" && _ram >= 64
+                ? new CapabilityReason(CapabilityReasonCode.Unsupported,
+                    "The 8-bit UMA encoding cannot represent a 64 GB base allocation.")
+                : null,
             Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-            DescriptorGeneration = 0, CycleGeneration = 0, ObservedAt = value is null ? null : DateTimeOffset.UtcNow
+            ObservedAt = _observed.Time(descriptor.CapabilityId, descriptor.InstanceId)
         };
     }).ToArray());
 
@@ -59,9 +65,7 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         _hid = ZotacCommandTransport.Open();
         try
         {
-            using var searcher = new ManagementObjectSearcher("root\\WMI", "SELECT * FROM UMAInterface");
-            using var rows = searcher.Get();
-            _uma = rows.Cast<ManagementObject>().FirstOrDefault();
+            _uma = WmiProvider.TryOpen("root\\WMI", "SELECT * FROM UMAInterface");
         }
         catch (ManagementException)
         {
@@ -77,22 +81,18 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
             _ram = 16;
         }
 
-        _journal = await ZotacRecoveryJournal.Open(Path.Combine(context.StateDirectory, "zotac-controls"), token)
-            .ConfigureAwait(false);
+        _journal = context.Journal;
         if (_hid is not null)
         {
-            var prior = _journal.EntryFor("rear-profile");
-            if (prior is not null && prior.FirmwareIdentity != Binding())
+            var prior = _journal.EntryFor<ZotacRecoveryState>("rear-profile");
+            if (prior is not null)
             {
-                await _journal.SetStatusAsync("rear-profile", DeviceRecoveryStatus.RestoredVerified, token)
-                    .ConfigureAwait(false);
-            }
-            else if (prior?.Status == DeviceRecoveryStatus.Pending)
-            {
-                await RestoreRearAsync(token).ConfigureAwait(false);
+                await _journal.ReconcileAsync<ZotacRecoveryState>("rear-profile", Binding(),
+                    (_, ct) => RestoreRearAsync(ct), token).ConfigureAwait(false);
             }
 
-            if (_manage && _journal.EntryFor("rear-profile") is null)
+
+            if (_manage)
             {
                 await RemapRearAsync(token).ConfigureAwait(false);
             }
@@ -128,22 +128,26 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
     private async ValueTask RemapRearAsync(CancellationToken token)
     {
         await _journal!.BeginAsync("rear-profile", Binding(), new ZotacRecoveryState(), token).ConfigureAwait(false);
-        _rearChanged = true; // Record uncertainty before the first report can leave this process.
         _hid!.Write(ZotacProtocol.Rear(1), token);
         _hid.Write(ZotacProtocol.Rear(2), token);
     }
 
     private async ValueTask RestoreRearAsync(CancellationToken token)
     {
-        if (_hid is null || _journal?.PendingOriginalFor("rear-profile") is null)
+        if (_hid is null || _journal?.PendingOriginalFor<ZotacRecoveryState>("rear-profile") is null)
         {
+            return;
+        }
+
+        if (_journal!.EntryFor<ZotacRecoveryState>("rear-profile")?.FirmwareIdentity != Binding())
+        {
+            await _journal.RetireAsync("rear-profile", "firmware changed", token).ConfigureAwait(false);
             return;
         }
 
         try
         {
             _hid.Write(ZotacProtocol.Command(0xF1), token);
-            _rearChanged = false;
             await _journal
                 .SetStatusAsync("rear-profile", DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -156,8 +160,13 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         }
     }
 
-    internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
+    internal override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
+    {
+        return ValueTask.FromResult(ExecuteCore(command, token));
+    }
+
+    private CapabilityCommandResult ExecuteCore(CapabilityCommand command, CancellationToken token)
     {
         var dispatched = false;
         try
@@ -175,24 +184,16 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
                 input["Value"] = EncodeVram(_ram, checked((uint)command.RequestedValue!.IntegerValue!.Value));
                 token.ThrowIfCancellationRequested();
                 dispatched = true;
-                using var output = _uma.InvokeMethod("SetEcValue", input, null);
-                _observed[(command.CapabilityId, command.InstanceId)] = command.RequestedValue!;
-                return CommandResults.Unverified(command);
+                using var output = WmiProvider.Invoke(_uma, "SetEcValue", input);
+                _observed.Written(command.CapabilityId, command.RequestedValue!, command.InstanceId);
+                return CommandResults.Applied(command);
             }
 
+            _hid ??= ZotacCommandTransport.Open();
             if (_hid is null)
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                     "The Zone vendor HID collection is absent.");
-            }
-
-            // SaveConfigData would otherwise persist our temporary M1/M2 remap along with lighting.
-            var restoreRear = _rearChanged;
-            if (restoreRear)
-            {
-                var binding = _hid.Firmware;
-                await RestoreRearAsync(token).ConfigureAwait(false);
-                await ReopenAfterReloadAsync(binding, token).ConfigureAwait(false);
             }
 
             var value = command.RequestedValue!;
@@ -228,53 +229,35 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
             save[4] = 60;
             save[5] = 0xFB;
             _hid.Write(save, token);
-            _observed[(command.CapabilityId, command.InstanceId)] = value;
-            if (_manage && restoreRear)
-            {
-                await RemapRearAsync(token).ConfigureAwait(false);
-            }
-
-            return CommandResults.Unverified(command);
+            _observed.Written(command.CapabilityId, value, command.InstanceId);
+            return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message,
-                    RollbackResult.NotRequired)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
-        }
-    }
-
-    private async ValueTask ReopenAfterReloadAsync(string binding, CancellationToken token)
-    {
-        _hid?.Dispose();
-        _hid = null;
-        var expires = Environment.TickCount64 + 1500;
-        while (Environment.TickCount64 < expires)
-        {
-            token.ThrowIfCancellationRequested();
-            var candidate = ZotacCommandTransport.Open();
-            if (candidate is not null)
+            if (command.CapabilityId != "firmware.vram-addition")
             {
-                if (candidate.Firmware == binding)
-                {
-                    _hid = candidate;
-                    return;
-                }
-
-                candidate.Dispose();
+                _hid?.Dispose();
+                _hid = null;
             }
 
-            await Task.Delay(50, token).ConfigureAwait(false);
+            return dispatched
+                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message)
+                : CommandResults.Rejected(command,
+                    exception is ArgumentOutOfRangeException
+                        ? CapabilityReasonCode.ValueOutOfRange
+                        : CapabilityReasonCode.TransportFaulted, exception.Message);
         }
-
-        throw new IOException(
-            "The same Zone controller did not reappear after its profile reload; no command was repeated.");
     }
 
     internal static byte EncodeVram(uint ram, uint addition)
     {
-        return unchecked((byte)((ram + addition) * 4));
+        if (ram is not (16 or 32 or 64) || addition > 12 || (ulong)(ram + addition) * 4 > byte.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(addition),
+                "The requested UMA allocation does not fit the firmware's 8-bit encoding.");
+        }
+
+        return checked((byte)((ram + addition) * 4));
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
@@ -283,7 +266,7 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         try
         {
             await RestoreRearAsync(token).ConfigureAwait(false);
-            return _journal?.OutstandingEntries.Count > 0
+            return _journal?.Entries<ZotacRecoveryState>().Count > 0
                 ? Set(DeviceServiceState.ReleasedUnverified,
                     Missing("The saved Zone profile reload was accepted without a mapping readback."))
                 : Set(DeviceServiceState.Idle);
@@ -298,41 +281,35 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         }
     }
 
-    private static CapabilityDisplay Label(string text)
+
+    internal override ValueTask DisposeAsync()
     {
-        return new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = text };
+        _hid?.Dispose();
+        _hid = null;
+        _uma?.Dispose();
+        _uma = null;
+        _observed.Clear();
+        return ValueTask.CompletedTask;
     }
 
     private static CapabilityDescriptor Range(string id, CapabilityRole role, string label, int minimum, int maximum,
         int step)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Integer, Display = Label(label),
-            Minimum = minimum,
-            Maximum = maximum, Step = step, SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
-        };
+        return CapabilityDescriptors.Integer(id, role, CapabilityDescriptors.Label(label), minimum, maximum,
+            CapabilityUnit.None, false, true, CapabilityPersistence.DevicePersistent, step);
     }
 
     private static CapabilityDescriptor Choice(string id, CapabilityRole role, string label, string[] choices)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice, Display = Label(label),
-            SupportsWrite = true,
-            Persistence = CapabilityPersistence.DevicePersistent,
-            Choices = Array.AsReadOnly(choices.Select(value => new CapabilityChoice(value, Label(value))).ToArray())
-        };
+        return CapabilityDescriptors.Choice(id, role, CapabilityDescriptors.Label(label),
+            CapabilityDescriptors.Choices(choices), false, true, CapabilityPersistence.DevicePersistent);
     }
 
     private static CapabilityDescriptor Color(string instance, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = CapabilityIds.LightingColor, InstanceId = instance, Role = CapabilityRole.LightingZoneColor,
-            ValueKind = CapabilityValueKind.Color,
-            Display = Label(label), SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
-        };
+        return CapabilityDescriptors.Color(CapabilityIds.LightingColor, instance, CapabilityDescriptors.Label(label),
+            false,
+            CapabilityPersistence.DevicePersistent);
     }
 
     [LibraryImport("kernel32.dll")]
@@ -341,25 +318,3 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
 }
 
 internal sealed record ZotacRecoveryState;
-
-internal sealed class ZotacRecoveryJournal()
-    : DeviceRecoveryJournal<ZotacRecoveryState>(ZotacRecoveryJson.Default.RecoveryDocument)
-{
-    internal static async ValueTask<ZotacRecoveryJournal> Open(string directory, CancellationToken token)
-    {
-        var journal = new ZotacRecoveryJournal();
-        await journal.LoadAsync(directory, token).ConfigureAwait(false);
-        return journal;
-    }
-
-    protected override void ValidateEntry(DeviceRecoveryEntry<ZotacRecoveryState> entry)
-    {
-        if (entry.ServiceId != "rear-profile")
-        {
-            throw new InvalidDataException("Unknown Zone recovery operation.");
-        }
-    }
-}
-
-[JsonSerializable(typeof(DeviceRecoveryDocument<ZotacRecoveryState>), TypeInfoPropertyName = "RecoveryDocument")]
-internal partial class ZotacRecoveryJson : JsonSerializerContext;

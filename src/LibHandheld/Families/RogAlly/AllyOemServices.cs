@@ -1,11 +1,10 @@
-// SPDX-License-Identifier: MIT
-
 using System.ComponentModel;
-using LibHandheld.Internal.Capabilities;
-using LibHandheld.Internal.Input;
-using LibHandheld.Internal.Plugin;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Windows;
+
+// SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
@@ -45,7 +44,7 @@ internal sealed class VendorEventService(
         // After a wake the collection comes back a few seconds late. HC waits for the device before it
         // opens its events; this takes the collection when it appears, instead of going passive and
         // leaving the short ASUS button press dead until the next restart.
-        host.Trace(DeviceTraceLevel.Warn, "vendor-hid", "no vendor collection yet; waiting for it.");
+        DeviceTrace.Write(DeviceTraceLevel.Warn, "vendor-hid", "no vendor collection yet; waiting for it.");
         _reconnect.Start(ReopenAsync, OnReopenFailed);
         return Set(DeviceServiceState.Degraded,
             Missing("No ASUS vendor collection (FF31:0080, or one answering feature report 0x5A) was found yet."));
@@ -55,7 +54,7 @@ internal sealed class VendorEventService(
     private void OnFault(Exception exception)
     {
         var detail = DiagnosticText.FromException("The vendor event reader stopped", exception);
-        host.Trace(DeviceTraceLevel.Warn, "vendor-hid", detail + "; waiting for the collection to come back.");
+        DeviceTrace.Write(DeviceTraceLevel.Warn, "vendor-hid", detail + "; waiting for the collection to come back.");
         _ = Set(DeviceServiceState.Degraded, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
         _reconnect.Start(ReopenAsync, OnReopenFailed);
     }
@@ -73,12 +72,12 @@ internal sealed class VendorEventService(
         }
         catch (Exception ex) when (ex is IOException or Win32Exception)
         {
-            host.Trace(DeviceTraceLevel.Debug, "vendor-hid",
+            DeviceTrace.Write(DeviceTraceLevel.Debug, "vendor-hid",
                 DiagnosticText.FromException("opening the vendor collection failed", ex));
             return false;
         }
 
-        host.Trace(DeviceTraceLevel.Info, "vendor-hid", "the vendor collection is back.");
+        DeviceTrace.Write(DeviceTraceLevel.Info, "vendor-hid", "the vendor collection is back.");
         _ = Set(DeviceServiceState.Owned);
         return true;
     }
@@ -86,7 +85,7 @@ internal sealed class VendorEventService(
     private void OnReopenFailed(Exception exception)
     {
         var detail = DiagnosticText.FromException("Reopening the vendor collection failed", exception);
-        host.Trace(DeviceTraceLevel.Warn, "vendor-hid", detail);
+        DeviceTrace.Write(DeviceTraceLevel.Warn, "vendor-hid", detail);
         Fault(new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
     }
 
@@ -322,7 +321,7 @@ internal sealed class KeyboardOemService(
         ReleaseHeld();
         keyboard.Watch([]);
         var detail = DiagnosticText.FromException("The OEM keyboard hook stopped", exception);
-        host.Trace(DeviceTraceLevel.Warn, "oem", detail);
+        DeviceTrace.Write(DeviceTraceLevel.Warn, "oem", detail);
         _ = Set(DeviceServiceState.Degraded, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
     }
 

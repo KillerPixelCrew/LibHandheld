@@ -1,3 +1,4 @@
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Transports;
 
@@ -5,9 +6,10 @@ namespace LibHandheld.Internal.Devices;
 
 internal sealed record ProfiledCycleIdentity(string Firmware);
 
-internal sealed class ProfiledPowerService(
+internal sealed partial class ProfiledPowerService(
     Func<ICpuPowerTransport> open,
-    ProfiledRecoveryJournal journal) : DeviceService<ProfiledCycleIdentity>("power")
+    DeviceRecoveryJournal journal,
+    ProfiledDeviceModel? model = null) : DeviceService<ProfiledCycleIdentity>("power")
 {
     private ICpuPowerTransport? _transport;
     private bool _unknownOriginalChanged;
@@ -15,35 +17,27 @@ internal sealed class ProfiledPowerService(
     internal DateTimeOffset? ObservedAt { get; private set; }
     public override bool Suspendable => true;
 
+    internal override ValueTask DisposeAsync()
+    {
+        _transport?.Dispose();
+        _transport = null;
+        return ValueTask.CompletedTask;
+    }
+
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> context,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         _transport = open();
-        if (journal.EntryFor(ServiceId) is { } entry)
-        {
-            if (entry.FirmwareIdentity != context.Identity.Firmware)
+        await journal.ReconcileAsync<ProfiledRecoveryState>(ServiceId, context.Identity.Firmware,
+            async (original, ct) =>
             {
-                await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredVerified, token)
-                    .ConfigureAwait(false);
-            }
-            else if (entry.Status == DeviceRecoveryStatus.Pending)
-            {
-                try
-                {
-                    var verified = RestorePower(Original(entry.OriginalState));
-                    await journal.SetStatusAsync(ServiceId, verified
-                        ? DeviceRecoveryStatus.RestoredVerified
-                        : DeviceRecoveryStatus.RestoredUnverified, token).ConfigureAwait(false);
-                }
-                catch
-                {
-                    await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                        .ConfigureAwait(false);
-                    throw;
-                }
-            }
-        }
+                ct.ThrowIfCancellationRequested();
+                var verified = RestorePower(Original(original));
+                await journal.SetStatusAsync(ServiceId, verified
+                    ? DeviceRecoveryStatus.RestoredVerified
+                    : DeviceRecoveryStatus.RestoredUnverified, ct).ConfigureAwait(false);
+            }, token).ConfigureAwait(false);
 
         Refresh();
         return Set(DeviceServiceState.Owned);
@@ -75,33 +69,16 @@ internal sealed class ProfiledPowerService(
             throw new InvalidOperationException("CPU power transport is not owned.");
         }
 
-        if (journal.EntryFor(ServiceId) is { Status: not DeviceRecoveryStatus.Pending } existing &&
-            existing.FirmwareIdentity == firmware)
-        {
-            await journal.BeginAsync(ServiceId, firmware, existing.OriginalState, token).ConfigureAwait(false);
-        }
 
-        if (journal.EntryFor(ServiceId)?.FirmwareIdentity != firmware)
+        await journal.BeginAsync(ServiceId, firmware, () =>
         {
-            CpuPowerLimits? original = null;
-            try
-            {
-                original = _transport.ReadLimits();
-            }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
-            {
-            }
-
-            if (original is { } known)
-            {
-                await journal.BeginAsync(ServiceId, firmware, new ProfiledRecoveryState
-                        { Sustained = known.SustainedWatts, Slow = known.SlowWatts, Boost = known.BoostWatts }, token)
-                    .ConfigureAwait(false);
-            }
-        }
+            var original = _transport.ReadLimits();
+            return new ProfiledRecoveryState
+                { Sustained = original.SustainedWatts, Slow = original.SlowWatts, Boost = original.BoostWatts };
+        }, token).ConfigureAwait(false);
 
         token.ThrowIfCancellationRequested();
-        if (journal.EntryFor(ServiceId) is null)
+        if (journal.EntryFor<ProfiledRecoveryState>(ServiceId) is null)
         {
             _unknownOriginalChanged = true;
         }
@@ -126,7 +103,7 @@ internal sealed class ProfiledPowerService(
 
         try
         {
-            if (journal.PendingOriginalFor(ServiceId) is { } original)
+            if (journal.PendingOriginalFor<ProfiledRecoveryState>(ServiceId) is { } original)
             {
                 var verified = RestorePower(Original(original));
                 await journal.SetStatusAsync(ServiceId, verified
@@ -134,7 +111,7 @@ internal sealed class ProfiledPowerService(
                     : DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None).ConfigureAwait(false);
             }
 
-            return _unknownOriginalChanged || journal.EntryFor(ServiceId) is not null
+            return _unknownOriginalChanged || journal.EntryFor<ProfiledRecoveryState>(ServiceId) is not null
                 ? Set(DeviceServiceState.ReleasedUnverified,
                     Missing(
                         "CPU limits were written without readable originals; their original values cannot be restored."))
@@ -177,18 +154,24 @@ internal sealed class ProfiledPowerService(
     }
 }
 
-internal sealed class ProfiledFanService(
+internal sealed partial class ProfiledFanService(
     EcFanProfile profile,
     Func<IEmbeddedController> open,
-    ProfiledRecoveryJournal journal) : DeviceService<ProfiledCycleIdentity>("fan")
+    DeviceRecoveryJournal journal) : DeviceService<ProfiledCycleIdentity>("fan")
 {
     private IEmbeddedController? _ec;
-    private bool _unlockNeedsAction;
     internal int? Duty { get; private set; }
     internal int? Rpm { get; private set; }
     internal string? Mode { get; private set; }
     internal DateTimeOffset? ObservedAt { get; private set; }
     public override bool Suspendable => true;
+
+    internal override ValueTask DisposeAsync()
+    {
+        _ec?.Dispose();
+        _ec = null;
+        return ValueTask.CompletedTask;
+    }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> context,
         CancellationToken token)
@@ -197,43 +180,18 @@ internal sealed class ProfiledFanService(
         _ec = open();
         foreach (var recoveryId in new[] { ServiceId, "fan-unlock" })
         {
-            if (journal.EntryFor(recoveryId) is { } entry)
-            {
-                if (entry.FirmwareIdentity != context.Identity.Firmware)
+            await journal.ReconcileAsync<ProfiledRecoveryState>(recoveryId, context.Identity.Firmware,
+                async (original, ct) =>
                 {
-                    await journal.SetStatusAsync(recoveryId, DeviceRecoveryStatus.RestoredVerified, token)
-                        .ConfigureAwait(false);
-                }
-                else if (entry.Status == DeviceRecoveryStatus.Pending)
-                {
-                    try
-                    {
-                        var verified = Restore(entry.OriginalState);
-                        if (recoveryId == "fan-unlock" && !verified)
-                        {
-                            _unlockNeedsAction = true;
-                        }
-
-                        await journal.SetStatusAsync(recoveryId, verified
-                            ? DeviceRecoveryStatus.RestoredVerified
-                            : DeviceRecoveryStatus.RestoredUnverified, token).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        await journal
-                            .SetStatusAsync(recoveryId, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                            .ConfigureAwait(false);
-                        throw;
-                    }
-                }
-                else if (recoveryId == "fan-unlock")
-                {
-                    _unlockNeedsAction = true;
-                }
-            }
+                    ct.ThrowIfCancellationRequested();
+                    var verified = Restore(original);
+                    await journal.SetStatusAsync(recoveryId, verified
+                        ? DeviceRecoveryStatus.RestoredVerified
+                        : DeviceRecoveryStatus.RestoredUnverified, ct).ConfigureAwait(false);
+                }, token).ConfigureAwait(false);
         }
 
-        if (!_unlockNeedsAction && profile.UnlockAddress is { } unlock)
+        if (profile.UnlockAddress is { } unlock)
         {
             if (profile.UnlockChipAddress is { } chip && _ec.ReadByte(chip) != profile.UnlockChipValue)
             {
@@ -243,6 +201,7 @@ internal sealed class ProfiledFanService(
             var original = _ec.ReadByte(unlock);
             await journal.BeginAsync("fan-unlock", context.Identity.Firmware,
                 new ProfiledRecoveryState { Addresses = [unlock], Values = [original] }, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
             _ec.WriteByte(unlock, (byte)(original | profile.UnlockMask));
         }
 
@@ -278,7 +237,7 @@ internal sealed class ProfiledFanService(
 
             if (profile.RpmHighAddress is { } high && profile.RpmLowAddress is { } low)
             {
-                Rpm = (_ec.ReadByte(high) << 8) | _ec.ReadByte(low);
+                Rpm = _ec.Transaction(() => (_ec.ReadByte(high) << 8) | _ec.ReadByte(low));
                 ObservedAt = DateTimeOffset.UtcNow;
             }
         }
@@ -295,66 +254,34 @@ internal sealed class ProfiledFanService(
             throw new InvalidOperationException("EC fan transport is not owned.");
         }
 
-        if (_unlockNeedsAction && profile.UnlockAddress is { } unlock)
+        await journal.BeginAsync(ServiceId, firmware, () =>
         {
-            var prior = journal.EntryFor("fan-unlock")!.OriginalState;
-            await journal.BeginAsync("fan-unlock", firmware, prior, token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-            dispatched();
-            _ec.WriteByte(unlock, (byte)(prior.Values[0] | profile.UnlockMask));
-            _unlockNeedsAction = false;
-        }
-
-        var current = journal.EntryFor(ServiceId);
-        if (current is { Status: not DeviceRecoveryStatus.Pending } && current.FirmwareIdentity == firmware)
-        {
-            await journal.BeginAsync(ServiceId, firmware, current.OriginalState, token).ConfigureAwait(false);
-        }
-
-        var addresses = profile.DutyAddresses
-            .Concat(profile.ManualAddress is { } manual ? [manual] : Array.Empty<ushort>()).Distinct().ToArray();
-        if (current is null)
-        {
-            var original = new byte[addresses.Length];
-            var exact = true;
-            for (var index = 0; index < addresses.Length; index++)
+            List<ushort> addresses = [];
+            List<byte> values = [];
+            foreach (var address in profile.DutyAddresses
+                         .Concat(profile.ManualAddress is { } manual ? [manual] : Array.Empty<ushort>()).Distinct())
             {
-                // A missing readback never blocks the proved write path. When an original cannot
-                // be captured, restoring the documented firmware/automatic baseline is explicit.
-                if (!profile.ReadDuty && profile.DutyAddresses.Contains(addresses[index]))
+                if (!profile.ReadDuty && profile.DutyAddresses.Contains(address))
                 {
-                    original[index] = 0;
-                    exact = false;
+                    continue;
                 }
-                else
-                {
-                    try
-                    {
-                        original[index] = _ec.ReadByte(addresses[index]);
-                        if (profile.DutyAddresses.Contains(addresses[index]) && original[index] > profile.MaximumDuty)
-                        {
-                            original[index] = 0;
-                            exact = false;
-                        }
 
-                        if (profile.ManualAddress == addresses[index] && original[index] != profile.AutomaticValue &&
-                            original[index] != profile.ManualValue)
-                        {
-                            original[index] = profile.AutomaticValue;
-                            exact = false;
-                        }
-                    }
-                    catch (Exception exception) when (exception is not OutOfMemoryException)
-                    {
-                        original[index] = profile.ManualAddress == addresses[index] ? profile.AutomaticValue : (byte)0;
-                        exact = false;
-                    }
+                try
+                {
+                    values.Add(_ec.ReadByte(address));
+                    addresses.Add(address);
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    DeviceTrace.Warn("recovery", $"Cannot capture fan register {address:X4}: {exception.Message}.");
                 }
             }
 
-            await journal.BeginAsync(ServiceId, firmware, new ProfiledRecoveryState
-                { Addresses = addresses, Values = original, HasExactOriginal = exact }, token).ConfigureAwait(false);
-        }
+            return addresses.Count == 0
+                ? null
+                : new ProfiledRecoveryState
+                    { Addresses = addresses.ToArray(), Values = values.ToArray(), HasExactOriginal = true };
+        }, token).ConfigureAwait(false);
 
         token.ThrowIfCancellationRequested();
         dispatched();
@@ -402,7 +329,7 @@ internal sealed class ProfiledFanService(
         {
             foreach (var recoveryId in new[] { ServiceId, "fan-unlock" })
             {
-                if (journal.PendingOriginalFor(recoveryId) is { } original)
+                if (journal.PendingOriginalFor<ProfiledRecoveryState>(recoveryId) is { } original)
                 {
                     var verified = Restore(original);
                     await journal.SetStatusAsync(recoveryId, verified
@@ -411,20 +338,21 @@ internal sealed class ProfiledFanService(
                 }
             }
 
-            return journal.EntryFor(ServiceId) is not null || journal.EntryFor("fan-unlock") is not null
+            return journal.EntryFor<ProfiledRecoveryState>(ServiceId) is not null ||
+                   journal.EntryFor<ProfiledRecoveryState>("fan-unlock") is not null
                 ? Set(DeviceServiceState.ReleasedUnverified,
                     Missing("The restored fan state could not be independently confirmed."))
                 : Set(DeviceServiceState.Idle);
         }
         catch
         {
-            if (journal.EntryFor(ServiceId) is not null)
+            if (journal.EntryFor<ProfiledRecoveryState>(ServiceId) is not null)
             {
                 await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
                     .ConfigureAwait(false);
             }
 
-            if (journal.EntryFor("fan-unlock") is not null)
+            if (journal.EntryFor<ProfiledRecoveryState>("fan-unlock") is not null)
             {
                 await journal.SetStatusAsync("fan-unlock", DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
                     .ConfigureAwait(false);

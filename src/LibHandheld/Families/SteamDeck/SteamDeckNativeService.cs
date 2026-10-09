@@ -1,4 +1,5 @@
 using System.Numerics;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
@@ -25,7 +26,8 @@ internal sealed partial class SteamDeckNativeService(
         new()
         {
             CapabilityId = CapabilityIds.Rumble, Role = CapabilityRole.HapticSink, ValueKind = CapabilityValueKind.None,
-            Display = Label("Trackpad haptics"), SupportsAction = true, Persistence = CapabilityPersistence.Volatile
+            Display = CapabilityDescriptors.Label("Trackpad haptics"), SupportsAction = true,
+            Persistence = CapabilityPersistence.Volatile
         }
     ];
 
@@ -36,8 +38,11 @@ internal sealed partial class SteamDeckNativeService(
     private INeptuneDevice? _controller;
     private string? _controllerIdentity;
     private CapabilityReason? _controllerReason;
-    private SteamDeckRecovery? _journal;
+    private DeviceRecoveryJournal? _journal;
     private bool _management = context.ControllerManagementEnabled;
+    private CancellationTokenSource? _mappingCancellation;
+    private Task? _mappingWatchdog;
+    private bool _mappingsOwned;
     private long _pressSequence;
     private CanonicalButtons _previousButtons;
     private Thread? _reader;
@@ -54,16 +59,23 @@ internal sealed partial class SteamDeckNativeService(
             CapabilityId = descriptor.CapabilityId, Available = _management && Connected, Reason = _controllerReason,
             ObservedValue = descriptor.Role == CapabilityRole.HapticSink
                 ? null
-                : CapabilityValue.Choice(Connected ? SourceOwnership.Plugin : SourceOwnership.Unavailable),
+                : CapabilityValue.Choice(Connected ? SourceOwnership.Managed : SourceOwnership.Unavailable),
             Quality = Connected ? HardwareStateQuality.Observed : HardwareStateQuality.Unknown,
-            ObservedAt = Connected ? DateTimeOffset.UtcNow : null, DescriptorGeneration = 0, CycleGeneration = 0
+            ObservedAt = Connected ? DateTimeOffset.UtcNow : null
         }).Concat(HardwareStates()).Concat(ClockStates()).ToArray();
+
+    internal override ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        Rumble(frame);
+        return ValueTask.CompletedTask;
+    }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _journal ??= await SteamDeckRecovery.Open(context.StateDirectory, token).ConfigureAwait(false);
+        _journal ??= context.Journal;
         await AcquireHardwareAsync(token).ConfigureAwait(false);
         AcquireClocks();
         if (_management)
@@ -89,69 +101,20 @@ internal sealed partial class SteamDeckNativeService(
             var device = openController();
             _controller = device;
             _controllerIdentity = context.Firmware + "|" + device.FirmwareIdentity;
-            var alreadyManaged = false;
-            if (_journal!.EntryFor("neptune") is { } recovery)
-            {
-                if (recovery.FirmwareIdentity != _controllerIdentity)
-                {
-                    throw new InvalidOperationException(
-                        "Pending controller state belongs to another firmware or physical device.");
-                }
-
-                if (recovery.Status != DeviceRecoveryStatus.Pending)
-                {
-                    if (OriginalControllerObserved(device, recovery.OriginalState))
-                    {
-                        await _journal.SetStatusAsync("neptune", DeviceRecoveryStatus.RestoredVerified, token)
-                            .ConfigureAwait(false);
-                    }
-                    else if (ReadOriginal(device, 9) == 0 && ReadOriginal(device, 71) == 0
-                                                          && (recovery.OriginalState.Values[2] is null ||
-                                                              ReadOriginal(device, 48) == 0x18))
-                    {
-                        // Re-read resolves an uncertain handoff: adopt the still-active mode without repeating its writes.
-                        await _journal.BeginAsync("neptune", _controllerIdentity, recovery.OriginalState, token)
-                            .ConfigureAwait(false);
-                        alreadyManaged = true;
-                    }
-                    else if (explicitEnable)
-                    {
-                        await _journal.BeginAsync("neptune", _controllerIdentity, recovery.OriginalState, token)
-                            .ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException(
-                            "A previous controller restoration was uncertain; turn controller management off and on to reconcile it explicitly.");
-                    }
-                }
-                else
-                {
-                    await RestoreControllerAsync(token).ConfigureAwait(false);
-                    if (_journal.EntryFor("neptune") is not null && !explicitEnable)
-                    {
-                        throw new InvalidOperationException(
-                            "Controller originals could not all be restored and verified.");
-                    }
-                }
-            }
-
+            await _journal!.ReconcileAsync<SteamDeckOriginal>("neptune", _controllerIdentity,
+                (_, ct) => RestoreControllerAsync(ct), token).ConfigureAwait(false);
             var original = new SteamDeckOriginal
             {
-                Registers = [9, 71, 48],
-                Values = [ReadOriginal(device, 9), ReadOriginal(device, 71), ReadOriginal(device, 48)]
+                Registers = [48],
+                Values = [ReadOriginal(device, 48)]
             };
             await _journal.BeginAsync("neptune", _controllerIdentity, original, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
-            // Suppress firmware keyboard/mouse output without clearing or resetting the user's digital mappings.
-            if (!alreadyManaged)
-            {
-                device.WriteSetting(9, 0);
-                device.WriteSetting(71, 0);
-            }
+            _mappingsOwned = true;
+            device.SetManagedMappings(true);
 
             // Neptune streams its IMU by default. Only change a readable IMU mode so it can be put back exactly.
-            if (!alreadyManaged && original.Values[2] is not null)
+            if (original.Values[0] is not null)
             {
                 device.WriteSetting(48, 0x18);
             }
@@ -163,6 +126,8 @@ internal sealed partial class SteamDeckNativeService(
             await context.Sink.PublishPhysicalDevicesAsync(device.Identities, Haptics, token).ConfigureAwait(false);
             _reader = new Thread(ReadLoop) { IsBackground = true, Name = "LibHandheld Neptune" };
             _reader.Start();
+            _mappingCancellation = new CancellationTokenSource();
+            _mappingWatchdog = MaintainMappingsAsync(_mappingCancellation.Token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -188,22 +153,32 @@ internal sealed partial class SteamDeckNativeService(
         }
     }
 
-    private static bool OriginalControllerObserved(INeptuneDevice device, SteamDeckOriginal original)
+    private async Task MaintainMappingsAsync(CancellationToken token)
     {
-        if (original.Values[0] is null || original.Values[1] is null)
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        try
         {
-            return false;
-        }
-
-        for (var i = 0; i < original.Registers.Length; i++)
-        {
-            if (original.Values[i] is { } value && ReadOriginal(device, original.Registers[i]) != value)
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
             {
-                return false;
+                lock (_outputGate)
+                {
+                    if (!_reading || !_management || _controller is null)
+                    {
+                        return;
+                    }
+
+                    _controller.SetManagedMappings(true);
+                }
             }
         }
-
-        return true;
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            _controllerReason = new CapabilityReason(CapabilityReasonCode.TransportFaulted,
+                "Neptune mapping ownership could not be reasserted; the uncertain write was not retried.");
+        }
     }
 
     private void ReadLoop()
@@ -302,7 +277,7 @@ internal sealed partial class SteamDeckNativeService(
     {
         if (pressed)
         {
-            _pressIds[id] = $"{context.Sink.CycleGeneration}:{id}:{++_pressSequence}";
+            _pressIds[id] = $"{id}:{++_pressSequence}";
         }
 
         if (!_pressIds.TryGetValue(id, out var pressId))
@@ -338,9 +313,18 @@ internal sealed partial class SteamDeckNativeService(
         }
     }
 
-    private async ValueTask ReleaseControllerAsync(CancellationToken token)
+    private async ValueTask StopInputAsync(CancellationToken token)
     {
         _reading = false;
+        _mappingCancellation?.Cancel();
+        if (_mappingWatchdog is { } watchdog)
+        {
+            await watchdog.WaitAsync(token).ConfigureAwait(false);
+            _mappingWatchdog = null;
+            _mappingCancellation?.Dispose();
+            _mappingCancellation = null;
+        }
+
         var device = _controller;
         if (device is not null)
         {
@@ -349,7 +333,28 @@ internal sealed partial class SteamDeckNativeService(
             {
                 throw new TimeoutException("The Neptune reader has not retired; its handles remain owned.");
             }
+        }
+    }
 
+    internal override async ValueTask DisposeAsync()
+    {
+        await StopInputAsync(CancellationToken.None).ConfigureAwait(false);
+        _controller?.Dispose();
+        _controller = null;
+        _reader = null;
+        _connected = false;
+        _memory?.Dispose();
+        _memory = null;
+        _clocks?.Dispose();
+        _clocks = null;
+    }
+
+    private async ValueTask ReleaseControllerAsync(CancellationToken token)
+    {
+        await StopInputAsync(token).ConfigureAwait(false);
+        var device = _controller;
+        if (device is not null)
+        {
             lock (_outputGate)
             {
                 try
@@ -365,6 +370,12 @@ internal sealed partial class SteamDeckNativeService(
 
             try
             {
+                if (_mappingsOwned)
+                {
+                    device.SetManagedMappings(false);
+                    _mappingsOwned = false;
+                }
+
                 await RestoreControllerAsync(token).ConfigureAwait(false);
             }
             finally
@@ -384,8 +395,14 @@ internal sealed partial class SteamDeckNativeService(
 
     private async ValueTask RestoreControllerAsync(CancellationToken token)
     {
-        if (_controller is null || _journal?.PendingOriginalFor("neptune") is not { } original)
+        if (_controller is null || _journal?.PendingOriginalFor<SteamDeckOriginal>("neptune") is not { } original)
         {
+            return;
+        }
+
+        if (_journal!.EntryFor<SteamDeckOriginal>("neptune")?.FirmwareIdentity != _controllerIdentity)
+        {
+            await _journal.RetireAsync("neptune", "firmware changed", token).ConfigureAwait(false);
             return;
         }
 
@@ -416,7 +433,14 @@ internal sealed partial class SteamDeckNativeService(
             try
             {
                 _controller.WriteSetting(original.Registers[i], value);
-                verified &= _controller.ReadSetting(original.Registers[i]) == value;
+                try
+                {
+                    verified &= _controller.ReadSetting(original.Registers[i]) == value;
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    verified = false;
+                }
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
@@ -450,7 +474,7 @@ internal sealed partial class SteamDeckNativeService(
             }
         }
 
-        return Set(_journal?.OutstandingEntries.Count > 0
+        return Set(_journal?.Entries<SteamDeckOriginal>().Count > 0
             ? DeviceServiceState.ReleasedUnverified
             : DeviceServiceState.Idle);
     }
@@ -488,19 +512,16 @@ internal sealed partial class SteamDeckNativeService(
             : ExecuteHardwareAsync(command, token);
     }
 
-    private static CapabilityDisplay Label(string text)
-    {
-        return new CapabilityDisplay { Key = DisplayKey.Custom, CustomLabel = text };
-    }
 
     private static CapabilityDescriptor Source(string id, CapabilityRole role, string label)
     {
         return new CapabilityDescriptor
         {
-            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice, Display = Label(label),
+            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice,
+            Display = CapabilityDescriptors.Label(label),
             SupportsRead = true, Persistence = CapabilityPersistence.Volatile,
             Choices = Array.AsReadOnly(SourceOwnership.Choices
-                .Select(value => new CapabilityChoice(value, Label(value))).ToArray())
+                .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
         };
     }
 }

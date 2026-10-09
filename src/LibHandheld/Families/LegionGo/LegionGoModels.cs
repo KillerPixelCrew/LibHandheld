@@ -1,4 +1,4 @@
-using LibHandheld.Internal.Identity;
+using LibHandheld.Contracts;
 
 namespace LibHandheld.Families.LegionGo;
 
@@ -20,7 +20,7 @@ internal sealed record LegionGoModel(
 
 internal static class LegionGoModels
 {
-    public const string PackageId = "libhandheld.lenovo.legion-go";
+    public const string PackageId = "legion-go";
 
     public static IReadOnlyList<LegionGoModel> All { get; } = Array.AsReadOnly<LegionGoModel>(
     [

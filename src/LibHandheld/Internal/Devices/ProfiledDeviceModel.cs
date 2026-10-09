@@ -1,6 +1,6 @@
 using System.Numerics;
-using LibHandheld.Internal.Identity;
-using LibHandheld.Internal.Input;
+using LibHandheld.Contracts;
+using LibHandheld.Internal.Transports;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 
 namespace LibHandheld.Internal.Devices;
@@ -9,6 +9,46 @@ namespace LibHandheld.Internal.Devices;
 internal sealed record ProfiledDeviceModel
 {
     internal required HandheldDefinition Definition { get; init; }
+    internal IReadOnlyList<CapabilityRole> NativeRoles { get; init; } = [];
+    internal bool UseStandardServices { get; init; } = true;
+    internal IReadOnlyList<Func<ProfiledFeatureContext, ProfiledFeatureService>> ServiceFactories { get; init; } = [];
+    internal Func<ProfiledFeatureContext, ICpuPowerTransport>? OpenPower { get; init; }
+    internal IReadOnlyList<DevicePowerPreset> PowerPresets { get; init; } = [];
+
+    internal HandheldDefinition DeclaredDefinition
+    {
+        get
+        {
+            var roles = new List<CapabilityRole>();
+            if (UseStandardServices)
+            {
+                roles.AddRange([CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit]);
+            }
+
+            if (Fan is not null)
+            {
+                roles.AddRange([CapabilityRole.FanMode, CapabilityRole.FanDuty]);
+                if (Fan.RpmHighAddress is not null)
+                {
+                    roles.Add(CapabilityRole.FanMeasuredRpm);
+                }
+            }
+
+            if (Controller is not null)
+            {
+                roles.AddRange([CapabilityRole.ControllerSource, CapabilityRole.HapticSink]);
+            }
+
+            if (Motion is not null)
+            {
+                roles.Add(CapabilityRole.MotionSource);
+            }
+
+            roles.AddRange(NativeRoles);
+            return Definition with { DeclaredRoles = roles };
+        }
+    }
+
     internal required string SourceFamilyId { get; init; }
     internal required IReadOnlyList<string> Manufacturers { get; init; }
     internal required IReadOnlyList<string> Products { get; init; }
@@ -27,9 +67,19 @@ internal sealed record ProfiledDeviceModel
     internal IReadOnlyList<KeyboardOemChord> KeyboardChords { get; init; } = [];
     internal IReadOnlyList<OemControlDescriptor> OemControls { get; init; } = [];
     internal Func<IProfiledOemSource>? CreateOemSource { get; init; }
-    internal Func<ProfiledFeatureContext, ProfiledFeatureService>? CreateNativeService { get; init; }
-    internal IReadOnlyList<string> NativeOemReplacesChords { get; init; } = ["l4", "r4", "gamepad"];
+    internal IReadOnlyList<string> NativeOemReplacesChords { get; init; } = [];
     internal bool NativeOemRequiresController { get; init; } = true;
+
+    internal static ProfiledDeviceModel ForServices(HandheldDefinition definition,
+        IReadOnlyList<Func<ProfiledFeatureContext, ProfiledFeatureService>> factories)
+    {
+        return new ProfiledDeviceModel
+        {
+            Definition = definition, SourceFamilyId = definition.FamilyId, Manufacturers = [], Products = [],
+            MinimumWatts = 0, MaximumWatts = 0, UseStandardServices = false,
+            NativeRoles = definition.DeclaredRoles, ServiceFactories = factories
+        };
+    }
 
     internal bool Matches(DeviceIdentitySnapshot identity)
     {
