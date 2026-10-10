@@ -128,7 +128,7 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
 
     internal override async ValueTask RefreshAsync(CancellationToken token)
     {
-        await RefreshAsync(null, token).ConfigureAwait(false);
+        await RefreshObservedAsync(token).ConfigureAwait(false);
         await PublishStatesAsync(token).ConfigureAwait(false);
     }
 

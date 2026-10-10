@@ -216,7 +216,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             if (!DeviceWriteBudget.IsAvailable(command.Deadline) || cancellation.IsCancellationRequested)
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
-                    "The device command has expired.");
+                    "The device command has expired.", retryable: true);
             }
 
             if (CommandAdmission.Validate(command, descriptor, _surface!.Descriptors) is { } invalid)
@@ -274,6 +274,31 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
         {
             if (_manageController == context.Enabled)
             {
+                if (context.Enabled)
+                {
+                    foreach (var native in _nativeServices)
+                    {
+                        await native.SetControllerManagementAsync(true, token).ConfigureAwait(false);
+                    }
+
+                    foreach (var service in WantedServices().Where(service =>
+                                 service.RequiresControllerOwnership && service.State != DeviceServiceState.Owned))
+                    {
+                        await DeviceServiceLifecycle.ReleaseAsync(service, Context(context.Deadline), token)
+                            .ConfigureAwait(false);
+                        if (service.State != DeviceServiceState.Idle)
+                        {
+                            throw new InvalidOperationException(
+                                "Physical input ownership has not been released; a second reader cannot be acquired.");
+                        }
+
+                        await DeviceServiceLifecycle.AcquireAsync(service, Context(context.Deadline), token)
+                            .ConfigureAwait(false);
+                    }
+
+                    await PublishAsync(token).ConfigureAwait(false);
+                }
+
                 return;
             }
 
@@ -506,7 +531,19 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
         await ObserveAccessoriesAsync(token).ConfigureAwait(false);
         foreach (var service in _services)
         {
-            await service.RefreshAsync(token).ConfigureAwait(false);
+            if (id is not null && !service.Descriptors.Any(descriptor => descriptor.CapabilityId == id))
+            {
+                continue;
+            }
+
+            if (service is ProfiledFeatureService feature)
+            {
+                await feature.RefreshAsync(id, token).ConfigureAwait(false);
+            }
+            else
+            {
+                await service.RefreshAsync(token).ConfigureAwait(false);
+            }
         }
 
         if (_nativeServices.Any(service => service.DescriptorsChanged))

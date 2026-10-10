@@ -203,7 +203,7 @@ internal static class OneXCommandCodec
     {
         for (var index = 0; index < output.Length; index++)
         {
-            output[index] = (byte)(color >> (index % 3 switch { 0 => 16, 1 => 8, _ => 0 }));
+            output[index] = (byte)(color >> ((index % 3) switch { 0 => 16, 1 => 8, _ => 0 }));
         }
     }
 

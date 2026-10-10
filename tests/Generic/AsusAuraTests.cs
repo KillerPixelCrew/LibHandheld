@@ -28,11 +28,11 @@ public sealed class AsusAuraTests
     {
         var normal = AsusAuraProtocol.Color(AsusAuraProtocol.Keyboard, "duality", 0x123456, 0xABCDEF, 50, false);
         Assert.Equal(64, normal.Length);
-        Assert.Equal(new byte[] { 0x5D, 0xB3, 0, 1, 0x12, 0x34, 0x56, 0xEB, 0, 0, 0xAB, 0xCD, 0xEF }, normal[..13]);
+        Assert.Equal(new byte[] { 0x5D, 0xB3, 0, 1, 0x12, 0x34, 0x56, 0xF5, 0, 0, 0xAB, 0xCD, 0xEF }, normal[..13]);
         var xg = AsusAuraProtocol.Color(AsusAuraProtocol.Xg2025, "rainbow", 0, 0, 100, false);
         Assert.Equal(300, xg.Length);
         Assert.Equal((byte)0x5E, xg[0]);
-        Assert.Equal((byte)0xF5, xg[7]);
+        Assert.Equal((byte)0xE1, xg[7]);
         Assert.Equal(new byte[] { 0xB4, 0xB5 },
             AsusAuraProtocol.Apply(AsusAuraProtocol.Xg2025).Select(packet => packet[1]));
         Assert.Equal(new byte[] { 0xB5, 0xB4 },
@@ -155,27 +155,52 @@ public sealed class AsusAuraTests
     }
 
     [Fact]
+    public void AnUncertainColorAllowsTheNextExplicitCommandWithoutReopening()
+    {
+        var module = Module(AsusAuraProtocol.Keyboard);
+        var transport = new FakeTransport { FailColor = true };
+        var controller = new AsusAuraController(() => [module], _ => transport);
+        controller.Refresh(CancellationToken.None);
+        var first = Command(CapabilityIds.LightingColor, module.ZoneId, CapabilityValue.Color(0x123456));
+        Assert.Equal(CommandOutcome.Indeterminate, controller.Execute(first, CancellationToken.None).Outcome);
+        transport.FailColor = false;
+        var next = Command(CapabilityIds.LightingColor, module.ZoneId, CapabilityValue.Color(0xABCDEF));
+        Assert.Equal(CommandOutcome.Applied, controller.Execute(next, CancellationToken.None).Outcome);
+        Assert.Equal(2, transport.Packets.Count(packet => packet[1] == 0xB3));
+        Assert.False(transport.Disposed);
+        controller.Close();
+    }
+
+    [Fact]
     public void UncertainColorIsNotRetriedByDiscoverySuspendOrReplug()
     {
         var module = Module(AsusAuraProtocol.Keyboard);
-        var opened = 0;
+        var opened = new List<FakeTransport>();
         var transport = new FakeTransport { FailColor = true };
         var controller = new AsusAuraController(() => [module], _ =>
         {
-            opened++;
-            return transport;
+            var next = opened.Count == 0 ? transport : new FakeTransport();
+            opened.Add(next);
+            return next;
         });
         controller.Refresh(CancellationToken.None);
         var command = Command(CapabilityIds.LightingColor, module.ZoneId, CapabilityValue.Color(0x123456));
         Assert.Equal(CommandOutcome.Indeterminate, controller.Execute(command, CancellationToken.None).Outcome);
         var count = transport.Packets.Count;
         controller.Refresh(CancellationToken.None);
+        Assert.Equal(count, transport.Packets.Count);
         controller.Close();
         controller.Refresh(CancellationToken.None);
-        Assert.Equal(CommandOutcome.Rejected, controller.Execute(command, CancellationToken.None).Outcome);
         Assert.Equal(count, transport.Packets.Count);
-        Assert.Equal(1, opened);
-        Assert.All(controller.States, state => Assert.False(state.Available));
+        Assert.Equal(2, opened.Count);
+        Assert.True(transport.Disposed);
+        Assert.Empty(opened[1].Packets);
+        var nextCommand = Command(CapabilityIds.LightingColor, module.ZoneId, CapabilityValue.Color(0xABCDEF));
+        Assert.Equal(CommandOutcome.Applied, controller.Execute(nextCommand, CancellationToken.None).Outcome);
+        Assert.Single(opened[1].Packets, packet => packet[1] == 0xB3);
+        Assert.Equal(0xABCDEF,
+            controller.States.Single(state => state.CapabilityId == CapabilityIds.LightingColor
+                                             && state.InstanceId == module.ZoneId).ObservedValue?.ColorValue);
         controller.Close();
     }
 
@@ -210,7 +235,7 @@ public sealed class AsusAuraTests
     {
         internal List<byte[]> Packets { get; } = [];
         internal bool Disposed { get; private set; }
-        internal bool FailColor { get; init; }
+        internal bool FailColor { get; set; }
 
         public void Send(byte[] packet)
         {

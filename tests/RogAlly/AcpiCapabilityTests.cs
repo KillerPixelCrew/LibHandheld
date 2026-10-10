@@ -155,7 +155,7 @@ public sealed class AcpiCapabilityTests
     }
 
     [Fact]
-    public void ChargeLimitWritesAndRefusesTooLow()
+    public void ChargeLimitWritesTheFullPercentageRangeAndRefusesValuesOutsideIt()
     {
         var acpi = new FakeAsusAcpi();
         var charge = new AllyChargeLimitCapability(acpi);
@@ -163,8 +163,14 @@ public sealed class AcpiCapabilityTests
         Assert.Equal(CommandOutcome.Applied,
             charge.Apply(Command(CapabilityValue.Integer(80), CapabilityIds.ChargeLimit), 80).Outcome);
         Assert.Equal(80, charge.Read());
-        Assert.Equal(CommandOutcome.Rejected,
+        Assert.Equal(CommandOutcome.Applied,
             charge.Apply(Command(CapabilityValue.Integer(20), CapabilityIds.ChargeLimit), 20).Outcome);
+        Assert.Equal(20, charge.Read());
+        Assert.Equal(CommandOutcome.Rejected,
+            charge.Apply(Command(CapabilityValue.Integer(-1), CapabilityIds.ChargeLimit), -1).Outcome);
+        Assert.Equal(CommandOutcome.Rejected,
+            charge.Apply(Command(CapabilityValue.Integer(101), CapabilityIds.ChargeLimit), 101).Outcome);
+        Assert.Equal(2, acpi.Writes.Count);
     }
 
     [Fact]

@@ -33,6 +33,11 @@ internal abstract class ProfiledFeatureService(string serviceId) : DeviceService
         return ValueTask.CompletedTask;
     }
 
+    internal virtual ValueTask RefreshAsync(string? capabilityId, CancellationToken token)
+    {
+        return RefreshAsync(token);
+    }
+
     internal virtual ValueTask SetControllerManagementAsync(bool enabled, CancellationToken token)
     {
         return ValueTask.CompletedTask;

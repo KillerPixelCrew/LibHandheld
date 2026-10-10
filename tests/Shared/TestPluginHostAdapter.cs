@@ -60,6 +60,25 @@ internal sealed class TestPluginHostAdapter : IDeviceSink
     public IReadOnlyList<(DeviceTraceLevel Level, string Scope, string Key, string Message)> Changes =>
         Snapshot(_changes);
 
+    internal void Log(DeviceLogEntry entry)
+    {
+        var level = entry.Level switch
+        {
+            DeviceLogLevel.Info => DeviceTraceLevel.Info,
+            DeviceLogLevel.Warn => DeviceTraceLevel.Warn,
+            DeviceLogLevel.Error => DeviceTraceLevel.Error,
+            _ => DeviceTraceLevel.Debug
+        };
+        if (entry.ChangeKey is { } key)
+        {
+            TraceChange(level, entry.Scope, key, entry.Message);
+        }
+        else
+        {
+            Trace(level, entry.Scope, entry.Message);
+        }
+    }
+
     /// <inheritdoc />
     /// <inheritdoc />
     public ValueTask PublishDescriptorsAsync(

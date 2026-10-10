@@ -48,7 +48,7 @@ internal sealed partial class ProfiledDeviceEngine
                 if (_controlOwners.TryGetValue((state.CapabilityId, state.InstanceId), out var owner) &&
                     owner == service)
                 {
-                    await _sink.PublishCapabilityStateAsync(state, token).ConfigureAwait(false);
+                    await _sink.PublishCapabilityStateAsync(state, token).AsTask().WaitAsync(token).ConfigureAwait(false);
                 }
             }
         }

@@ -202,7 +202,7 @@ internal static class DeviceServiceLifecycle
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(required);
         var counted = services.Where(required).ToArray();
-        var owned = counted.Count(service => service.State is DeviceServiceState.Owned);
+        var owned = counted.Count(service => service.State is DeviceServiceState.Owned or DeviceServiceState.Degraded);
         var firstUnhealthy = counted.FirstOrDefault(service => service.State is not DeviceServiceState.Owned);
         EngineStartResult result = new()
         {

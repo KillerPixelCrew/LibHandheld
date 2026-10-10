@@ -9,7 +9,7 @@ namespace LibHandheld.Families.MsiClaw;
 internal sealed partial class ClawDeviceEngine
 {
     /// <summary>The serializer's refresh: one capability's services, or every owned service when the id is null.</summary>
-    private ValueTask RefreshAsync(string? capabilityId, CancellationToken cancellationToken)
+    private ValueTask RefreshObservedForCapabilityAsync(string? capabilityId, CancellationToken cancellationToken)
     {
         return capabilityId is null
             ? RefreshAllObservedAsync(cancellationToken)

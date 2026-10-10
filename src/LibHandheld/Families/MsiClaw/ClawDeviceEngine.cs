@@ -312,9 +312,14 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
         return await ExecuteBoundCommandAsync(command, token).ConfigureAwait(false);
     }
 
-    internal override async ValueTask RefreshAsync(CancellationToken token)
+    internal override ValueTask RefreshAsync(CancellationToken token)
     {
-        await RefreshAsync(null, token).ConfigureAwait(false);
+        return RefreshAsync(null, token);
+    }
+
+    internal override async ValueTask RefreshAsync(string? capabilityId, CancellationToken token)
+    {
+        await RefreshObservedForCapabilityAsync(capabilityId, token).ConfigureAwait(false);
         await PublishCapabilityStatesAsync(token).ConfigureAwait(false);
     }
 

@@ -159,11 +159,11 @@ internal sealed partial class LegionGoDeviceEngine
             DefaultActionHint = index == 13 ? OemControlDefaultActionHint.MouseSecondaryButton
                 : index == 1 ? OemControlDefaultActionHint.CompanionApplication : OemControlDefaultActionHint.None
         }).ToArray(), token).ConfigureAwait(false);
-        await RefreshAsync(null, token).ConfigureAwait(false);
+        await RefreshObservedAsync(token).ConfigureAwait(false);
         await PublishStatesAsync(token).ConfigureAwait(false);
     }
 
-    private async ValueTask RefreshAsync(string? id, CancellationToken token)
+    private async ValueTask RefreshObservedAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         if (_wmi is not null)

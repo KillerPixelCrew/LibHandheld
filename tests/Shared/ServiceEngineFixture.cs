@@ -15,6 +15,7 @@ internal sealed class ServiceEngineFixture(Func<ProfiledFeatureContext, Profiled
     public ValueTask<EngineStartResult> StartAsync(EngineStartContext context, CancellationToken token)
     {
         var definition = HandheldDevice.Definitions.Single(item => item.Id == context.DeviceDefinitionId);
+        DeviceTrace.Install(context.Host is TestPluginHostAdapter host ? host.Log : null);
         _engine ??= new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition, [createProvider]));
         return _engine.StartAsync(context, token);
     }
@@ -59,8 +60,13 @@ internal sealed class ServiceEngineFixture(Func<ProfiledFeatureContext, Profiled
         return Engine.StopAsync(context, token);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        return _engine?.DisposeAsync() ?? ValueTask.CompletedTask;
+        if (_engine is not null)
+        {
+            await _engine.DisposeAsync().ConfigureAwait(false);
+        }
+
+        DeviceTrace.Install(null);
     }
 }

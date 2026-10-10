@@ -62,7 +62,18 @@ internal sealed partial class AllyDeviceEngine
         {
             // What was written stands in for a readback the firmware cannot give (SDK: an unverified
             // write earns Observed at best). It lives only for this cycle.
-            _observedValues.Written(command.CapabilityId, requested, command.InstanceId);
+            var written = requested;
+            if (command.CapabilityId == CapabilityIds.FanCurve
+                && AllyFanCapability.TryEncode(requested.CurveValue, out var encoded, out _))
+            {
+                written = CapabilityValue.Curve(AllyFanCapability.Decode(encoded));
+            }
+            else if (command.CapabilityId == "fan.duty" && requested.IntegerValue is { } duty)
+            {
+                written = CapabilityValue.Integer(Math.Min(duty, 99));
+            }
+
+            _observedValues.Written(command.CapabilityId, written, command.InstanceId);
             if (command.CapabilityId is CapabilityIds.PowerSustained or CapabilityIds.PowerBoost
                 && DevicePowerPair.TryResolve(command, _descriptorSet!.Descriptors, out var sustained, out var boost,
                     out _))

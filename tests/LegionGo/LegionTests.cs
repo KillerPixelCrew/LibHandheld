@@ -106,11 +106,13 @@ public sealed class LegionTests
         Assert.False(touch.SecondaryHeld);
     }
 
-    [Fact]
-    public async Task PowerPairWritesAllFourNativeLimitsAndRestoresFirstOriginalAcrossModeChanges()
+    [Theory]
+    [InlineData(2)]
+    [InlineData(255)]
+    public async Task PowerPairWritesFourLimitsAndRestoresTheCapturedModeWithoutOverridingOemLimits(int originalMode)
     {
         using var directory = new TemporaryDirectory();
-        var wmi = new FakeWmi();
+        var wmi = new FakeWmi { Mode = originalMode };
         var hid = new FakeHid();
         var host = new TestPluginHostAdapter(1);
         await using var engine = Engine("83E1", wmi, hid);
@@ -130,12 +132,27 @@ public sealed class LegionTests
         Assert.Equal(20, wmi.Values[LegionProtocol.CrossPower]);
         Assert.Equal(25, wmi.Values[LegionProtocol.ShortPower]);
         Assert.Equal(25, wmi.Values[LegionProtocol.PeakPower]);
+        var writesBeforeStop = wmi.Writes.Count;
         _ = await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
-        Assert.Equal(2, wmi.Mode);
-        Assert.All(
-            wmi.Values.Where(p => p.Key is LegionProtocol.LongPower or LegionProtocol.CrossPower
-                or LegionProtocol.ShortPower or LegionProtocol.PeakPower), p => Assert.Equal(15, p.Value));
+        Assert.Equal(originalMode, wmi.Mode);
+        var restoration = wmi.Writes.Skip(writesBeforeStop).ToArray();
+        if (originalMode == 255)
+        {
+            Assert.Equal(new (int? Feature, int Value)[]
+            {
+                (LegionProtocol.LongPower, 15), (LegionProtocol.CrossPower, 15),
+                (LegionProtocol.ShortPower, 15), (LegionProtocol.PeakPower, 15), (null, 255)
+            }, restoration);
+            Assert.All(
+                wmi.Values.Where(p => p.Key is LegionProtocol.LongPower or LegionProtocol.CrossPower
+                    or LegionProtocol.ShortPower or LegionProtocol.PeakPower), p => Assert.Equal(15, p.Value));
+        }
+        else
+        {
+            // Lenovo's OEM mode owns its limits. Replaying captured raw limits would switch it back to Custom.
+            Assert.Equal(new (int? Feature, int Value)[] { (null, originalMode) }, restoration);
+        }
     }
 
     [Fact]
@@ -233,7 +250,8 @@ public sealed class LegionTests
             [LegionProtocol.FanRpm] = 2000, [LegionProtocol.ChargeProtection] = 0
         };
 
-        public int Mode { get; private set; } = 2;
+        public int Mode { get; set; } = 2;
+        public List<(int? Feature, int Value)> Writes { get; } = [];
         public bool HideReadbackAfterWrite { get; init; }
         public bool FeaturesAvailable => true;
         public bool ModesAvailable => true;
@@ -246,6 +264,7 @@ public sealed class LegionTests
 
         public void WriteFeature(int id, int value)
         {
+            Writes.Add((id, value));
             Values[id] = value;
             _wrote = true;
         }
@@ -257,6 +276,7 @@ public sealed class LegionTests
 
         public void WriteMode(int value)
         {
+            Writes.Add((null, value));
             Mode = value;
             _wrote = true;
         }

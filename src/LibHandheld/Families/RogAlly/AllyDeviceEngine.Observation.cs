@@ -12,7 +12,7 @@ internal sealed partial class AllyDeviceEngine
 {
     /// <summary>Re-reads what one capability, or every capability when the id is null, observes.</summary>
     /// <remarks>The ACPI reads are synchronous, so there is nothing for the token to cancel.</remarks>
-    private ValueTask RefreshAsync(string? capabilityId, CancellationToken cancellationToken)
+    private ValueTask RefreshObservedForCapabilityAsync(string? capabilityId, CancellationToken cancellationToken)
     {
         try
         {
@@ -23,7 +23,7 @@ internal sealed partial class AllyDeviceEngine
             }
 
             if (_fans is { State: DeviceServiceState.Owned } && capabilityId is null
-                    or CapabilityIds.FanCurve or CapabilityIds.FanMode or CapabilityIds.Scenario)
+                    or CapabilityIds.FanCurve or CapabilityIds.FanMode or CapabilityIds.Scenario or "fan.duty")
             {
                 _fans.Refresh();
             }

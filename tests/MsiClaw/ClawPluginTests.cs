@@ -552,7 +552,7 @@ public sealed class ClawDeviceEngineTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task BlockedPostCommandPublicationHonorsTimeoutOrStopWithoutInventingRollback(bool stop)
+    public async Task BlockedPostCommandPublicationHonorsTimeoutOrStopWithoutChangingAcceptedWrite(bool stop)
     {
         using TemporaryDirectory state = new();
         FakeWmiTransport wmi = new();
@@ -583,7 +583,7 @@ public sealed class ClawDeviceEngineTests
                     .AsTask()
                 : null;
             var result = await applying.WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
+            Assert.Equal(CommandOutcome.Applied, result.Outcome);
             if (stopping is not null)
             {
                 Assert.Equal(EngineStopStatus.Clean, (await stopping).Status);
@@ -784,14 +784,14 @@ public sealed class ClawDeviceEngineTests
     }
 
     [Fact]
-    public async Task StartAsync_OutstandingCompactPowerEntry_RestoresBeforeNewOwnership()
+    public async Task StartAsync_OutstandingSharedPowerOriginal_RestoresBeforeNewOwnership()
     {
         using TemporaryDirectory state = new();
         {
             var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
             _ = await journal.BeginAsync(
                 ServiceIds.Power,
-                "ec:1T52EMS1.109;msi-acpi:8.0",
+                "bios:E1T52IMS.114",
                 ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)),
                 CancellationToken.None);
         }
@@ -839,10 +839,8 @@ public sealed class ClawDeviceEngineTests
             Assert.Equal(nameof(DeviceServiceState.Owned), diagnostics["msiclaw-native"]);
             Assert.NotNull((await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None))
                 .EntryFor<ClawRecoveryState>(ServiceIds.Power));
-            _ = await firstCycle.StopAsync(
-                new EngineStopContext(
-                    Deadline.After(TimeSpan.FromSeconds(10))),
-                CancellationToken.None);
+            // Dispose only closes handles, as after an interrupted process lifetime. A clean stop would
+            // attempt restoration again and retire the original after an accepted write.
         }
 
         var failed = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);

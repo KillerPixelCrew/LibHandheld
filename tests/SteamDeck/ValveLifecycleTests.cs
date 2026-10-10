@@ -26,12 +26,19 @@ public sealed class ValveLifecycleTests
             new ProfiledCycleIdentity("steamdeck-lcd|bios"));
         await service.AcquireAsync(cycle, CancellationToken.None);
         Assert.True(service.Connected);
-        Assert.Equal((ushort)0, controllers[0].Registers[9]);
+        Assert.True(controllers[0].ManagedMappings);
+        Assert.Equal((ushort)7, controllers[0].Registers[7]);
+        Assert.Equal((ushort)7, controllers[0].Registers[8]);
+        Assert.Equal((ushort)1, controllers[0].Registers[9]);
         Assert.Equal((ushort)0x18, controllers[0].Registers[48]);
         await service.SetControllerManagementAsync(false, CancellationToken.None);
         Assert.False(service.Connected);
         Assert.True(controllers[0].Disposed);
         Assert.True(controllers[0].Stopped);
+        Assert.False(controllers[0].ManagedMappings);
+        Assert.True(controllers[0].MappingChanges[0]);
+        Assert.False(controllers[0].MappingChanges[^1]);
+        Assert.Single(controllers[0].MappingChanges, managed => !managed);
         Assert.Equal((ushort)1, controllers[0].Registers[9]);
         Assert.Equal((ushort)1, controllers[0].Registers[71]);
         Assert.Equal((ushort)0x1C, controllers[0].Registers[48]);
@@ -48,7 +55,10 @@ public sealed class ValveLifecycleTests
     private sealed class NeptuneFake : INeptuneDevice
     {
         private readonly ManualResetEventSlim _stop = new(false);
-        public Dictionary<byte, ushort> Registers { get; } = new() { [9] = 1, [71] = 1, [48] = 0x1C };
+        public Dictionary<byte, ushort> Registers { get; } = new()
+            { [7] = 0, [8] = 0, [9] = 1, [71] = 1, [48] = 0x1C };
+        public List<bool> MappingChanges { get; } = [];
+        public bool ManagedMappings { get; private set; }
         public List<HapticOutputFrame> Output { get; } = [];
         public bool Disposed { get; private set; }
         public bool Stopped { get; private set; }
@@ -87,8 +97,13 @@ public sealed class ValveLifecycleTests
 
         public void SetManagedMappings(bool managed)
         {
-            Registers[7] = managed ? (ushort)7 : (ushort)0;
-            Registers[8] = managed ? (ushort)7 : (ushort)0;
+            MappingChanges.Add(managed);
+            ManagedMappings = managed;
+            if (managed)
+            {
+                Registers[7] = 7;
+                Registers[8] = 7;
+            }
         }
 
         public void Rumble(HapticOutputFrame frame)
