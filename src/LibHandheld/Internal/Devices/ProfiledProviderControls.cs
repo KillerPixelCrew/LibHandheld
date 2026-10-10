@@ -12,13 +12,14 @@ internal sealed partial class ProfiledPowerService
         :
         [
             ProviderControls.Integer(CapabilityIds.PowerSustained, CapabilityRole.PowerSustainedLimit,
-                    DisplayKey.SustainedPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true)
+                    DisplayKey.SustainedPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true,
+                    false)
                 with
                 {
                     PairedPowerLimitId = CapabilityIds.PowerBoost, PowerPresets = model.PowerPresets
                 },
             ProviderControls.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
-                DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true)
+                DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, false)
         ];
 
     internal override IReadOnlyList<CapabilityState> States =>
@@ -30,13 +31,6 @@ internal sealed partial class ProfiledPowerService
             Observed is { } slowLimits ? CapabilityValue.Integer((int)Math.Round(slowLimits.SlowWatts)) : null,
             ObservedAt, Reason)
     ];
-
-    internal override ValueTask RefreshAsync(CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested();
-        Refresh();
-        return ValueTask.CompletedTask;
-    }
 
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
@@ -79,13 +73,12 @@ internal sealed partial class ProfiledFanService
                     CapabilityId = CapabilityIds.FanMode, Role = CapabilityRole.FanMode,
                     ValueKind = CapabilityValueKind.Choice,
                     Display = new CapabilityDisplay { Key = DisplayKey.FanMode },
-                    SupportsRead = profile.ManualAddress is not null,
                     SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
                     Choices = new[] { "automatic", "custom", "full-speed" }.Select(value => new CapabilityChoice(value,
                         new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = value })).ToArray()
                 },
                 ProviderControls.Integer("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100,
-                    CapabilityUnit.Percent, true, profile.ReadDuty)
+                    CapabilityUnit.Percent, true, false)
             ];
             if (profile.RpmHighAddress is not null)
             {
@@ -108,7 +101,7 @@ internal sealed partial class ProfiledFanService
             : new[]
             {
                 ProviderControls.State(CapabilityIds.FanRpm, State == DeviceServiceState.Owned,
-                    Rpm is { } rpm ? CapabilityValue.Integer(rpm) : null, ObservedAt, Reason)
+                    Rpm is { } rpm ? CapabilityValue.Integer(rpm) : null, RpmObservedAt, Reason)
             }
     ];
 

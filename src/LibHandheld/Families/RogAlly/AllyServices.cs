@@ -33,9 +33,9 @@ internal sealed class PowerService(
     Func<TimeSpan, CancellationToken, Task> delay,
     DeviceRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Power)
 {
-    public AllyPowerCapability? Capability { get; private set; }
+    private bool _originalCaptureAttempted;
 
-    public AllyPowerState? LastObserved { get; private set; }
+    public AllyPowerCapability? Capability { get; private set; }
 
     public override ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<AllyIdentityState> context,
@@ -57,16 +57,8 @@ internal sealed class PowerService(
         }
 
         Capability = new AllyPowerCapability(acpi, model, delay);
-        LastObserved = Capability.Read();
-        DeviceTrace.Info("power",
-            $"SPL={LastObserved.Sustained?.ToString() ?? "?"} SPPT={LastObserved.Slow?.ToString() ?? "?"} "
-            + $"FPPT={LastObserved.Fast?.ToString() ?? "?"} mode={LastObserved.Mode?.ToString() ?? "?"}.");
+        _originalCaptureAttempted = false;
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
-    }
-
-    public void Refresh()
-    {
-        LastObserved = Capability?.Read();
     }
 
     /// <summary>Journals the original state before the first write of this cycle, when it can be read.</summary>
@@ -82,6 +74,13 @@ internal sealed class PowerService(
     /// </returns>
     public async ValueTask PrepareWriteAsync(AllyIdentityState identity, CancellationToken cancellationToken)
     {
+        if (_originalCaptureAttempted)
+        {
+            return;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        _originalCaptureAttempted = true;
         await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
         {
             var original = Capability!.Read();
@@ -109,7 +108,7 @@ internal sealed class PowerService(
             try
             {
                 await Capability.RestoreAsync(original, cancellationToken).ConfigureAwait(false);
-                await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredVerified, CancellationToken.None)
+                await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
                     .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -141,11 +140,12 @@ internal sealed class FanService(
     Func<TimeSpan, CancellationToken, Task> delay,
     DeviceRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Fans)
 {
+    private bool _originalCaptureAttempted;
+
     public AllyFanCapability? Capability { get; private set; }
 
-    public AllyFanSnapshot? LastObserved { get; private set; }
-
     public (int? Cpu, int? Gpu) LastFans { get; private set; }
+    internal DateTimeOffset? TelemetryObservedAt { get; private set; }
 
     public AllyFanSnapshot? Original => journal.OriginalStateFor<AllyRecoveryState>(ServiceId)?.ToFans();
 
@@ -169,22 +169,20 @@ internal sealed class FanService(
         }
 
         Capability = new AllyFanCapability(acpi, delay);
-        Capability.Probe();
-        Refresh();
-        DeviceTrace.Info("fans",
-            $"curves readable={LastObserved?.Readable == true}, mid fan={Capability.HasMidFan}.");
+        _originalCaptureAttempted = false;
+        RefreshTelemetry();
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
 
-    public void Refresh()
+    public void RefreshTelemetry()
     {
         if (Capability is null)
         {
             return;
         }
 
-        LastObserved = Capability.Read();
         LastFans = Capability.ReadFans();
+        TelemetryObservedAt = DateTimeOffset.UtcNow;
     }
 
     /// <summary>Journals the original curves before the first write of this cycle, when they can be read.</summary>
@@ -200,9 +198,17 @@ internal sealed class FanService(
     /// </returns>
     public async ValueTask PrepareWriteAsync(AllyIdentityState identity, CancellationToken cancellationToken)
     {
+        if (_originalCaptureAttempted)
+        {
+            return;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        _originalCaptureAttempted = true;
         await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
         {
-            var original = Capability!.Read();
+            Capability!.Probe();
+            var original = Capability.Read();
             return original.Readable && original.Mode is not null && (!Capability.HasMidFan || original.Mid is not null)
                 ? AllyRecoveryState.Fans(original)
                 : null;
@@ -231,7 +237,7 @@ internal sealed class FanService(
         try
         {
             await Capability.RestoreAsync(original, cancellationToken).ConfigureAwait(false);
-            await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredVerified, CancellationToken.None)
+            await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -281,8 +287,6 @@ internal sealed class ChargeLimitService(IAsusAcpi acpi) : DeviceService<AllyIde
 {
     public AllyChargeLimitCapability? Capability { get; private set; }
 
-    public int? LastObserved { get; private set; }
-
     public override ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<AllyIdentityState> context,
         CancellationToken cancellationToken)
@@ -301,13 +305,7 @@ internal sealed class ChargeLimitService(IAsusAcpi acpi) : DeviceService<AllyIde
         }
 
         Capability = new AllyChargeLimitCapability(acpi);
-        Refresh();
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
-    }
-
-    public void Refresh()
-    {
-        LastObserved = Capability?.Read();
     }
 
     public override ValueTask<DeviceServiceResult> ReleaseAsync(

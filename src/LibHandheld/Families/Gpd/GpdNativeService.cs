@@ -6,10 +6,11 @@ using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.Gpd;
 
-/// <summary>Reads WinControls preferences; only an explicit user command writes its durable table.</summary>
+/// <summary>Preserves WinControls' durable table while publishing only acknowledged user commands.</summary>
 internal sealed class GpdNativeService()
     : ProfiledFeatureService("gpd-controls")
 {
+    private readonly ObservedValues _observed = new();
     private GpdControlsProtocol? _protocol;
     private GpdControlsSnapshot? _snapshot;
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _snapshot is null ? [] : Describe(_snapshot);
@@ -19,8 +20,11 @@ internal sealed class GpdNativeService()
         : Descriptors.Select(descriptor => new CapabilityState
         {
             CapabilityId = descriptor.CapabilityId, Available = State == DeviceServiceState.Owned,
-            ObservedValue = Value(descriptor.CapabilityId, _snapshot), Quality = HardwareStateQuality.Observed,
-            ObservedAt = DateTimeOffset.UtcNow
+            ObservedValue = _observed.Value(descriptor.CapabilityId),
+            Quality = _observed.Value(descriptor.CapabilityId) is null
+                ? HardwareStateQuality.Unknown
+                : HardwareStateQuality.Observed,
+            ObservedAt = _observed.Time(descriptor.CapabilityId)
         }).ToArray();
 
     public override bool Suspendable => true;
@@ -66,17 +70,21 @@ internal sealed class GpdNativeService()
         var dispatched = false;
         try
         {
+            // These bytes are required to preserve unrelated EEPROM fields during the whole-table
+            // transaction. They are transaction inputs, never readbacks of control state.
             var snapshot = _protocol.Read(token);
             var next = (byte[])snapshot.Configuration.Clone();
             Apply(next, snapshot.Version2, command);
             if (next.AsSpan().SequenceEqual(snapshot.Configuration))
             {
+                _observed.Written(command.CapabilityId, command.RequestedValue!);
                 return ValueTask.FromResult(CommandResults.Applied(command));
             }
 
             dispatched = true;
             _protocol.Write(snapshot, next, token);
             _snapshot = snapshot with { Configuration = next };
+            _observed.Written(command.CapabilityId, command.RequestedValue!);
             return ValueTask.FromResult(CommandResults.Applied(command));
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -108,6 +116,7 @@ internal sealed class GpdNativeService()
         _protocol?.Dispose();
         _protocol = null;
         _snapshot = null;
+        _observed.Clear();
     }
 
     private static IReadOnlyList<CapabilityDescriptor> Describe(GpdControlsSnapshot snapshot)
@@ -128,7 +137,6 @@ internal sealed class GpdNativeService()
             {
                 CapabilityId = CapabilityIds.LightingColor, Role = CapabilityRole.LightingZoneColor,
                 ValueKind = CapabilityValueKind.Color, Display = CapabilityDescriptors.Label("Lighting color"),
-                SupportsRead = true,
                 SupportsWrite = true,
                 Persistence = CapabilityPersistence.DevicePersistent
             });
@@ -183,30 +191,6 @@ internal sealed class GpdNativeService()
         }
     }
 
-    private static CapabilityValue Value(string id, GpdControlsSnapshot snapshot)
-    {
-        var config = snapshot.Configuration;
-        var v2 = snapshot.Version2;
-        return id switch
-        {
-            "haptic.strength" => CapabilityValue.Choice(config[v2 ? 944 : 66] switch
-            {
-                0 => "off", 1 => "medium", _ => "high"
-            }),
-            "controller.left-deadzone" => CapabilityValue.Integer(unchecked((sbyte)config[v2 ? 949 : 73])),
-            "controller.right-deadzone" => CapabilityValue.Integer(unchecked((sbyte)config[v2 ? 951 : 75])),
-            "controller.left-boundary" => CapabilityValue.Integer(unchecked((sbyte)config[v2 ? 950 : 72])),
-            "controller.right-boundary" => CapabilityValue.Integer(unchecked((sbyte)config[v2 ? 952 : 74])),
-            CapabilityIds.LightingEffect => CapabilityValue.Choice(config[v2 ? 945 : 68] switch
-            {
-                0 => "off", 1 or 0x80 => "solid", 0x11 or 0x81 => "breathing", _ => "gradient"
-            }),
-            CapabilityIds.LightingColor => CapabilityValue.Color((config[v2 ? 946 : 69] << 16) |
-                                                                 (config[v2 ? 947 : 70] << 8) | config[v2 ? 948 : 71]),
-            _ => throw new ArgumentOutOfRangeException(nameof(id))
-        };
-    }
-
 
     private static CapabilityDescriptor Choice(string id, CapabilityRole role, string label, string[] choices)
     {
@@ -214,7 +198,6 @@ internal sealed class GpdNativeService()
         {
             CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice,
             Display = CapabilityDescriptors.Label(label),
-            SupportsRead = true,
             SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent,
             Choices = Array.AsReadOnly(choices
                 .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
@@ -227,7 +210,7 @@ internal sealed class GpdNativeService()
         {
             CapabilityId = id, Role = CapabilityRole.GenericRange, ValueKind = CapabilityValueKind.Integer,
             Display = CapabilityDescriptors.Label(label),
-            SupportsRead = true, SupportsWrite = true, Minimum = -10, Maximum = 10, Step = 1,
+            SupportsWrite = true, Minimum = -10, Maximum = 10, Step = 1,
             Persistence = CapabilityPersistence.DevicePersistent
         };
     }

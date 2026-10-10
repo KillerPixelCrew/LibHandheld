@@ -131,6 +131,11 @@ out-of-range percentage as unknown, and leaves the capability writable so the co
 applied over the reset. **The write of `0x80 | percent` and its readback are source-derived and
 await the maintainer's confirmation on the unit.**
 
+The current LibHandheld runtime has no startup, periodic or post-command control readback. Accepted
+writes supply control state; temperature and RPM remain sensor measurements. Original power/fan
+state and the lighting envelope are captured once where needed for restoration or preserving bytes.
+The readback and rollback descriptions in the dated history below describe superseded behavior.
+
 On 2026-09-08, the existing ordered power-pair transport was connected to the SDK's optional
 coordinated command. AutoTDP uses equal PL1/PL2 targets within the existing 8-37 W bounds. New
 fake-transport tests cover raising, lowering and failed-readback rollback. This is software

@@ -78,6 +78,14 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
             await _journal.ReconcileAsync<SteamMachineOriginal>(ServiceId, context.Firmware,
                 (_, ct) => RestoreAsync(ct), token).ConfigureAwait(false);
             await _journal.BeginAsync(ServiceId, context.Firmware, Capture, token).ConfigureAwait(false);
+            if (_journal.OriginalStateFor<SteamMachineOriginal>(ServiceId) is { } original)
+            {
+                // Preserve composition inputs from the recovery capture without publishing control readbacks.
+                _effect = original.Effect is >= 0 and <= 7 ? (int)original.Effect.Value : _effect;
+                _left = original.Colors[0] ?? _left;
+                _right = original.Colors[16] ?? _right;
+            }
+
             await _journal.BeginAsync("fremont-init", context.Firmware,
                     () => new SteamMachineOriginal { Colors = new int?[17], InitializationChanged = true }, token)
                 .ConfigureAwait(false);
@@ -185,42 +193,6 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
     internal override ValueTask RefreshAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        if (_module is null)
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        var enabled = ReadScalar("ioctl_get_enabled");
-        var brightness = ReadScalar("ioctl_get_brightness_scale");
-        var effect = ReadScalar("ioctl_get_effect");
-        if (enabled is 0 or 1)
-        {
-            Observe(PowerId, null, CapabilityValue.Boolean(enabled == 1));
-        }
-
-        if (brightness is >= 0 and <= 255)
-        {
-            Observe(BrightnessId, null, CapabilityValue.Integer((int)Math.Round(brightness.Value * 100d / 255)));
-        }
-
-        if (effect is >= 0 and <= 7)
-        {
-            _effect = (int)effect.Value;
-            Observe(EffectId, null, CapabilityValue.Choice(Effects[_effect]));
-        }
-
-        if (ReadColor(0) is { } left)
-        {
-            _left = left;
-            Observe(ColorId, "left", CapabilityValue.Color(left));
-        }
-
-        if (ReadColor(16) is { } right)
-        {
-            _right = right;
-            Observe(ColorId, "right", CapabilityValue.Color(right));
-        }
-
         return ValueTask.CompletedTask;
     }
 
@@ -298,9 +270,6 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
             return;
         }
 
-        var complete = !original.InitializationChanged && original.Enabled is not null &&
-                       original.Brightness is not null
-                       && original.Effect is not null && original.Colors.All(color => color is not null);
         try
         {
             HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
@@ -330,12 +299,8 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
 
                 return true;
             });
-            var captured = Capture();
-            complete &= captured.Enabled == original.Enabled && captured.Brightness == original.Brightness
-                                                             && captured.Effect == original.Effect &&
-                                                             captured.Colors.SequenceEqual(original.Colors);
             await _journal.SetStatusAsync(ServiceId,
-                    complete ? DeviceRecoveryStatus.RestoredVerified : DeviceRecoveryStatus.RestoredUnverified, token)
+                    DeviceRecoveryStatus.RestoredUnverified, token)
                 .ConfigureAwait(false);
             if (_journal.EntryFor<SteamMachineOriginal>("fremont-init") is not null)
             {

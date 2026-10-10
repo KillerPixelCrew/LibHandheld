@@ -140,7 +140,9 @@ internal sealed partial class AllyDeviceEngine
                     : service.Reason ?? DeviceServiceLifecycle.ReasonFor(service.State),
                 ObservedValue = value,
                 Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                ObservedAt = value is null ? null : _observedValues.Time(descriptor.CapabilityId, descriptor.InstanceId)
+                ObservedAt = value is null ? null
+                    : descriptor.CapabilityId == CapabilityIds.FanReading ? _fans?.TelemetryObservedAt
+                    : _observedValues.Time(descriptor.CapabilityId, descriptor.InstanceId)
             }, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -149,27 +151,6 @@ internal sealed partial class AllyDeviceEngine
     {
         switch (descriptor.CapabilityId)
         {
-            case CapabilityIds.PowerSustained:
-                return _power?.LastObserved?.Sustained is { } sustained && InRange(sustained, descriptor)
-                    ? CapabilityValue.Integer(sustained)
-                    : null;
-            case CapabilityIds.PowerBoost:
-                // The boost descriptor drives SPPT and FPPT together; SPPT stands for the pair.
-                return _power?.LastObserved?.Slow is { } slow && InRange(slow, descriptor)
-                    ? CapabilityValue.Integer(slow)
-                    : null;
-            case CapabilityIds.Scenario:
-                return _power?.LastObserved?.Mode is { } mode && AllyModels.ScenarioName(mode) is { } name
-                    ? CapabilityValue.Choice(name)
-                    : null;
-            case CapabilityIds.ChargeLimit:
-                return _charge?.LastObserved is { } percent && InRange(percent, descriptor)
-                    ? CapabilityValue.Integer(percent)
-                    : null;
-            case CapabilityIds.FanCurve:
-                return _fans?.LastObserved?.Cpu is { } curve
-                    ? CapabilityValue.Curve(AllyFanCapability.Decode(curve))
-                    : null;
             case CapabilityIds.FanReading:
                 var reading = descriptor.InstanceId == CapabilityInstances.Cpu
                     ? _fans?.LastFans.Cpu

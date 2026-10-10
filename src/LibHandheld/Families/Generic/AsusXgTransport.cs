@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Text;
 using LibHandheld.Families.RogAlly;
 using LibHandheld.Internal.Windows;
@@ -16,8 +15,6 @@ internal sealed class AsusXgTransport : IDisposable
         _acpi = acpi;
         _lights = lights;
     }
-
-    internal bool Connected => Read(AsusAcpiId.XgConnected) == 1;
 
     public void Dispose()
     {
@@ -47,24 +44,6 @@ internal sealed class AsusXgTransport : IDisposable
         }
 
         return new AsusXgTransport(acpi, lights);
-    }
-
-    internal bool? ReadEnabled()
-    {
-        return Read(AsusAcpiId.XgEnabled) is { } value ? value == 1 : null;
-    }
-
-    private int? Read(AsusAcpiId id)
-    {
-        try
-        {
-            var raw = _acpi.ReadStatus(id);
-            return AsusAcpiProtocol.TryDecodeScalar(raw, out var value) ? value : null;
-        }
-        catch (Exception exception) when (exception is Win32Exception or IOException)
-        {
-            return null;
-        }
     }
 
     internal void Enable(bool enabled)

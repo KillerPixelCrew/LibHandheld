@@ -41,6 +41,8 @@ internal sealed class FakeAsusAcpi : IAsusAcpi
 
     public int StatusReads { get; private set; }
 
+    public int ControlStatusReads { get; private set; }
+
     public int BufferReads { get; private set; }
 
     public List<(AsusAcpiId Id, uint Value)> Writes { get; } = [];
@@ -55,6 +57,11 @@ internal sealed class FakeAsusAcpi : IAsusAcpi
     public uint ReadStatus(AsusAcpiId id, uint selector = 0)
     {
         StatusReads++;
+        if (id is not (AsusAcpiId.CpuFanSpeed or AsusAcpiId.GpuFanSpeed))
+        {
+            ControlStatusReads++;
+        }
+
         if (AsusAcpiProtocol.IsCurve(id))
         {
             return _curves.TryGetValue(id, out var curve)

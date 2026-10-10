@@ -125,19 +125,10 @@ internal sealed partial class SteamDeckNativeService
             {
                 _fanRpm = checked((int)_memory.Read(FanRpm, 16));
                 _rpmAt = DateTimeOffset.UtcNow;
-                _fanTarget = checked((int)_memory.Read(FanTarget, 16));
-                _targetAt = DateTimeOffset.UtcNow;
                 _batteryTemperature =
                     (int)Math.Round(
                         _firmware.Value.BatteryTemperature(checked((ushort)_memory.Read(BatteryTemperature, 16))));
                 _temperatureAt = DateTimeOffset.UtcNow;
-                if (_firmware.Value.ChargeLimit)
-                {
-                    var charge = _memory.Read(ChargeLimit, 32);
-                    _chargeLimit = charge <= 100 ? (int)charge : null;
-                    _chargeAt = _chargeLimit is null ? null : DateTimeOffset.UtcNow;
-                }
-
                 return true;
             });
         }
@@ -260,7 +251,7 @@ internal sealed partial class SteamDeckNativeService
 
             try
             {
-                var verified = HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
+                HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
                 {
                     if (id == "deck-fan")
                     {
@@ -278,19 +269,10 @@ internal sealed partial class SteamDeckNativeService
                             id == "deck-charge" ? 32 : 16);
                     }
 
-                    // Firmware has no documented fan-mode readback: the native automatic baseline remains unverified.
-                    try
-                    {
-                        return id == "deck-charge" && entry.OriginalState.Memory[0] != uint.MaxValue
-                                                   && _memory.Read(ChargeLimit, 32) == entry.OriginalState.Memory[0];
-                    }
-                    catch (Exception exception) when (exception is not OutOfMemoryException)
-                    {
-                        return false;
-                    }
+                    return true;
                 });
                 await _journal.SetStatusAsync(id,
-                        verified ? DeviceRecoveryStatus.RestoredVerified : DeviceRecoveryStatus.RestoredUnverified,
+                        DeviceRecoveryStatus.RestoredUnverified,
                         token)
                     .ConfigureAwait(false);
             }

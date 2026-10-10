@@ -222,12 +222,10 @@ internal sealed partial class ClawDeviceEngine
                 continue;
             }
 
-            // A descriptor that cannot be read has no observed value to publish. The haptic sink is
-            // the only one: rumble is written to it and never read back, so a state carrying a value
-            // for it is rejected against its own descriptor shape. Its availability still matters,
-            // so the state is published with no value, which is what "not readable" means.
+            // Control intent comes only from accepted writes. Sensors carry actual readings; a haptic
+            // sink carries availability alone because its declared value shape is None.
             var failed = _observationFailures.TryGetValue(service.ServiceId, out var observationFailure);
-            var value = descriptor.SupportsRead && !failed ? CurrentState(descriptor) : null;
+            var value = descriptor.ValueKind != CapabilityValueKind.None && !failed ? CurrentState(descriptor) : null;
             await _host.PublishCapabilityStateAsync(
                 new CapabilityState
                 {
@@ -239,7 +237,11 @@ internal sealed partial class ClawDeviceEngine
                     Quality = value is null
                         ? HardwareStateQuality.Unknown
                         : HardwareStateQuality.Observed,
-                    ObservedAt = value is null ? null : DateTimeOffset.UtcNow
+                    ObservedAt = value is null
+                        ? null
+                        : descriptor.Role is CapabilityRole.Telemetry or CapabilityRole.FanMeasuredRpm
+                            ? _telemetry!.ObservedAt
+                            : DateTimeOffset.UtcNow
                 },
                 cancellationToken).AsTask().WaitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -251,42 +253,34 @@ internal sealed partial class ClawDeviceEngine
         {
             case CapabilityIds.PowerSustained:
             {
-                return _power!.LastObserved is { } value ? CapabilityValue.Integer(value.SustainedWatts) : null;
+                return _powerCapability!.WrittenLimits is { } value ? CapabilityValue.Integer(value.Sustained) : null;
             }
             case CapabilityIds.PowerBoost:
             {
-                return _power!.LastObserved is { } value ? CapabilityValue.Integer(value.BoostWatts) : null;
+                return _powerCapability!.WrittenLimits is { } value ? CapabilityValue.Integer(value.Boost) : null;
             }
             case CapabilityIds.Scenario:
             {
-                return _power!.LastObserved is { } value ? Scenario(value.Scenario, Model) : null;
+                return _powerCapability!.WrittenScenario is { } value ? Scenario(value, Model) : null;
             }
             case CapabilityIds.ChargeLimit:
             {
-                // A percentage outside the declared 60-100 bounds (0 after a BIOS reset on the
-                // reference unit) is published as unknown rather than as a value the slider cannot
-                // show; the capability stays available so the configured limit is written over it.
-                return _chargeLimit!.LastObserved is
-                {
-                    Percent: >= ClawChargeLimitCapability.MinimumPercent
-                    and <= ClawChargeLimitCapability.MaximumPercent
-                } value
+                // Publish only accepted intent, never the firmware's reset/unsupported charge register.
+                return _chargeLimitCapability!.Written is { } value
                     ? CapabilityValue.Integer(value.Percent)
                     : null;
             }
             case CapabilityIds.FanMode:
             {
-                return _fans!.LastObserved is { } value ? FanMode(value) : null;
+                return _fanCapability!.WrittenMode is { } value ? CapabilityValue.Choice(value) : null;
             }
             case "fan.duty":
                 return _fanCapability?.WrittenDuty is { } duty ? CapabilityValue.Integer(duty) : null;
             case CapabilityIds.FanCurve:
             {
-                // The left channel stands for both. Every write installs one curve on the pair, so the
-                // two tables can only disagree if something outside WSGM wrote one of them, and the
-                // next write puts them back together.
-                var value = _fans!.LastObserved;
-                return value is null ? null : CapabilityValue.Curve(ClawFanCapability.DecodeCurve(value.Left));
+                // One accepted curve controls both channels; firmware tables are never polled for state.
+                var value = _fanCapability!.WrittenCurve;
+                return value is null ? null : CapabilityValue.Curve(value);
             }
             case CapabilityIds.FanRpm:
             {
@@ -304,11 +298,11 @@ internal sealed partial class ClawDeviceEngine
             }
             case CapabilityIds.LightingBrightness:
             {
-                return _lighting!.LastObserved is { } value ? CapabilityValue.Integer(value.Brightness) : null;
+                return _lightingCapability!.Current is { } value ? CapabilityValue.Integer(value.Brightness) : null;
             }
             case CapabilityIds.LightingColor:
             {
-                var value = _lighting!.LastObserved;
+                var value = _lightingCapability!.Current;
                 return value is null
                     ? null
                     : CapabilityValue.Color(descriptor.InstanceId switch
@@ -483,15 +477,5 @@ internal sealed partial class ClawDeviceEngine
                         _ => null
                     };
         return choice is null ? null : CapabilityValue.Choice(choice);
-    }
-
-    private static CapabilityValue FanMode(FanSnapshot snapshot)
-    {
-        return CapabilityValue.Choice(
-            (snapshot.CustomFlag & 0x80) != 0
-                ? "custom"
-                : (snapshot.FullSpeedFlag & 0x80) != 0
-                    ? "full-speed"
-                    : "automatic");
     }
 }

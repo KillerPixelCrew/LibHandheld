@@ -260,7 +260,13 @@ public sealed class OneXPlayerTests
             CancellationToken.None);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(new (ushort, byte)[] { (0x44B, 92), (0x44A, 1) }, ec.Writes);
+        ec.Reads.Clear();
+        ec.Values[0x44B] = 1;
+        await service.RefreshAsync(CancellationToken.None);
+        Assert.Equal(50, service.States.Single(state => state.CapabilityId == "fan.duty")
+            .ObservedValue!.IntegerValue);
         await service.ReleaseAsync(Cycle(), CancellationToken.None);
+        Assert.Empty(ec.Reads);
         Assert.Equal((byte)91, ec.Values[0x44B]);
         Assert.Equal((byte)0, ec.Values[0x44A]);
         Assert.True(ec.Disposed);
@@ -340,12 +346,14 @@ public sealed class OneXPlayerTests
     {
         internal Dictionary<ushort, byte> Values { get; } = [];
         internal List<(ushort Address, byte Value)> Writes { get; } = [];
+        internal List<ushort> Reads { get; } = [];
         internal bool ReadUnavailable { get; init; }
         internal bool FailWrite { get; set; }
         internal bool Disposed { get; private set; }
 
         public byte ReadByte(ushort address)
         {
+            Reads.Add(address);
             return ReadUnavailable ? throw new IOException("Unreadable") : Values.GetValueOrDefault(address);
         }
 

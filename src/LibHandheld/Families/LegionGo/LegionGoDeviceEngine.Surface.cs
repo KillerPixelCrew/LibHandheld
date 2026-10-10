@@ -168,20 +168,8 @@ internal sealed partial class LegionGoDeviceEngine
         token.ThrowIfCancellationRequested();
         if (_wmi is not null)
         {
-            Observe(CapabilityIds.PowerSustained, _wmi.ReadFeature(LegionProtocol.LongPower));
-            Observe(CapabilityIds.PowerBoost, _wmi.ReadFeature(LegionProtocol.ShortPower));
             Observe(CapabilityIds.Temperature, _wmi.ReadFeature(LegionProtocol.Temperature));
             Observe(CapabilityIds.FanRpm, _model!.EcFan ? ReadEcRpm() : _wmi.ReadFeature(LegionProtocol.FanRpm));
-            var name = _wmi.ReadMode() is { } mode ? ModeName(mode) : null;
-            _observed.Read(CapabilityIds.Scenario, name is null ? null : CapabilityValue.Choice(name));
-            var charge = _wmi.ReadFeature(LegionProtocol.ChargeProtection);
-            _observed.Read(CapabilityIds.ChargeLimit, charge is null ? null : CapabilityValue.Boolean(charge == 1));
-
-            if (!_model.EcFan && _wmi.ReadFanTable() is { } table)
-            {
-                _observed.Read(CapabilityIds.FanCurve,
-                    CapabilityValue.Curve(table.Select((v, i) => new CurvePoint((i + 1) * 10, v)).ToArray()));
-            }
         }
 
         if (_hid is not null && _controllerWanted && !_quiescing && !_hid.Reading && !_hidFaulted)

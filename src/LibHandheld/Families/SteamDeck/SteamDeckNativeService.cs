@@ -406,7 +406,6 @@ internal sealed partial class SteamDeckNativeService(
             return;
         }
 
-        var verified = true;
         var failed = false;
         for (var i = 0; i < original.Registers.Length; i++)
         {
@@ -423,8 +422,6 @@ internal sealed partial class SteamDeckNativeService(
                     {
                         failed = true;
                     }
-
-                    verified = false;
                 }
 
                 continue;
@@ -433,14 +430,6 @@ internal sealed partial class SteamDeckNativeService(
             try
             {
                 _controller.WriteSetting(original.Registers[i], value);
-                try
-                {
-                    verified &= _controller.ReadSetting(original.Registers[i]) == value;
-                }
-                catch (Exception exception) when (exception is not OutOfMemoryException)
-                {
-                    verified = false;
-                }
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
@@ -448,8 +437,9 @@ internal sealed partial class SteamDeckNativeService(
             }
         }
 
-        await _journal.SetStatusAsync("neptune", failed ? DeviceRecoveryStatus.RestoreFailed
-                : verified ? DeviceRecoveryStatus.RestoredVerified : DeviceRecoveryStatus.RestoredUnverified, token)
+        await _journal.SetStatusAsync("neptune", failed
+                ? DeviceRecoveryStatus.RestoreFailed
+                : DeviceRecoveryStatus.RestoredUnverified, token)
             .ConfigureAwait(false);
     }
 
@@ -492,6 +482,14 @@ internal sealed partial class SteamDeckNativeService(
         {
             await AcquireControllerAsync(token, true).ConfigureAwait(false);
         }
+    }
+
+    internal override ValueTask RefreshTelemetryAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        // Read measured fan RPM and battery temperature only; controller reconnect stays on the slow pass.
+        RefreshHardware();
+        return ValueTask.CompletedTask;
     }
 
     internal override async ValueTask RefreshAsync(CancellationToken token)

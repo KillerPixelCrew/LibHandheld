@@ -49,7 +49,7 @@ public sealed class ClawModelLifecycleTests
     [Theory]
     [InlineData("0211", 0x01FA)]
     [InlineData("0230", 0x024A)]
-    public async Task StartAsync_ReadsLightingAtTheAddressForTheMcuRevision(string revision, int address)
+    public async Task FirstLightingWriteCapturesEnvelopeAtTheAddressForTheMcuRevision(string revision, int address)
     {
         using TemporaryDirectory state = new();
         FakeMcuTransport mcu = new();
@@ -62,6 +62,9 @@ public sealed class ClawModelLifecycleTests
             },
             CancellationToken.None);
 
+        Assert.Empty(mcu.ReadAddresses);
+        _ = await plugin.ExecuteCommandAsync(Command(CapabilityIds.LightingBrightness, null,
+            CapabilityValue.Integer(80)), CancellationToken.None);
         Assert.NotEmpty(mcu.ReadAddresses);
         Assert.All(mcu.ReadAddresses, read => Assert.Equal(address, read));
     }

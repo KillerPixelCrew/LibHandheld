@@ -419,7 +419,7 @@ internal sealed class ControllerService(
 
         // Every report was acknowledged; nothing more can be done for an unreadable table, so the
         // journal entry is cleared rather than left to block the next cycle.
-        await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredVerified, CancellationToken.None)
+        await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
             .ConfigureAwait(false);
         return null;
     }

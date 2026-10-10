@@ -380,18 +380,6 @@ internal sealed class OneXNativeService(
         token.ThrowIfCancellationRequested();
         if (_ec is not null)
         {
-            Read("fan.duty", profile.FanDuty, raw => CapabilityValue.Integer(Math.Clamp(
-                (int)Math.Round((raw - profile.MinimumDuty) * 100d / (profile.MaximumDuty - profile.MinimumDuty)), 0,
-                100)));
-            Read(CapabilityIds.FanMode, profile.FanMode, raw => CapabilityValue.Choice(raw == 0 ? "automatic"
-                : _observed.GetValueOrDefault(("fan.duty", null))?.IntegerValue == 100 ? "full-speed" : "custom"));
-            if (_chargeSupported)
-            {
-                Read(CapabilityIds.ChargeLimit, 0x4A3, raw => CapabilityValue.Integer(Math.Clamp((int)raw, 0, 100)));
-                Read("battery.bypass-charging", 0x4A4,
-                    raw => CapabilityValue.Choice(raw switch { 1 => "until-sleep", 3 => "always", _ => "disabled" }));
-            }
-
             if (profile.Temperature)
             {
                 Read(CapabilityIds.Temperature, 0x470,
@@ -528,10 +516,7 @@ internal sealed class OneXNativeService(
                 }
             }
 
-            await _journal!.SetStatusAsync(id,
-                original.UnknownOriginal
-                    ? DeviceRecoveryStatus.RestoredUnverified
-                    : DeviceRecoveryStatus.RestoredVerified, token).ConfigureAwait(false);
+            await _journal!.SetStatusAsync(id, DeviceRecoveryStatus.RestoredUnverified, token).ConfigureAwait(false);
         }
         catch
         {

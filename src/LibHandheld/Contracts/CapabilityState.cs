@@ -7,15 +7,14 @@ namespace LibHandheld.Contracts;
 ///     How much a reported hardware value can be trusted.
 /// </summary>
 /// <remarks>
-///     The distinction that matters most is <see cref="Observed" /> versus <see cref="Verified" />: a
-///     successful command result is not a hardware readback. A plugin that accepted a command and got no
-///     error has <see cref="Observed" /> at best; only an independent read of the value it wrote earns
-///     <see cref="Verified" />. Collapsing the two would let the UI show a value the hardware never took.
+///     Availability is independent of value quality. An accepted control write supplies
+///     <see cref="Observed" /> state for the owning cycle without a readback or verification pass.
+///     Sensor measurements retain their actual sampling time and may become stale independently.
 /// </remarks>
 [JsonConverter(typeof(JsonStringEnumConverter<HardwareStateQuality>))]
 public enum HardwareStateQuality
 {
-    /// <summary>Never read. No claim is made about the hardware.</summary>
+    /// <summary>No value has been sampled or successfully written; an available control remains usable.</summary>
     Unknown,
 
     /// <summary>Read from hardware or published after an accepted write, without independent confirmation.</summary>
@@ -32,7 +31,7 @@ public enum HardwareStateQuality
 }
 
 /// <summary>
-///     The live state of one capability as reported by the plugin.
+///     The live state of one capability as reported by its native owner.
 /// </summary>
 /// <remarks>
 ///     Versioned separately from the descriptor because it changes constantly while the descriptor does

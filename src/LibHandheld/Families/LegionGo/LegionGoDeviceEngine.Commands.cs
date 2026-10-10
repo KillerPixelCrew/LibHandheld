@@ -301,7 +301,7 @@ internal sealed partial class LegionGoDeviceEngine
                 Remember(command.CapabilityId, value, command.InstanceId);
             }
 
-            // The shared observation owner refreshes once after the acknowledged command.
+            // Acknowledged values remain authoritative; observation refreshes read-only sensors.
             return CommandResults.Applied(command);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -383,7 +383,6 @@ internal sealed partial class LegionGoDeviceEngine
             }
 
             var state = entry.OriginalState;
-            var verified = false;
             try
             {
                 // Non-custom OEM modes own their limits. Rewriting those limits after the mode
@@ -418,7 +417,7 @@ internal sealed partial class LegionGoDeviceEngine
                 }
 
                 await _journal.SetStatusAsync(entry.ServiceId,
-                        verified ? DeviceRecoveryStatus.RestoredVerified : DeviceRecoveryStatus.RestoredUnverified,
+                        DeviceRecoveryStatus.RestoredUnverified,
                         token)
                     .ConfigureAwait(false);
             }

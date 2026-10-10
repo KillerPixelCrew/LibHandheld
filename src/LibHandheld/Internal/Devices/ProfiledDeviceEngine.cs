@@ -55,7 +55,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
         _openPower = openPower;
         _openEc = openEc;
         _commands = new DeviceCommandSerializer(profile.Definition.Name, () => _quiescing ? null : _surface,
-            RefreshAsync, PublishAsync);
+            RefreshAsync, PublishAsync, RefreshTelemetryAsync);
     }
 
 
@@ -83,6 +83,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             _cycleIdentity = new ProfiledCycleIdentity(string.Join("|", _profile.Definition.Id,
                 _identity.BiosVersion ?? "unknown-bios", _identity.EcFirmwareVersion ?? "unknown-ec"));
             _journal = context.Journal;
+            await _journal.BeginCycleAsync(token).ConfigureAwait(false);
             var featureContext =
                 new ProfiledFeatureContext(context.StateDirectory, _cycleIdentity.Firmware, context.Host)
                 {
@@ -216,7 +217,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             if (!DeviceWriteBudget.IsAvailable(command.Deadline) || cancellation.IsCancellationRequested)
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
-                    "The device command has expired.", retryable: true);
+                    "The device command has expired.", true);
             }
 
             if (CommandAdmission.Validate(command, descriptor, _surface!.Descriptors) is { } invalid)
@@ -251,6 +252,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     {
         return _commands.RunAsync(async () =>
         {
+            await _journal!.BeginCycleAsync(token).ConfigureAwait(false);
             await DeviceServiceLifecycle.AcquireAllAsync(WantedServices(), Context(context.Deadline), token)
                 .ConfigureAwait(false);
             _quiescing = false;
@@ -522,6 +524,24 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             DeviceTrace.Change("oem", "publication", exception.Message, DeviceTraceLevel.Warn);
+        }
+    }
+
+    private async ValueTask RefreshTelemetryAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (_fan is { State: DeviceServiceState.Owned })
+        {
+            // The shared fan provider's refresh reads measured RPM only, never duty/control registers.
+            await _fan.RefreshAsync(token).ConfigureAwait(false);
+        }
+
+        foreach (var service in _nativeServices)
+        {
+            if (service.State is DeviceServiceState.Owned or DeviceServiceState.Degraded)
+            {
+                await service.RefreshTelemetryAsync(token).ConfigureAwait(false);
+            }
         }
     }
 

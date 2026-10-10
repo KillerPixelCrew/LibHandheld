@@ -1,14 +1,22 @@
 using LibHandheld.Contracts;
-using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
 
-// What the periodic and post-command refresh re-reads; DeviceCommandSerializer runs both.
+// Live sensor readings and the independent power watchdog; controls publish accepted write intent.
 internal sealed partial class ClawDeviceEngine
 {
-    /// <summary>The serializer's refresh: one capability's services, or every owned service when the id is null.</summary>
+    internal override async ValueTask RefreshTelemetryAsync(CancellationToken token)
+    {
+        if (_telemetry is { State: DeviceServiceState.Owned })
+        {
+            await RefreshServiceAsync(_telemetry, _telemetry.RefreshAsync, token).ConfigureAwait(false);
+            await PublishCapabilityStatesAsync(token).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Post-command publication clears prior write faults; the periodic pass runs watchdog and sensors.</summary>
     private ValueTask RefreshObservedForCapabilityAsync(string? capabilityId, CancellationToken cancellationToken)
     {
         return capabilityId is null
@@ -16,33 +24,18 @@ internal sealed partial class ClawDeviceEngine
             : RefreshObservedAsync(capabilityId, cancellationToken);
     }
 
-    /// <summary>Re-reads every observable service that is currently owned.</summary>
+    /// <summary>Runs the ten-second watchdog without querying control state, then refreshes sensor readings.</summary>
     private async ValueTask RefreshAllObservedAsync(CancellationToken cancellationToken)
     {
         if (_power is { State: DeviceServiceState.Owned })
         {
-            await RefreshServiceAsync(_power, token => _power.RefreshAsync(token, true), cancellationToken)
+            await RefreshServiceAsync(_power, _powerCapability!.ReassertAsync, cancellationToken)
                 .ConfigureAwait(false);
-        }
-
-        if (_chargeLimit is { State: DeviceServiceState.Owned })
-        {
-            await RefreshServiceAsync(_chargeLimit, _chargeLimit.RefreshAsync, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (_fans is { State: DeviceServiceState.Owned })
-        {
-            await RefreshServiceAsync(_fans, _fans.RefreshAsync, cancellationToken).ConfigureAwait(false);
         }
 
         if (_telemetry is { State: DeviceServiceState.Owned })
         {
             await RefreshServiceAsync(_telemetry, _telemetry.RefreshAsync, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (_lighting is { State: DeviceServiceState.Owned })
-        {
-            await RefreshServiceAsync(_lighting, _lighting.RefreshAsync, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -67,30 +60,16 @@ internal sealed partial class ClawDeviceEngine
         }
     }
 
-    private async ValueTask RefreshObservedAsync(
+    private ValueTask RefreshObservedAsync(
         string capabilityId,
         CancellationToken cancellationToken)
     {
-        switch (capabilityId)
+        cancellationToken.ThrowIfCancellationRequested();
+        if (ServiceForCapability(capabilityId) is { } service)
         {
-            case CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario:
-                await _power!.RefreshAsync(cancellationToken).ConfigureAwait(false);
-                _observationFailures.Remove(_power.ServiceId);
-                break;
-            case CapabilityIds.ChargeLimit:
-                await _chargeLimit!.RefreshAsync(cancellationToken).ConfigureAwait(false);
-                _observationFailures.Remove(_chargeLimit.ServiceId);
-                break;
-            case CapabilityIds.FanMode or CapabilityIds.FanCurve:
-                await _fans!.RefreshAsync(cancellationToken).ConfigureAwait(false);
-                _observationFailures.Remove(_fans.ServiceId);
-                await _telemetry!.RefreshAsync(cancellationToken).ConfigureAwait(false);
-                _observationFailures.Remove(_telemetry.ServiceId);
-                break;
-            case CapabilityIds.LightingBrightness or CapabilityIds.LightingColor:
-                await _lighting!.RefreshAsync(cancellationToken).ConfigureAwait(false);
-                _observationFailures.Remove(_lighting.ServiceId);
-                break;
+            _observationFailures.Remove(service.ServiceId);
         }
+
+        return ValueTask.CompletedTask;
     }
 }

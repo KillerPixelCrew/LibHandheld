@@ -86,13 +86,17 @@ public sealed class AyaneoTests
         var ec = new FakeEc();
         var service = Service(Model(id), directory.Root, ec);
         await service.AcquireAsync(Cycle(), CancellationToken.None);
+        ec.Reads.Clear();
         ec.FailReadback = true;
         var result = await service.ExecuteAsync(Command(AyaneoNativeService.BypassId,
             CapabilityValue.Boolean(true)), "bios1", CancellationToken.None);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Contains(((ushort)address, (byte)value), ec.Writes);
-        ec.FailReadback = false;
+        await service.RefreshAsync(CancellationToken.None);
+        Assert.True(service.States.Single(state => state.CapabilityId == AyaneoNativeService.BypassId)
+            .ObservedValue!.BooleanValue);
         await service.ReleaseAsync(Cycle(), CancellationToken.None);
+        Assert.Empty(ec.Reads);
     }
 
     [Fact]
@@ -324,11 +328,13 @@ public sealed class AyaneoTests
     {
         internal Dictionary<ushort, byte> Values { get; } = new();
         internal List<(ushort Address, byte Value)> Writes { get; } = [];
+        internal List<ushort> Reads { get; } = [];
         internal bool FailReadback { get; set; }
         internal ushort? FailWriteAddress { get; set; }
 
         public byte ReadByte(ushort address)
         {
+            Reads.Add(address);
             return FailReadback ? throw new IOException("Unreadable") : Values.GetValueOrDefault(address);
         }
 

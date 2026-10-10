@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Runtime;
@@ -9,18 +10,21 @@ namespace LibHandheld.Internal.Services;
 ///     never interleaves with a hardware write.
 /// </summary>
 /// <remarks>
-///     The device keeps its own lifetime state and supplies three hooks: the descriptor set commands run
-///     against while the cycle accepts them, a refresh that re-reads what one capability observes (every
-///     capability when the id is null), and a publication of every current capability state. A device that
+///     The device keeps its own lifetime state and supplies admission, owner maintenance and state publication
+///     hooks, plus optional read-only sensor sampling. Maintenance never polls control values: accepted write
+///     intent remains authoritative. A device that
 ///     begins to suspend or stop marks itself quiescing, calls <see cref="StopObservation" />, and then runs
 ///     the transition through <see cref="RunAsync" />, so a command or refresh already in flight finishes
 ///     first and nothing new starts.
 /// </remarks>
 internal sealed class DeviceCommandSerializer : IDisposable
 {
-    /// <summary>How often the observation loop re-reads and republishes what the device observes.</summary>
-    /// <remarks>Ten seconds bounds routine observation traffic between explicit commands.</remarks>
+    /// <summary>How often the owner performs maintenance and republishes accepted state.</summary>
+    /// <remarks>Ten seconds bounds routine owner maintenance between explicit requests.</remarks>
     private static readonly TimeSpan ObservationInterval = TimeSpan.FromSeconds(10);
+
+    /// <summary>Read-only live measurements are refreshed inside the host's five-second freshness window.</summary>
+    private static readonly TimeSpan TelemetryInterval = TimeSpan.FromSeconds(2);
 
     /// <summary>How long a pass waits for an in-flight command before skipping; the command republishes.</summary>
     private static readonly TimeSpan ObservationCommandWait = TimeSpan.FromSeconds(2);
@@ -34,6 +38,7 @@ internal sealed class DeviceCommandSerializer : IDisposable
     private readonly Func<CancellationToken, ValueTask> _publish;
     private readonly Func<string?, CancellationToken, ValueTask> _refresh;
     private readonly SemaphoreSlim _refreshRequested = new(0, 1);
+    private readonly Func<CancellationToken, ValueTask>? _refreshTelemetry;
     private CancellationTokenSource? _observation;
     private CancellationToken _observationToken;
 
@@ -44,21 +49,24 @@ internal sealed class DeviceCommandSerializer : IDisposable
     ///     quiescing.
     /// </param>
     /// <param name="refresh">
-    ///     Re-reads what one capability observes, or every observable service when the id is null. A periodic
-    ///     refresh that cannot read a service records that itself; an exception ends only the current pass.
+    ///     Updates accepted command state for the supplied capability, or performs owner maintenance and sensor
+    ///     sampling when the id is null. Control values are never polled. An exception ends only this pass.
     /// </param>
     /// <param name="publish">Publishes every current capability state.</param>
+    /// <param name="refreshTelemetry">Optional read-only live measurements; never settings or watchdog writes.</param>
     public DeviceCommandSerializer(
         string deviceName,
         Func<CapabilityDescriptorSet?> acceptingSurface,
         Func<string?, CancellationToken, ValueTask> refresh,
-        Func<CancellationToken, ValueTask> publish)
+        Func<CancellationToken, ValueTask> publish,
+        Func<CancellationToken, ValueTask>? refreshTelemetry = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceName);
         _deviceName = deviceName;
         _acceptingSurface = acceptingSurface ?? throw new ArgumentNullException(nameof(acceptingSurface));
         _refresh = refresh ?? throw new ArgumentNullException(nameof(refresh));
         _publish = publish ?? throw new ArgumentNullException(nameof(publish));
+        _refreshTelemetry = refreshTelemetry;
     }
 
     /// <summary>Requests observation cancellation without waiting for an in-flight operation to finish.</summary>
@@ -118,7 +126,7 @@ internal sealed class DeviceCommandSerializer : IDisposable
     /// </returns>
     /// <remarks>
     ///     A command is refused while the cycle is inactive or quiescing, both before and after it waits for
-    ///     its turn. After an applied write every state is refreshed and republished within the command's
+    ///     its turn. After an applied write accepted state is updated and republished within the command's
     ///     deadline, at most two seconds, so adjacent rows follow promptly. Publication failure is
     ///     logged and never changes an acknowledged hardware result.
     /// </remarks>
@@ -173,7 +181,7 @@ internal sealed class DeviceCommandSerializer : IDisposable
         }
     }
 
-    /// <summary>Starts the periodic refresh for the cycle, replacing any loop still running.</summary>
+    /// <summary>Starts serialized owner maintenance and sensor sampling, replacing any prior cycle's loop.</summary>
     public void StartObservation()
     {
         StopObservation();
@@ -220,7 +228,7 @@ internal sealed class DeviceCommandSerializer : IDisposable
         loop.Dispose();
     }
 
-    /// <summary>Re-reads and republishes until the cycle ends.</summary>
+    /// <summary>Samples sensors, performs owner maintenance and republishes accepted state until the cycle ends.</summary>
     /// <param name="cancellationToken">Ends the loop.</param>
     /// <remarks>
     ///     A failed pass is traced and the loop continues: a device that cannot be read for one interval is a
@@ -230,24 +238,46 @@ internal sealed class DeviceCommandSerializer : IDisposable
     {
         try
         {
+            var lastFullRefresh = Stopwatch.GetTimestamp();
             while (!cancellationToken.IsCancellationRequested)
             {
-                await _refreshRequested.WaitAsync(ObservationInterval, cancellationToken).ConfigureAwait(false);
+                var remaining = ObservationInterval - Stopwatch.GetElapsedTime(lastFullRefresh);
+                var delay = remaining <= TimeSpan.Zero
+                    ? TimeSpan.Zero
+                    : _refreshTelemetry is not null && remaining > TelemetryInterval
+                        ? TelemetryInterval
+                        : remaining;
+                var requested = await _refreshRequested.WaitAsync(delay, cancellationToken).ConfigureAwait(false);
                 if (_acceptingSurface() is null)
                 {
+                    lastFullRefresh = Stopwatch.GetTimestamp();
                     continue;
                 }
 
                 if (!await _gate.WaitAsync(ObservationCommandWait, cancellationToken).ConfigureAwait(false))
                 {
-                    RequestObservation();
+                    if (requested)
+                    {
+                        RequestObservation();
+                    }
+
                     await Task.Delay(ObservationCommandWait, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
                 try
                 {
-                    await _refresh(null, cancellationToken).ConfigureAwait(false);
+                    if (requested || Stopwatch.GetElapsedTime(lastFullRefresh) >= ObservationInterval)
+                    {
+                        lastFullRefresh = Stopwatch.GetTimestamp();
+                        await _refresh(null, cancellationToken).ConfigureAwait(false);
+                    }
+                    else if (_refreshTelemetry is not null)
+                    {
+                        // This hook may only read telemetry. Owner maintenance stays on its ten-second cadence.
+                        await _refreshTelemetry(cancellationToken).ConfigureAwait(false);
+                    }
+
                     await _publish(cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -270,7 +300,7 @@ internal sealed class DeviceCommandSerializer : IDisposable
         }
     }
 
-    /// <summary>Refreshes and publishes after a command, bounded by its deadline and by quiescing.</summary>
+    /// <summary>Updates accepted state and publishes after a command, bounded by its deadline and by quiescing.</summary>
     /// <returns>True once every state was published.</returns>
     private async ValueTask<bool> RepublishAsync(CapabilityCommand command, CancellationToken cancellationToken)
     {

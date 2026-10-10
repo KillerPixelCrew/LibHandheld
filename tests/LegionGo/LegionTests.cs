@@ -133,8 +133,10 @@ public sealed class LegionTests
         Assert.Equal(25, wmi.Values[LegionProtocol.ShortPower]);
         Assert.Equal(25, wmi.Values[LegionProtocol.PeakPower]);
         var writesBeforeStop = wmi.Writes.Count;
+        wmi.ControlReads.Clear();
         _ = await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
+        Assert.Empty(wmi.ControlReads);
         Assert.Equal(originalMode, wmi.Mode);
         var restoration = wmi.Writes.Skip(writesBeforeStop).ToArray();
         if (originalMode == 255)
@@ -163,6 +165,7 @@ public sealed class LegionTests
         var host = new TestPluginHostAdapter(1);
         await using var engine = Engine("83E1", wmi, new FakeHid());
         await engine.StartAsync(Start(host, directory, "83E1", false), CancellationToken.None);
+        Assert.Empty(wmi.ControlReads);
         var result = await engine.ExecuteCommandAsync(Command(host.DescriptorSets[^1], CapabilityIds.PowerSustained,
                 CapabilityValue.Integer(20)) with
             {
@@ -170,8 +173,15 @@ public sealed class LegionTests
             }, CancellationToken.None);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(20, wmi.Values[LegionProtocol.LongPower]);
+        Assert.Equal(5, wmi.ControlReads.Count);
+        wmi.ControlReads.Clear();
+        _ = await engine.ExecuteCommandAsync(Command(host.DescriptorSets[^1], CapabilityIds.ChargeLimit,
+            CapabilityValue.Boolean(true)), CancellationToken.None);
+        Assert.Equal(20, host.CapabilityStates.Last(state => state.CapabilityId == CapabilityIds.PowerSustained)
+            .ObservedValue!.IntegerValue);
         _ = await engine.StopAsync(new EngineStopContext(Deadline.Never),
             CancellationToken.None);
+        Assert.Empty(wmi.ControlReads);
     }
 
     [Fact]
@@ -252,6 +262,7 @@ public sealed class LegionTests
 
         public int Mode { get; set; } = 2;
         public List<(int? Feature, int Value)> Writes { get; } = [];
+        public List<int?> ControlReads { get; } = [];
         public bool HideReadbackAfterWrite { get; init; }
         public bool FeaturesAvailable => true;
         public bool ModesAvailable => true;
@@ -259,6 +270,11 @@ public sealed class LegionTests
 
         public int? ReadFeature(int id)
         {
+            if (id is not (LegionProtocol.Temperature or LegionProtocol.FanRpm))
+            {
+                ControlReads.Add(id);
+            }
+
             return _wrote && HideReadbackAfterWrite ? null : Values.GetValueOrDefault(id);
         }
 
@@ -271,6 +287,7 @@ public sealed class LegionTests
 
         public int? ReadMode()
         {
+            ControlReads.Add(null);
             return _wrote && HideReadbackAfterWrite ? null : Mode;
         }
 
@@ -283,6 +300,7 @@ public sealed class LegionTests
 
         public ushort[]? ReadFanTable()
         {
+            ControlReads.Add(LegionProtocol.FullFan);
             return _fanTable.ToArray();
         }
 

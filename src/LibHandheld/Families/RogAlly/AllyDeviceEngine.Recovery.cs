@@ -61,7 +61,7 @@ internal sealed partial class AllyDeviceEngine
                 continue;
             }
 
-            await _journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoredVerified,
+            await _journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoredUnverified,
                 CancellationToken.None).ConfigureAwait(false);
             DeviceTrace.Info("recovery", $"outstanding '{entry.ServiceId}' restored.");
         }

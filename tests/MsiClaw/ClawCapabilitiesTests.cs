@@ -16,15 +16,17 @@ public sealed class ClawCapabilitiesTests
     public async Task FailedPowerWriteDisarmsWatchdogUntilAnExplicitCommand(bool reassert)
     {
         FakeWmiTransport wmi = new();
-        ClawPowerCapability power = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay);
+        var clock = new ManualClock();
+        ClawPowerCapability power = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay, clock);
         var command = Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20));
         _ = await power.ApplyLimitsAsync(command, 20, 20, CancellationToken.None);
         wmi.SetData(ClawHardwareFacts.PowerSustainedAddress, 30);
         wmi.FailNextSetter = true;
         if (reassert)
         {
+            clock.Advance(TimeSpan.FromSeconds(10));
             await Assert.ThrowsAsync<IOException>(() =>
-                power.ReassertAsync(new PowerPair(30, 37, 0xC1), CancellationToken.None).AsTask());
+                power.ReassertAsync(CancellationToken.None).AsTask());
         }
         else
         {
@@ -33,20 +35,19 @@ public sealed class ClawCapabilitiesTests
         }
 
         wmi.Writes.Clear();
-        var read = await power.ReadAsync(CancellationToken.None);
-        Assert.Equal(read, power.Observe(read));
-        await power.ReassertAsync(read, CancellationToken.None);
+        Assert.Null(power.WrittenLimits);
+        await power.ReassertAsync(CancellationToken.None);
         Assert.Empty(wmi.Writes);
         var applied = await power.ApplyLimitsAsync(command, 20, 20, CancellationToken.None);
         Assert.Equal(CommandOutcome.Applied, applied.Outcome);
-        Assert.Equal(20, power.Observe(read).SustainedWatts);
+        Assert.Equal(20, power.WrittenLimits?.Sustained);
     }
 
     [Theory]
     [InlineData("scenario")]
     [InlineData("fan-mode")]
     [InlineData("fan-curve")]
-    public async Task RequiredReadTimeoutRejectsWithoutAWrite(string operation)
+    public async Task MissingControlReadbackDoesNotGateDeclaredWrites(string operation)
     {
         FakeWmiTransport wmi = new() { GetterTimeout = true };
         ClawPowerCapability power = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay);
@@ -64,9 +65,10 @@ public sealed class ClawCapabilitiesTests
                 Enumerable.Range(0, 6).Select(index => new CurvePoint(index * 10, index * 10)).ToArray(),
                 CancellationToken.None)
         };
-        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
-        Assert.Equal(CapabilityReasonCode.TransportFaulted, result.Reason?.Code);
-        Assert.Empty(wmi.Writes);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Null(result.Reason);
+        Assert.NotEmpty(wmi.Writes);
+        Assert.Equal(0, wmi.Reads);
     }
 
     [Theory]
@@ -112,7 +114,8 @@ public sealed class ClawCapabilitiesTests
     {
         FakeMcuTransport mcu = new() { ReadFailure = new OperationCanceledException("MCU timeout") };
         ClawLightingCapability lighting = new(mcu, ReferenceLightingProfileAddress);
-        Assert.Null(await lighting.ReadAsync(CancellationToken.None));
+        await lighting.CaptureEnvelopeAsync(CancellationToken.None);
+        Assert.Null(lighting.Current);
         var result = await lighting.ApplyAsync(
             Command(CapabilityIds.LightingBrightness, null, CapabilityValue.Integer(75)),
             current => current with { Brightness = 75 }, CancellationToken.None);
@@ -180,7 +183,7 @@ public sealed class ClawCapabilitiesTests
     }
 
     [Fact]
-    public async Task PairReadbackMismatchLeavesTheWriteAndPublishesTheRequestedPair()
+    public async Task AcceptedPairIsPublishedEvenIfFirmwareChangesTheRegister()
     {
         FakeWmiTransport wmi = new();
         wmi.AfterSetter = (_, package) =>
@@ -194,11 +197,9 @@ public sealed class ClawCapabilitiesTests
         var command = Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(12));
 
         var result = await power.ApplyLimitsAsync(command, 12, 12, CancellationToken.None);
-        var read = await power.ReadAsync(CancellationToken.None);
-
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
-        Assert.Equal(13, read.BoostWatts);
-        Assert.Equal((12, 12), (power.Observe(read).SustainedWatts, power.Observe(read).BoostWatts));
+        Assert.Equal(13, wmi.ReadData(ClawHardwareFacts.PowerBoostAddress));
+        Assert.Equal((12, 12), power.WrittenLimits);
         Assert.Equal(
             [ClawHardwareFacts.PowerSustainedAddress, ClawHardwareFacts.PowerBoostAddress],
             wmi.Writes.Select(write => write.Package[0]));
@@ -221,19 +222,24 @@ public sealed class ClawCapabilitiesTests
     }
 
     [Fact]
-    public async Task ReassertWritesTheRequestedPairWhenTheEcReportsAnother()
+    public async Task WatchdogReassertsAcceptedPairWithoutReadingControlState()
     {
         FakeWmiTransport wmi = new();
-        ClawPowerCapability power = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay);
+        var clock = new ManualClock();
+        ClawPowerCapability power = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay, clock);
         _ = await power.ApplyLimitsAsync(
             Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)), 20, 20, CancellationToken.None);
         wmi.SetData(ClawHardwareFacts.PowerSustainedAddress, 30);
         wmi.Writes.Clear();
 
-        await power.ReassertAsync(await power.ReadAsync(CancellationToken.None), CancellationToken.None);
+        await power.ReassertAsync(CancellationToken.None);
+        Assert.Empty(wmi.Writes);
+        clock.Advance(TimeSpan.FromSeconds(10));
+        await power.ReassertAsync(CancellationToken.None);
 
         Assert.Equal(20, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
         Assert.Equal(2, wmi.Writes.Count);
+        Assert.Equal(0, wmi.Reads);
     }
 
     [Fact]
@@ -258,7 +264,8 @@ public sealed class ClawCapabilitiesTests
     {
         FakeMcuTransport mcu = new() { ReadFailure = new IOException("no answer") };
         ClawLightingCapability lighting = new(mcu, ReferenceLightingProfileAddress);
-        Assert.Null(await lighting.ReadAsync(CancellationToken.None));
+        await lighting.CaptureEnvelopeAsync(CancellationToken.None);
+        Assert.Null(lighting.Current);
 
         var result = await lighting.ApplyAsync(
             Command(CapabilityIds.LightingBrightness, null, CapabilityValue.Integer(75)),
@@ -279,7 +286,7 @@ public sealed class ClawCapabilitiesTests
         original[3] = 0x7E;
         FakeMcuTransport mcu = new() { Profile = original };
         ClawLightingCapability lighting = new(mcu, ReferenceLightingProfileAddress);
-        _ = await lighting.ReadAsync(CancellationToken.None);
+        await lighting.CaptureEnvelopeAsync(CancellationToken.None);
         var command = Command(
             CapabilityIds.LightingBrightness,
             null,
@@ -314,7 +321,7 @@ public sealed class ClawCapabilitiesTests
             }
         };
         ClawLightingCapability lighting = new(mcu, ReferenceLightingProfileAddress);
-        _ = await lighting.ReadAsync(CancellationToken.None);
+        await lighting.CaptureEnvelopeAsync(CancellationToken.None);
         var command = Command(
             CapabilityIds.LightingBrightness,
             null,
@@ -388,20 +395,20 @@ public sealed class ClawCapabilitiesTests
     // carries it through its writes, and after BIOS E1T52IMS.114 the plain range check on the
     // whole byte faulted the charge-limit service at every start.
     [Fact]
-    public async Task ChargeLimit_MasksTheFlagBitOnReadAndCarriesItThroughWrites()
+    public async Task ChargeLimitWritesBatteryMasterAndPublishesAcceptedPercentageWithoutReadback()
     {
         FakeWmiTransport wmi = new();
         wmi.SetData(ClawHardwareFacts.ChargeLimitAddress, 0x80 | 100);
         ClawChargeLimitCapability chargeLimit = new(wmi);
 
-        var observed = await chargeLimit.ReadAsync(CancellationToken.None);
         var result = await chargeLimit.ApplyAsync(
             Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(80)),
             80,
             CancellationToken.None);
 
-        Assert.Equal(100, observed.Percent);
-        Assert.Equal(0x80 | 100, observed.RawValue);
+        Assert.Equal(80, chargeLimit.Written?.Percent);
+        Assert.Equal((byte)(0x80 | 80), chargeLimit.Written?.RawValue);
+        Assert.Equal(0, wmi.Reads);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(0x80 | 80, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
     }
@@ -411,6 +418,7 @@ public sealed class ClawCapabilitiesTests
     {
         FakeWmiTransport wmi = new();
         ClawFanCapability fan = new(wmi);
+        _ = await fan.ReadSnapshotAsync(CancellationToken.None);
         var command = Command(
             CapabilityIds.FanCurve,
             null,
@@ -452,6 +460,7 @@ public sealed class ClawCapabilitiesTests
     {
         FakeWmiTransport wmi = new();
         ClawFanCapability fan = new(wmi);
+        _ = await fan.ReadSnapshotAsync(CancellationToken.None);
         var command = Command(
             CapabilityIds.FanCurve,
             null,
@@ -504,19 +513,20 @@ public sealed class ClawCapabilitiesTests
 
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Single(wmi.Writes);
-        Assert.Equal(0xC4, capability.Observe(await capability.ReadAsync(CancellationToken.None)).Scenario);
+        Assert.Equal((byte)0xC4, capability.WrittenScenario);
     }
 
     [Fact]
-    public async Task UnsupportedScenarioIsRejectedWithoutWrites()
+    public async Task DeclaredScenarioWriteDoesNotDependOnFirmwareReadback()
     {
         FakeWmiTransport wmi = new();
         wmi.SetData(ClawHardwareFacts.ScenarioAddress, 1);
         ClawPowerCapability capability = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay);
         var result = await capability.ApplyScenarioAsync(Command(CapabilityIds.Scenario, null,
             CapabilityValue.Choice("sport")), "sport", CancellationToken.None);
-        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
-        Assert.Empty(wmi.Writes);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Single(wmi.Writes);
+        Assert.Equal(0, wmi.Reads);
     }
 
     [Theory]
@@ -528,6 +538,7 @@ public sealed class ClawCapabilitiesTests
         FakeWmiTransport wmi = new();
         wmi.SetData(ClawHardwareFacts.ScenarioAddress, initial);
         ClawPowerCapability capability = new(wmi, ClawModels.Claw8A2Vm, TestTiming.NoDelay);
+        _ = await capability.ReadAsync(CancellationToken.None);
         var result = await capability.ApplyScenarioAsync(Command(CapabilityIds.Scenario, null,
             CapabilityValue.Choice("inactive")), "inactive", CancellationToken.None);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
@@ -615,5 +626,21 @@ public sealed class ClawCapabilitiesTests
         return Assert.Single(
             wmi.Writes,
             write => write.Method == method && write.Package[0] == channel).Package;
+    }
+
+    private sealed class ManualClock : TimeProvider
+    {
+        private long _timestamp;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp()
+        {
+            return _timestamp;
+        }
+
+        internal void Advance(TimeSpan elapsed)
+        {
+            _timestamp += elapsed.Ticks;
+        }
     }
 }

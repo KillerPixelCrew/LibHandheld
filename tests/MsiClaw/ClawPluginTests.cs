@@ -164,6 +164,102 @@ public sealed class ClawDeviceEngineTests
     }
 
     [Fact]
+    public async Task LiveTelemetryRefreshDoesNotReadSettingsOrReassertPower()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        ClawDeviceEngine? provider = null;
+        await using var plugin = new ServiceEngineFixture(context =>
+            provider = new ClawDeviceEngine(context, CreateServices(wmi)));
+        TestPluginHostAdapter host = new(FixtureId);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        _ = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+            {
+                PairedPowerLimitWatts = 20
+            }, CancellationToken.None);
+        wmi.SetData(ClawHardwareFacts.PowerSustainedAddress, 30);
+        wmi.Writes.Clear();
+        var reads = wmi.Reads;
+        var before = host.CapabilityStates.Last(value => value.CapabilityId == CapabilityIds.Temperature);
+
+        await provider!.RefreshTelemetryAsync(CancellationToken.None);
+
+        var after = host.CapabilityStates.Last(value => value.CapabilityId == CapabilityIds.Temperature);
+        Assert.Equal(2, wmi.Reads - reads);
+        Assert.Empty(wmi.Writes);
+        Assert.Equal(HardwareStateQuality.Observed, after.Quality);
+        Assert.True(after.ObservedAt >= before.ObservedAt);
+        Assert.All(host.CapabilityStates.Where(value => value.CapabilityId == CapabilityIds.FanRpm)
+            .TakeLast(2), value => Assert.Equal(after.ObservedAt, value.ObservedAt));
+    }
+
+    [Fact]
+    public async Task UnrelatedSettingWriteDoesNotRenewCachedTelemetry()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        await using var plugin = Engine(CreateServices(wmi));
+        TestPluginHostAdapter host = new(FixtureId);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var before = host.CapabilityStates.Last(value => value.CapabilityId == CapabilityIds.Temperature);
+
+        _ = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(60)), CancellationToken.None);
+
+        var after = host.CapabilityStates.Last(value => value.CapabilityId == CapabilityIds.Temperature);
+        Assert.Equal(before.ObservedAt, after.ObservedAt);
+        Assert.Equal(before.ObservedValue, after.ObservedValue);
+    }
+
+    [Fact]
+    public async Task StartupReadsOnlyLiveTelemetryAndOffersControlsWithoutReadback()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        FakeMcuTransport mcu = new();
+        await using var plugin = Engine(CreateServices(wmi, mcu: mcu));
+        TestPluginHostAdapter host = new(FixtureId);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+
+        Assert.Equal(2, wmi.Reads);
+        Assert.Empty(mcu.ReadAddresses);
+        foreach (var descriptor in host.DescriptorSets.Last().Descriptors.Where(value => value.SupportsWrite))
+        {
+            var control = host.CapabilityStates.Last(value => value.CapabilityId == descriptor.CapabilityId
+                                                              && value.InstanceId == descriptor.InstanceId);
+            Assert.True(control.Available);
+            Assert.Null(control.ObservedValue);
+        }
+    }
+
+    [Fact]
+    public async Task AcceptedChargeIntentNeedsNoPostWriteReadbackAndSurvivesSensorReadFailure()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        ClawDeviceEngine? provider = null;
+        await using var plugin = new ServiceEngineFixture(context =>
+            provider = new ClawDeviceEngine(context, CreateServices(wmi)));
+        TestPluginHostAdapter host = new(FixtureId);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var reads = wmi.Reads;
+        wmi.GetterTimeout = true;
+
+        var result = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(80)), CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(reads, wmi.Reads);
+        await provider!.RefreshAsync(CancellationToken.None);
+
+        var charge = host.CapabilityStates.Last(value => value.CapabilityId == CapabilityIds.ChargeLimit);
+        Assert.True(charge.Available);
+        Assert.Equal(HardwareStateQuality.Observed, charge.Quality);
+        Assert.Equal(80, charge.ObservedValue?.IntegerValue);
+        Assert.Single(wmi.Writes);
+    }
+
+    [Fact]
     public async Task InsufficientWriteBudgetRejectsBeforeAnySetter()
     {
         using TemporaryDirectory state = new();
@@ -349,9 +445,9 @@ public sealed class ClawDeviceEngineTests
         Assert.Equal(descriptors.Descriptors.Count, host.CapabilityStates.Count);
         Assert.Contains(host.CapabilityStates, capability =>
             capability is
-                { CapabilityId: CapabilityIds.PowerSustained, Available: true, ObservedValue.IntegerValue: 30 });
+                { CapabilityId: CapabilityIds.PowerSustained, Available: true, ObservedValue: null });
         Assert.Contains(host.CapabilityStates, capability =>
-            capability is { CapabilityId: CapabilityIds.ChargeLimit, Available: true, ObservedValue.IntegerValue: 80 });
+            capability is { CapabilityId: CapabilityIds.ChargeLimit, Available: true, ObservedValue: null });
         Assert.Contains(host.CapabilityStates, capability =>
             capability is { CapabilityId: CapabilityIds.Controller, Available: false });
         Assert.Equal(4, Assert.Single(host.OemControlSets).Count);
@@ -461,7 +557,7 @@ public sealed class ClawDeviceEngineTests
     }
 
     [Fact]
-    public async Task ExecuteCommandAsync_PowerWrite_ReadsBackAndStopRestoresCompactJournal()
+    public async Task ExecuteCommandAsync_PowerWritePublishesIntentAndStopRestoresCompactJournal()
     {
         using TemporaryDirectory state = new();
         FakeWmiTransport wmi = new();
@@ -514,7 +610,7 @@ public sealed class ClawDeviceEngineTests
     [InlineData("eco", 0xC2)]
     [InlineData("user", 0xC3)]
     [InlineData("sport", 0xC4)]
-    public async Task ScenarioSelectionVerifiesAndStopRestoresFirstOriginal(string scenario, int expected)
+    public async Task ScenarioSelectionPublishesIntentAndStopRestoresFirstOriginal(string scenario, int expected)
     {
         using TemporaryDirectory state = new();
         FakeWmiTransport wmi = new();
@@ -532,15 +628,12 @@ public sealed class ClawDeviceEngineTests
         await using var plugin = Engine(CreateServices(wmi));
         TestPluginHostAdapter host = new(FixtureId);
         await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
-        Assert.Equal("inactive",
-            host.CapabilityStates.Last(s => s.CapabilityId == CapabilityIds.Scenario).ObservedValue?.ChoiceValue);
+        Assert.Null(host.CapabilityStates.Last(s => s.CapabilityId == CapabilityIds.Scenario).ObservedValue);
         var result = await plugin.ExecuteCommandAsync(Command(CapabilityIds.Scenario, null,
             CapabilityValue.Choice(scenario)), CancellationToken.None);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(expected, wmi.ReadData(ClawHardwareFacts.ScenarioAddress));
-        Assert.Equal(8,
-            host.CapabilityStates.Last(s => s.CapabilityId == CapabilityIds.PowerSustained).ObservedValue
-                ?.IntegerValue);
+        Assert.Null(host.CapabilityStates.Last(s => s.CapabilityId == CapabilityIds.PowerSustained).ObservedValue);
         var stop = await plugin.StopAsync(new EngineStopContext(
             Deadline.After(TimeSpan.FromSeconds(10))), CancellationToken.None);
         Assert.Equal(EngineStopStatus.Clean, stop.Status);
@@ -806,7 +899,7 @@ public sealed class ClawDeviceEngineTests
         Assert.Equal(30, wmi.ReadData(ClawHardwareFacts.PowerSustainedAddress));
         Assert.Contains(host.CapabilityStates, capability =>
             capability is
-                { CapabilityId: CapabilityIds.PowerSustained, Available: true, ObservedValue.IntegerValue: 30 });
+                { CapabilityId: CapabilityIds.PowerSustained, Available: true, ObservedValue: null });
         var reconciled = await DeviceRecoveryJournal.OpenAsync(
             state.Root,
             CancellationToken.None);

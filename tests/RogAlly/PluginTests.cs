@@ -9,6 +9,38 @@ namespace LibHandheld.Families.RogAlly.Tests;
 
 public sealed class PluginTests
 {
+    [Fact]
+    public async Task FanTelemetryUsesFastCadenceWithoutControlReadsOrRenewalFromUnrelatedWrites()
+    {
+        using var directory = new TemporaryDirectory();
+        var hardware = new AllyFakeHardware();
+        var host = new TestPluginHostAdapter(1);
+        await using var plugin = hardware.CreatePlugin();
+        await plugin.StartAsync(Start(host, directory, "rc72la", false), CancellationToken.None);
+        hardware.Acpi.SetScalar(AsusAcpiId.CpuFanSpeed, 31);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        CapabilityState? sample = null;
+        while (sample is null)
+        {
+            sample = host.CapabilityStates.LastOrDefault(value => value.CapabilityId == CapabilityIds.FanReading
+                                                                  && value.InstanceId == CapabilityInstances.Cpu &&
+                                                                  value.ObservedValue?.IntegerValue == 31);
+            if (sample is null)
+            {
+                await Task.Delay(20, deadline.Token);
+            }
+        }
+
+        Assert.Equal(0, hardware.Acpi.ControlStatusReads);
+        Assert.Equal(0, hardware.Acpi.BufferReads);
+        await plugin.ExecuteCommandAsync(
+            AcpiCapabilityTests.Command(CapabilityValue.Integer(80), CapabilityIds.ChargeLimit),
+            CancellationToken.None);
+        Assert.Equal(sample.ObservedAt, host.CapabilityStates.Last(value =>
+            value.CapabilityId == CapabilityIds.FanReading && value.InstanceId == CapabilityInstances.Cpu).ObservedAt);
+        await plugin.StopAsync(new EngineStopContext(Deadline.Never), CancellationToken.None);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -181,6 +213,8 @@ public sealed class PluginTests
         var host = new TestPluginHostAdapter(1);
         await using var plugin = hardware.CreatePlugin();
         _ = await plugin.StartAsync(Start(host, directory, "rc72la"), CancellationToken.None);
+        Assert.Equal(0, hardware.Acpi.ControlStatusReads);
+        Assert.Equal(0, hardware.Acpi.BufferReads);
         hardware.Acpi.IgnoreWritesTo = AsusAcpiId.SustainedPower;
         _ = await plugin.ExecuteCommandAsync(AcpiCapabilityTests.Command(CapabilityValue.Integer(22)),
             CancellationToken.None);
@@ -201,6 +235,14 @@ public sealed class PluginTests
         Assert.All(
             host.CapabilityStates.Last(value => value.CapabilityId == CapabilityIds.FanCurve).ObservedValue!.CurveValue,
             point => Assert.Equal(99, point.Output));
+        var controlReads = hardware.Acpi.ControlStatusReads;
+        var curveReads = hardware.Acpi.BufferReads;
+        _ = await plugin.ExecuteCommandAsync(
+            AcpiCapabilityTests.Command(CapabilityValue.Integer(75), CapabilityIds.ChargeLimit),
+            CancellationToken.None);
+        _ = await plugin.StopAsync(new EngineStopContext(Deadline.Never), CancellationToken.None);
+        Assert.Equal(controlReads, hardware.Acpi.ControlStatusReads);
+        Assert.Equal(curveReads, hardware.Acpi.BufferReads);
     }
 
     [Theory]
@@ -366,6 +408,15 @@ public sealed class PluginTests
         var published = host.CapabilityStates.Last(state => state.CapabilityId == CapabilityIds.PowerSustained);
         Assert.Equal(HardwareStateQuality.Observed, published.Quality);
         Assert.Equal(20, published.ObservedValue?.IntegerValue);
+        var controlReads = hardware.Acpi.ControlStatusReads;
+        var curveReads = hardware.Acpi.BufferReads;
+        Assert.Equal(CommandOutcome.Applied, (await plugin.ExecuteCommandAsync(
+            AcpiCapabilityTests.Command(CapabilityValue.Integer(21)), CancellationToken.None)).Outcome);
+        Assert.Equal(CommandOutcome.Applied, (await plugin.ExecuteCommandAsync(
+            AcpiCapabilityTests.Command(CapabilityValue.Curve(custom), CapabilityIds.FanCurve),
+            CancellationToken.None)).Outcome);
+        Assert.Equal(controlReads, hardware.Acpi.ControlStatusReads);
+        Assert.Equal(curveReads, hardware.Acpi.BufferReads);
 
         // Nothing was journalled, so stop returns the fans to HC's factory tables.
         hardware.Acpi.BufferWrites.Clear();

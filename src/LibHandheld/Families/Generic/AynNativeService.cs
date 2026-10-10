@@ -7,11 +7,15 @@ using LibHandheld.Internal.Transports;
 namespace LibHandheld.Families.Generic;
 
 /// <summary>Loki uses the ACPI EC command interface, not the unrelated indexed SuperIO fan transport.</summary>
-internal sealed class AynNativeService(ProfiledFeatureContext context) : ProfiledFeatureService("ayn-controls")
+internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmbeddedController>? open = null)
+    : ProfiledFeatureService("ayn-controls")
 {
+    private bool _captureAttempted;
     private CapabilityValue? _color;
+    private DateTimeOffset? _colorWrittenAt;
     private int? _duty;
     private IEmbeddedController? _ec;
+    private DateTimeOffset? _fanWrittenAt;
     private DeviceRecoveryJournal? _journal;
     private string? _mode;
     private bool _unknownOriginal;
@@ -21,7 +25,7 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
         new()
         {
             CapabilityId = CapabilityIds.FanMode, Role = CapabilityRole.FanMode, ValueKind = CapabilityValueKind.Choice,
-            Display = CapabilityDescriptors.Label("Fan mode"), SupportsRead = true, SupportsWrite = true,
+            Display = CapabilityDescriptors.Label("Fan mode"), SupportsWrite = true,
             Persistence = CapabilityPersistence.Volatile,
             Choices =
             [
@@ -34,7 +38,6 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
         {
             CapabilityId = "fan.duty", Role = CapabilityRole.FanDuty, ValueKind = CapabilityValueKind.Integer,
             Display = CapabilityDescriptors.Label("Fan speed"), Minimum = 0, Maximum = 100, Step = 1,
-            SupportsRead = true,
             SupportsWrite = true,
             Unit = CapabilityUnit.Percent, Persistence = CapabilityPersistence.Volatile
         },
@@ -59,6 +62,8 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
             CapabilityId = descriptor.CapabilityId,
             Available = _ec is not null,
             ObservedValue = value,
+            ObservedAt = value is null ? null
+                : descriptor.CapabilityId == CapabilityIds.LightingColor ? _colorWrittenAt : _fanWrittenAt,
             Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed
         };
     }).ToArray());
@@ -72,6 +77,8 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
         _duty = null;
         _mode = null;
         _color = null;
+        _fanWrittenAt = null;
+        _colorWrittenAt = null;
         return ValueTask.CompletedTask;
     }
 
@@ -80,38 +87,13 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _ec = PawnIoEmbeddedController.OpenAcpi();
+        _ec = (open ?? PawnIoEmbeddedController.OpenAcpi)();
         _journal = context.Journal;
         await _journal.ReconcileAsync<GenericRecoveryState>("ayn-fan", context.Firmware,
             (_, ct) => RestoreAsync(ct), token).ConfigureAwait(false);
 
-        await RefreshAsync(token).ConfigureAwait(false);
+        _captureAttempted = false;
         return Set(DeviceServiceState.Owned);
-    }
-
-    internal override ValueTask RefreshAsync(CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested();
-        if (_ec is null)
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        try
-        {
-            var raw = _ec.ReadByte(0x11);
-            if (raw <= 128)
-            {
-                _duty = (int)Math.Round(raw * 100d / 128);
-            }
-
-            _mode = _ec.ReadByte(0x10) == 1 ? "automatic" : _duty == 100 ? "full-speed" : "custom";
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-        }
-
-        return ValueTask.CompletedTask;
     }
 
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
@@ -129,11 +111,16 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
             var value = command.RequestedValue!;
             if (command.CapabilityId is CapabilityIds.FanMode or "fan.duty")
             {
-                var captured = await _journal!.BeginAsync("ayn-fan", firmware,
-                        () => new GenericRecoveryState
-                            { Addresses = [0x11, 0x10], Values = [_ec.ReadByte(0x11), _ec.ReadByte(0x10)] }, token)
-                    .ConfigureAwait(false);
-                _unknownOriginal |= captured is null;
+                if (!_captureAttempted)
+                {
+                    _captureAttempted = true;
+                    var captured = await _journal!.BeginAsync("ayn-fan", firmware,
+                            () => new GenericRecoveryState
+                                { Addresses = [0x11, 0x10], Values = [_ec.ReadByte(0x11), _ec.ReadByte(0x10)] }, token)
+                        .ConfigureAwait(false);
+                    _unknownOriginal |= captured is null;
+                }
+
                 var mode = command.CapabilityId == CapabilityIds.FanMode ? value.ChoiceValue! : "custom";
                 token.ThrowIfCancellationRequested();
                 dispatched = true;
@@ -142,13 +129,22 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
                     _ec.WriteByte(0x10, mode == "automatic" ? (byte)1 : (byte)0);
                     if (mode == "full-speed" || command.CapabilityId == "fan.duty")
                     {
-                        _duty = mode == "full-speed" ? 100 : value.IntegerValue!.Value;
-                        _ec.WriteByte(0x11, EncodeDuty(_duty.Value));
+                        _ec.WriteByte(0x11, EncodeDuty(mode == "full-speed" ? 100 : value.IntegerValue!.Value));
                     }
 
                     return true;
                 });
                 _mode = mode;
+                if (mode == "full-speed" || command.CapabilityId == "fan.duty")
+                {
+                    _duty = mode == "full-speed" ? 100 : value.IntegerValue!.Value;
+                }
+                else if (mode == "automatic")
+                {
+                    _duty = null;
+                }
+
+                _fanWrittenAt = DateTimeOffset.UtcNow;
             }
             else if (command.CapabilityId == CapabilityIds.LightingColor)
             {
@@ -167,6 +163,7 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
                     return true;
                 });
                 _color = value;
+                _colorWrittenAt = DateTimeOffset.UtcNow;
             }
             else
             {
@@ -225,7 +222,7 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
             await RestoreAsync(token).ConfigureAwait(false);
             return _unknownOriginal || _journal?.Entries<GenericRecoveryState>().Count > 0
                 ? Set(DeviceServiceState.ReleasedUnverified,
-                    Missing("Loki fan restoration has no independent confirmation."))
+                    Missing("The original Loki fan settings were not captured for restoration."))
                 : Set(DeviceServiceState.Idle);
         }
         finally
@@ -234,6 +231,7 @@ internal sealed class AynNativeService(ProfiledFeatureContext context) : Profile
             _ec = null;
             _duty = null;
             _mode = null;
+            _fanWrittenAt = null;
         }
     }
 }

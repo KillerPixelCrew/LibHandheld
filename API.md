@@ -62,7 +62,11 @@ rejected before writing. `ExecuteAsync(CapabilityCommand, CancellationToken)` di
 vendor control. Commands contain `CommandId`, `CapabilityId`, `InstanceId`, `RequestedValue`,
 `PairedPowerLimitWatts` and `Deadline`. Results contain `CommandId`, `Outcome`, `Reason` and
 `CompletedAt`. A successful native write is `Applied`; readback and rollback are not result fields.
-Observations distinguish unknown, observed and independently verified values.
+Control state comes from accepted writes and remains authoritative for the owning cycle. Controls
+are available from declared write support and owned transports even before a value is known; the
+library does not poll or verify their settings. Temperature and fan RPM remain sampled telemetry.
+Original settings are captured once when needed for restoration or byte-preserving protocol writes;
+those captures do not supply UI state or gate unrelated writes.
 
 Descriptors carry `CapabilityDisplay` through `Display`; its fields are `Key` and `CustomText`.
 `CapabilityChoice` has `Value` and `Display`. The consumer owns page placement, localization,

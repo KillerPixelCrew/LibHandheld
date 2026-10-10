@@ -6,6 +6,7 @@ namespace LibHandheld.Internal.Services;
 /// <summary>One device's captured originals. Recovery bookkeeping never blocks a hardware command.</summary>
 internal sealed class DeviceRecoveryJournal
 {
+    private readonly Dictionary<(string ServiceId, string Firmware), RecoveryOriginal?> _cycleCaptures = [];
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, RecoveryOriginal> _originals = new(StringComparer.Ordinal);
     private string? _path;
@@ -102,6 +103,21 @@ internal sealed class DeviceRecoveryJournal
         return _originals.TryGetValue(id, out var entry) && entry.FirmwareIdentity == firmware;
     }
 
+    /// <summary>Starts a newly acquired cycle without discarding originals still awaiting restoration.</summary>
+    public async ValueTask BeginCycleAsync(CancellationToken token)
+    {
+        await _gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            _cycleCaptures.Clear();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async ValueTask ReconcileAsync<T>(string id, string firmware,
         Func<T, CancellationToken, ValueTask> restore, CancellationToken token) where T : class
     {
@@ -144,7 +160,7 @@ internal sealed class DeviceRecoveryJournal
         return BeginAsync<T>(id, firmware, _ => ValueTask.FromResult(capture()), token);
     }
 
-    /// <summary>Captures at most once for this firmware, preserving the original even when saving fails.</summary>
+    /// <summary>Attempts capture once per service and firmware in the acquired cycle, including failed captures.</summary>
     public async ValueTask<DeviceRecoveryOperation<T>?> BeginAsync<T>(string id, string firmware,
         Func<CancellationToken, ValueTask<T?>> capture, CancellationToken token) where T : class
     {
@@ -154,6 +170,7 @@ internal sealed class DeviceRecoveryJournal
             token.ThrowIfCancellationRequested();
             if (HoldsOriginal(id, firmware) && EntryFor<T>(id) is { } existing)
             {
+                _cycleCaptures[(id, firmware)] = _originals[id];
                 await SaveAsync(token).ConfigureAwait(false);
                 return new DeviceRecoveryOperation<T>(existing, false);
             }
@@ -162,6 +179,25 @@ internal sealed class DeviceRecoveryJournal
             {
                 Log($"Retired recovery original for '{id}': firmware changed; nothing restored.");
             }
+
+            var key = (id, firmware);
+            if (_cycleCaptures.TryGetValue(key, out var captured))
+            {
+                if (captured is null)
+                {
+                    return null;
+                }
+
+                // Re-enlist the first original after a successful restore in this same cycle.
+                // A subsequent write must not capture our previous target as its original.
+                _originals[id] = captured;
+                await SaveAsync(token).ConfigureAwait(false);
+                return EntryFor<T>(id) is { } prior
+                    ? new DeviceRecoveryOperation<T>(prior, true)
+                    : null;
+            }
+
+            _cycleCaptures[key] = null;
 
             try
             {
@@ -173,13 +209,20 @@ internal sealed class DeviceRecoveryJournal
                     return null;
                 }
 
-                _originals[id] = new RecoveryOriginal(id, firmware, JsonSerializer.SerializeToElement(state),
+                var original = new RecoveryOriginal(id, firmware, JsonSerializer.SerializeToElement(state),
                     typeof(T).FullName!);
+                _originals[id] = original;
+                _cycleCaptures[key] = original;
                 await SaveAsync(token).ConfigureAwait(false);
                 return new DeviceRecoveryOperation<T>(new DeviceRecoveryEntry<T>(id, firmware, state), true);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
+                if (_cycleCaptures[key] is null)
+                {
+                    _cycleCaptures.Remove(key);
+                }
+
                 throw;
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)

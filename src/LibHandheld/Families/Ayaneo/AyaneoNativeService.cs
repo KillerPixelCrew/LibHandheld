@@ -130,25 +130,6 @@ internal sealed class AyaneoNativeService(
             _lastPowerSource = powerSource;
         }
 
-        try
-        {
-            var raw = _ec.ReadByte(model.Protocol == AyaneoEcProtocol.CEii ? (ushort)0xD1D1 : (ushort)0x1E);
-            if (model.Protocol == AyaneoEcProtocol.CEii ? raw is 1 or 0x65 : raw is 0x55 or 0xAA)
-            {
-                Observe(BypassId, null,
-                    CapabilityValue.Boolean(model.Protocol == AyaneoEcProtocol.CEii ? raw == 1 : raw == 0x55));
-            }
-
-            if (model.SecondaryDisplay)
-            {
-                Observe(SecondaryId, null, CapabilityValue.Integer((int)Math.Round(_ec.ReadByte(0x4E) * 100d / 255)));
-            }
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            DeviceTrace.Change("ayaneo-native", "read", exception.Message, DeviceTraceLevel.Warn);
-        }
-
         if (model.ModularController && _controllerEnabled && Environment.TickCount64 - _lastModuleQuery >= 2000)
         {
             _lastModuleQuery = Environment.TickCount64;
@@ -522,18 +503,8 @@ internal sealed class AyaneoNativeService(
     private async ValueTask RestoreOwnerAsync(byte original, CancellationToken token)
     {
         _ec!.WriteByte(OwnerAddress, original);
-        var verified = false;
-        try
-        {
-            verified = _ec.ReadByte(OwnerAddress) == original;
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-        }
-
-        await _journal.SetStatusAsync("lighting-owner", verified
-            ? DeviceRecoveryStatus.RestoredVerified
-            : DeviceRecoveryStatus.RestoredUnverified, token).ConfigureAwait(false);
+        await _journal.SetStatusAsync("lighting-owner", DeviceRecoveryStatus.RestoredUnverified, token)
+            .ConfigureAwait(false);
     }
 
     private async ValueTask AcquireControllerPowerAsync(CancellationToken token)
@@ -555,18 +526,8 @@ internal sealed class AyaneoNativeService(
     private async ValueTask RestorePowerAsync(byte original, CancellationToken token)
     {
         _ec!.WriteByte(0x2D, original);
-        var verified = false;
-        try
-        {
-            verified = _ec.ReadByte(0x2D) == original;
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-        }
-
-        await _journal.SetStatusAsync("controller-power", verified
-            ? DeviceRecoveryStatus.RestoredVerified
-            : DeviceRecoveryStatus.RestoredUnverified, token).ConfigureAwait(false);
+        await _journal.SetStatusAsync("controller-power", DeviceRecoveryStatus.RestoredUnverified, token)
+            .ConfigureAwait(false);
     }
 
     private async ValueTask EjectAsync(string side, CancellationToken token)

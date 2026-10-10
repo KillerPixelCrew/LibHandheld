@@ -13,7 +13,8 @@ namespace LibHandheld.Families.Generic;
 internal sealed class GenericAsusService(
     ProfiledFeatureContext context,
     AsusAuraController? aura = null,
-    bool firmwareControls = true) : ProfiledFeatureService(firmwareControls ? "asus-firmware" : "asus-accessories")
+    bool firmwareControls = true,
+    Func<IAsusAcpi>? openAcpi = null) : ProfiledFeatureService(firmwareControls ? "asus-firmware" : "asus-accessories")
 {
     private static readonly IReadOnlyList<CapabilityDescriptor> Surface =
     [
@@ -21,7 +22,7 @@ internal sealed class GenericAsusService(
         {
             CapabilityId = CapabilityIds.Scenario, Role = CapabilityRole.ScenarioMode,
             ValueKind = CapabilityValueKind.Choice,
-            Display = CapabilityDescriptors.Label("Performance mode"), SupportsRead = true, SupportsWrite = true,
+            Display = CapabilityDescriptors.Label("Performance mode"), SupportsWrite = true,
             Persistence = CapabilityPersistence.Volatile,
             Choices =
             [
@@ -38,7 +39,7 @@ internal sealed class GenericAsusService(
             Minimum = AllyChargeLimitCapability.MinimumPercent,
             Maximum = AllyChargeLimitCapability.MaximumPercent, Step = 1,
             Unit = CapabilityUnit.Percent,
-            SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent,
+            SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent,
             ProfileScope = CapabilityProfileScope.GlobalOnly
         },
         Fan("cpu", "CPU fan curve"), Fan("gpu", "GPU fan curve"),
@@ -58,7 +59,7 @@ internal sealed class GenericAsusService(
         {
             CapabilityId = "asus.xg-enabled", InstanceId = "xg", Role = CapabilityRole.GenericToggle,
             ValueKind = CapabilityValueKind.Boolean,
-            Display = CapabilityDescriptors.Label("XG Mobile enabled"), SupportsRead = true, SupportsWrite = true,
+            Display = CapabilityDescriptors.Label("XG Mobile enabled"), SupportsWrite = true,
             Persistence = CapabilityPersistence.DevicePersistent,
             ProfileScope = CapabilityProfileScope.GlobalOnly
         },
@@ -73,6 +74,7 @@ internal sealed class GenericAsusService(
     ];
 
     private readonly AsusAuraController _aura = aura ?? new AsusAuraController();
+    private readonly HashSet<string> _captureAttempted = [];
     private readonly HashSet<string> _changedFans = [];
     private readonly ObservedValues _observed = new();
 
@@ -155,7 +157,7 @@ internal sealed class GenericAsusService(
         token.ThrowIfCancellationRequested();
         if (firmwareControls)
         {
-            var acpi = new WindowsAsusAcpi();
+            var acpi = openAcpi?.Invoke() ?? new WindowsAsusAcpi();
             if (acpi.TryOpen())
             {
                 _acpi = acpi;
@@ -170,6 +172,7 @@ internal sealed class GenericAsusService(
         if (firmwareControls)
         {
             _journal = context.Journal;
+            _captureAttempted.Clear();
         }
 
         if (_journal is { } journal)
@@ -221,23 +224,6 @@ internal sealed class GenericAsusService(
         {
             _xg?.Dispose();
             _xg = null;
-        }
-
-        if (_acpi is not null)
-        {
-            if (AsusAcpiProtocol.TryDecodeScalar(_acpi.ReadStatus(AsusAcpiId.PerformanceMode), out var mode) &&
-                mode is >= 0 and <= 2)
-            {
-                _observed.Read(CapabilityIds.Scenario, CapabilityValue.Choice(AllyModels.ScenarioName(mode)!));
-            }
-
-            var charge = _charge!.Read();
-            _observed.Read(CapabilityIds.ChargeLimit, charge is null ? null : CapabilityValue.Integer(charge.Value));
-        }
-
-        if (_xg?.ReadEnabled() is { } enabled)
-        {
-            _observed.Read("asus.xg-enabled", CapabilityValue.Boolean(enabled), "xg");
         }
 
         Set(_acpi is not null || _xg is not null || _aura.Available
@@ -464,6 +450,12 @@ internal sealed class GenericAsusService(
 
     private async ValueTask CaptureAsync(string id, ushort[] addresses, Func<byte[]?> capture, CancellationToken token)
     {
+        if (!_captureAttempted.Add(id))
+        {
+            return;
+        }
+
+        // The original is captured once solely for restoration; it is not a control observation.
         var captured = await _journal!.BeginAsync(id, context.Firmware, () =>
         {
             var original = capture();
@@ -488,17 +480,13 @@ internal sealed class GenericAsusService(
             }
             else
             {
-                var current = OriginalMode();
+                var current = _observed.Value(CapabilityIds.Scenario)?.ChoiceValue;
                 _acpi.Write(AsusAcpiId.PerformanceMode, original.Values[0]);
                 _acpi.WriteBuffer(id == "fan-gpu" ? AsusAcpiId.GpuFanCurve : AsusAcpiId.CpuFanCurve,
                     original.Values.AsSpan(1));
                 if (current is not null)
                 {
-                    _acpi.Write(AsusAcpiId.PerformanceMode, current[0]);
-                }
-                else
-                {
-                    _unknownOriginal = true;
+                    _acpi.Write(AsusAcpiId.PerformanceMode, AllyModels.ScenarioValue(current));
                 }
             }
 
@@ -525,7 +513,7 @@ internal sealed class GenericAsusService(
 
             return _unknownOriginal || _journal?.Entries<GenericRecoveryState>().Count > 0
                 ? Set(DeviceServiceState.ReleasedUnverified,
-                    Missing("ASUS temporary settings were restored without complete readback."))
+                    Missing("The original ASUS temporary settings were not completely captured for restoration."))
                 : Set(DeviceServiceState.Idle);
         }
         finally

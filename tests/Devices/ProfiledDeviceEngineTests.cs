@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LibHandheld.Families.Gpd;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
@@ -9,6 +10,43 @@ namespace LibHandheld.Tests.Devices;
 
 public sealed class ProfiledDeviceEngineTests
 {
+    [Fact]
+    public async Task SharedFanMeasurementsRefreshBeforeHostExpiryWithoutReadingControls()
+    {
+        using var directory = new TemporaryDirectory();
+        var power = new FakePower();
+        var ec = new FakeEc();
+        ec.Bytes[0x0478] = 0x12;
+        ec.Bytes[0x0479] = 0x34;
+        var profile = GpdModels.All.Single(model => model.Definition.Id == "gpd-win5") with
+        {
+            Controller = null, Motion = null, Touchpad = null, KeyboardChords = [],
+            CreateOemSource = null, ServiceFactories = []
+        };
+        await using var engine = new ProfiledDeviceEngine(profile, () => power, _ => ec);
+        var host = new TestPluginHostAdapter(1);
+        await engine.StartAsync(new EngineStartContext
+        {
+            Host = host, Identity = new DeviceIdentitySnapshot { BiosVersion = "1" },
+            DeviceDefinitionId = profile.Definition.Id, StateDirectory = directory.Root,
+            Journal = TestRecovery.Open(directory.Root), ControllerManagementEnabled = false
+        }, CancellationToken.None);
+        ec.Reads.Clear();
+        ec.Bytes[0x0478] = 0x56;
+        ec.Bytes[0x0479] = 0x78;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!host.CapabilityStates.Any(value => value.CapabilityId == CapabilityIds.FanRpm
+                                                   && value.ObservedValue?.IntegerValue == 0x5678))
+        {
+            await Task.Delay(20, deadline.Token);
+        }
+
+        Assert.Equal(new ushort[] { 0x0478, 0x0479 }, ec.Reads);
+        Assert.Empty(power.Writes);
+        Assert.Equal(0, power.Reads);
+        await engine.StopAsync(new EngineStopContext(Deadline.Never), CancellationToken.None);
+    }
+
     [Fact]
     public async Task PairedPowerCommandsRestoreTheFirstOriginalAndRejectExpiredDeadlines()
     {
@@ -118,9 +156,11 @@ public sealed class ProfiledDeviceEngineTests
         private CpuPowerLimits _limits = new(15, 20, 25);
         internal bool RefuseRead { get; init; }
         internal List<CpuPowerLimits> Writes { get; } = [];
+        internal int Reads { get; private set; }
 
         public CpuPowerLimits ReadLimits()
         {
+            Reads++;
             return RefuseRead ? throw new IOException("No readback") : _limits;
         }
 
@@ -138,9 +178,11 @@ public sealed class ProfiledDeviceEngineTests
     private sealed class FakeEc : IEmbeddedController
     {
         internal Dictionary<ushort, byte> Bytes { get; } = [];
+        internal ConcurrentQueue<ushort> Reads { get; } = new();
 
         public byte ReadByte(ushort address)
         {
+            Reads.Enqueue(address);
             return Bytes.GetValueOrDefault(address);
         }
 

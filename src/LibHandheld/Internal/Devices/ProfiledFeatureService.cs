@@ -38,6 +38,12 @@ internal abstract class ProfiledFeatureService(string serviceId) : DeviceService
         return RefreshAsync(token);
     }
 
+    /// <summary>Reads live measurements without settings observation, recovery or watchdog writes.</summary>
+    internal virtual ValueTask RefreshTelemetryAsync(CancellationToken token)
+    {
+        return ValueTask.CompletedTask;
+    }
+
     internal virtual ValueTask SetControllerManagementAsync(bool enabled, CancellationToken token)
     {
         return ValueTask.CompletedTask;

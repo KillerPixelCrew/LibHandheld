@@ -30,8 +30,9 @@ operations. Transport handles are acquired only when a selected engine starts.
 Fan/turbo originals are captured in a firmware-and-model-bound journal before the first mutation,
 and restored on suspend, controller handoff and stop. Readback failure does not disable a proved
 write path. If an original cannot be read, only the documented automatic/takeover-off baseline can
-be restored; its journal remains unverified. An uncertain command is not automatically resubmitted.
-Persistent charge, brightness, color and vibration preferences are not reset during shutdown.
+be restored. Accepted restores retire their journal entries without verification; failed restores
+retain the original. An uncertain command is not automatically resubmitted. Persistent charge,
+brightness, color and vibration preferences are not reset during shutdown.
 
 The native OEM reader configures the applicable HC controller remap pages after the four-second
 firmware readiness delay, with 50 ms between pages. X1 uses two B4 pages; X2/OXP3 add the third B4

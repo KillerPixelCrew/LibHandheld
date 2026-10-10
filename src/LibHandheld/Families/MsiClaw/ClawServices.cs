@@ -125,34 +125,19 @@ internal sealed class PowerService(
         capability ?? throw new ArgumentNullException(nameof(capability));
 
     private readonly DeviceRecoveryJournal _journal = journal ?? throw new ArgumentNullException(nameof(journal));
-    public PowerPair? LastObserved { get; private set; }
 
-    public override async ValueTask<DeviceServiceResult> AcquireAsync(
+    public override ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
         var identity = context.Identity;
         if (!identity.ExactMachineMatch || !identity.WmiAvailable)
         {
-            return Set(DeviceServiceState.Passive, FirmwareReason(identity));
+            return ValueTask.FromResult(Set(DeviceServiceState.Passive, FirmwareReason(identity)));
         }
 
-        // HC writes without reading, so a read the firmware refuses leaves the limits unknown until
-        // the first write rather than keeping the service from starting.
-        LastObserved = await ClawObservation.TryAsync(_capability.ReadAsync, "power", cancellationToken)
-            .ConfigureAwait(false);
-        return Set(DeviceServiceState.Owned);
-    }
-
-    public async ValueTask RefreshAsync(CancellationToken cancellationToken, bool reassert = false)
-    {
-        var read = await _capability.ReadAsync(cancellationToken).ConfigureAwait(false);
-        if (reassert)
-        {
-            await _capability.ReassertAsync(read, cancellationToken).ConfigureAwait(false);
-        }
-
-        LastObserved = _capability.Observe(read);
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
 
     public override ValueTask<DeviceServiceResult> ReleaseAsync(
@@ -179,32 +164,24 @@ internal sealed class PowerService(
     }
 }
 
-internal sealed class ChargeLimitService(
-    ClawChargeLimitCapability capability) : DeviceService<ClawIdentityState>(ServiceIds.ChargeLimit)
+internal sealed class ChargeLimitService : DeviceService<ClawIdentityState>
 {
-    private readonly ClawChargeLimitCapability _capability = capability
-                                                             ?? throw new ArgumentNullException(nameof(capability));
+    internal ChargeLimitService() : base(ServiceIds.ChargeLimit)
+    {
+    }
 
-    public ChargeLimitState? LastObserved { get; private set; }
-
-    public override async ValueTask<DeviceServiceResult> AcquireAsync(
+    public override ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
         var identity = context.Identity;
         if (!identity.ExactMachineMatch || !identity.WmiAvailable)
         {
-            return Set(DeviceServiceState.Passive, FirmwareReason(identity));
+            return ValueTask.FromResult(Set(DeviceServiceState.Passive, FirmwareReason(identity)));
         }
 
-        LastObserved = await ClawObservation.TryAsync(_capability.ReadAsync, "charge-limit", cancellationToken)
-            .ConfigureAwait(false);
-        return Set(DeviceServiceState.Owned);
-    }
-
-    internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
-    {
-        LastObserved = _capability.Observe(await _capability.ReadAsync(cancellationToken).ConfigureAwait(false));
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
 
     public override ValueTask<DeviceServiceResult> ReleaseAsync(
@@ -212,7 +189,6 @@ internal sealed class ChargeLimitService(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        LastObserved = null;
         return ValueTask.FromResult(Set(DeviceServiceState.Idle));
     }
 
@@ -236,31 +212,23 @@ internal sealed class FanService(
         capability ?? throw new ArgumentNullException(nameof(capability));
 
     private readonly DeviceRecoveryJournal _journal = journal ?? throw new ArgumentNullException(nameof(journal));
-    public FanSnapshot? LastObserved { get; private set; }
 
-    public override async ValueTask<DeviceServiceResult> AcquireAsync(
+    public override ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
         var identity = context.Identity;
         if (!identity.ExactMachineMatch || !identity.WmiAvailable)
         {
-            return Set(DeviceServiceState.Passive, new CapabilityReason(
+            return ValueTask.FromResult(Set(DeviceServiceState.Passive, new CapabilityReason(
                 identity.ExactMachineMatch
                     ? CapabilityReasonCode.FirmwareNotVerified
                     : CapabilityReasonCode.Unsupported,
-                "The Claw model or its MSI_ACPI provider was not available."));
+                "The Claw model or its MSI_ACPI provider was not available.")));
         }
 
-        LastObserved = await ClawObservation.TryAsync(_capability.ReadSnapshotAsync, "fans", cancellationToken)
-            .ConfigureAwait(false);
-        return Set(DeviceServiceState.Owned);
-    }
-
-    internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
-    {
-        LastObserved = _capability.Observe(
-            await _capability.ReadSnapshotAsync(cancellationToken).ConfigureAwait(false));
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
 
     public override ValueTask<DeviceServiceResult> ReleaseAsync(
@@ -283,10 +251,12 @@ internal sealed class TelemetryService(
         capability ?? throw new ArgumentNullException(nameof(capability));
 
     public FanTelemetry? LastTelemetry { get; private set; }
+    public DateTimeOffset? ObservedAt { get; private set; }
 
     internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
     {
         LastTelemetry = await _capability.ReadTelemetryAsync(cancellationToken).ConfigureAwait(false);
+        ObservedAt = DateTimeOffset.UtcNow;
     }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(
@@ -301,7 +271,7 @@ internal sealed class TelemetryService(
                 "MSI telemetry requires the MSI_ACPI provider."));
         }
 
-        LastTelemetry = await _capability.ReadTelemetryAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshAsync(cancellationToken).ConfigureAwait(false);
         return Set(DeviceServiceState.Owned);
     }
 
@@ -311,25 +281,15 @@ internal sealed class TelemetryService(
     {
         cancellationToken.ThrowIfCancellationRequested();
         LastTelemetry = null;
+        ObservedAt = null;
         return ValueTask.FromResult(Set(DeviceServiceState.Idle));
     }
 }
 
 internal sealed class LightingService(
-    IClawMcuTransport transport,
-    ClawLightingCapability capability) : DeviceService<ClawIdentityState>(ServiceIds.Lighting)
+    IClawMcuTransport transport) : DeviceService<ClawIdentityState>(ServiceIds.Lighting)
 {
-    private readonly ClawLightingCapability _capability =
-        capability ?? throw new ArgumentNullException(nameof(capability));
-
     private readonly IClawMcuTransport _transport = transport ?? throw new ArgumentNullException(nameof(transport));
-
-    public LightingState? LastObserved { get; private set; }
-
-    internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
-    {
-        LastObserved = await _capability.ReadAsync(cancellationToken).ConfigureAwait(false);
-    }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(
         DeviceCycleContext<ClawIdentityState> context,
@@ -348,18 +308,6 @@ internal sealed class LightingService(
             return Set(DeviceServiceState.Passive, new CapabilityReason(
                 CapabilityReasonCode.PrerequisiteMissing,
                 "The reviewed MCU HID collection was unavailable."));
-        }
-
-        // HC writes the RGB profile without reading it. The read here only seeds what WSGM shows and
-        // which unknown bytes a write keeps; a profile the MCU does not return in the known shape
-        // leaves the state unknown until the first write, and lighting is offered either way.
-        LastObserved = await _capability.ReadAsync(cancellationToken).ConfigureAwait(false);
-        if (LastObserved is null)
-        {
-            DeviceTrace.Info(
-                "lighting",
-                $"The profile at 0x{_capability.ProfileAddress:X4} did not read back in the known shape on "
-                + $"MCU firmware {identity.Snapshot.McuFirmwareVersion ?? "<unknown>"}; writing as HC does.");
         }
 
         return Set(DeviceServiceState.Owned);

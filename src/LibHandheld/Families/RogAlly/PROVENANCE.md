@@ -144,9 +144,9 @@ Disagreements:
   limits and no performance mode (tester log, 2026-09-25).
 - HHD's performance preset is 30 W on AC and 25 W on battery for the Ally and Ally X; HC uses 25 W.
   HC is used.
-- HC never reads the limits back and writes them blind (`ROGAlly.cs:694-702`); so does this plugin
-  when DSTS cannot report them. Where DSTS does report them (the Ally X Lab), the originals are
-  journalled and restored on stop, and a write that reads back is verified.
+- HC never reads the limits back and writes them blind (`ROGAlly.cs:694-702`); the library follows
+  that write-and-trust behavior. Where DSTS can report originals, they are captured once for
+  restoration on stop. Controls are neither polled nor verified after a write.
 
 ## Fans and charging
 
