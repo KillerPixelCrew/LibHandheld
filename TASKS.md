@@ -2,8 +2,8 @@
 
 Active goal: implement every HC/HHD target through real Windows backends and deliver the complete
 WSGM integration. Source priority: HC > HHD > OpenGamepadUI. Work branch:
-`chore/device-integration-rework`; repositories stay private and automatic CI stays off during
-testing.
+`chore/device-integration-rework`; repositories are public and automatic CI remains off until
+explicitly enabled.
 
 ## Tasks
 

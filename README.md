@@ -56,6 +56,6 @@ protocols rather than create another abstraction layer.
 - `tests`: migrated Claw/Ally regression sources and fixtures.
 
 WSGM tracks this repository as `external/libhandheld`. Commit and push library changes before
-recording its gitlink in WSGM. LibHandheld and LibGPUDriverInteract remain private during testing;
-automatic CI is off for `chore/device-integration-rework`. New automated tests and hardware
-acceptance must be reported from actual runs, separately from compilation and source evidence.
+recording its gitlink in WSGM. LibHandheld and LibGPUDriverInteract are public; automatic CI remains
+off until explicitly enabled. New automated tests and hardware acceptance must be reported from
+actual runs, separately from compilation and source evidence.
