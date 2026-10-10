@@ -66,7 +66,10 @@ Control state comes from accepted writes and remains authoritative for the ownin
 are available from declared write support and owned transports even before a value is known; the
 library does not poll or verify their settings. Temperature and fan RPM remain sampled telemetry.
 Original settings are captured once when needed for restoration or byte-preserving protocol writes;
-those captures do not supply UI state or gate unrelated writes.
+those captures do not supply UI state or gate unrelated writes. Control timestamps retain the
+accepted write time across unrelated sensor publications. Ownership timestamps change with actual
+service transitions. Motion rejects obsolete or out-of-order reports before calibration and
+preserves valid delayed measurements without replaying expired angle history.
 
 Descriptors carry `CapabilityDisplay` through `Display`; its fields are `Key` and `CustomText`.
 `CapabilityChoice` has `Value` and `Display`. The consumer owns page placement, localization,

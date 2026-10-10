@@ -237,11 +237,12 @@ internal sealed partial class ClawDeviceEngine
                     Quality = value is null
                         ? HardwareStateQuality.Unknown
                         : HardwareStateQuality.Observed,
-                    ObservedAt = value is null
-                        ? null
-                        : descriptor.Role is CapabilityRole.Telemetry or CapabilityRole.FanMeasuredRpm
-                            ? _telemetry!.ObservedAt
-                            : DateTimeOffset.UtcNow
+                    ObservedAt = descriptor.Role is CapabilityRole.ControllerSource or CapabilityRole.MotionSource
+                        or CapabilityRole.HapticSink
+                        ? service.ChangedAt
+                        : value is null
+                            ? null
+                            : StateTimestamp(descriptor.CapabilityId)
                 },
                 cancellationToken).AsTask().WaitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -321,6 +322,22 @@ internal sealed partial class ClawDeviceEngine
 
         return CapabilityValue.Choice(DeviceServiceLifecycle.Ownership(
             descriptor.CapabilityId == CapabilityIds.Motion ? _motion!.State : _controller!.State));
+    }
+
+    private DateTimeOffset? StateTimestamp(string capabilityId)
+    {
+        return capabilityId switch
+        {
+            CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => _powerCapability!.LimitsWrittenAt,
+            CapabilityIds.Scenario => _powerCapability!.ScenarioWrittenAt,
+            CapabilityIds.ChargeLimit => _chargeLimitCapability!.WrittenAt,
+            CapabilityIds.FanMode => _fanCapability!.ModeWrittenAt,
+            "fan.duty" => _fanCapability!.DutyWrittenAt,
+            CapabilityIds.FanCurve => _fanCapability!.CurveWrittenAt,
+            CapabilityIds.LightingBrightness or CapabilityIds.LightingColor => _lightingCapability!.WrittenAt,
+            CapabilityIds.FanRpm or CapabilityIds.Temperature => _telemetry!.ObservedAt,
+            _ => null
+        };
     }
 
     private static IReadOnlyList<OemControlDescriptor> CreateOemControls()

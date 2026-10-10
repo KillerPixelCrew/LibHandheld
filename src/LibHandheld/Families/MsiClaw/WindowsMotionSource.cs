@@ -42,7 +42,23 @@ internal sealed class WindowsClawMotionSource : IClawMotionSource
                 return ValueTask.FromResult(false);
             }
 
-            _stream = LegacyMotionStream.Start(sensors, reading => publish(builder.Build(reading)));
+            var readingGate = new Lock();
+            DateTimeOffset? lastTimestamp = null;
+            _stream = LegacyMotionStream.Start(sensors, reading =>
+            {
+                lock (readingGate)
+                {
+                    // ISensorDataReport timestamps and HID frame timestamps are UTC. A callback is not
+                    // evidence of a current measurement: Intel may deliver queued or repeated reports.
+                    if (!CanAcceptReading(reading.Timestamp, DateTimeOffset.UtcNow, lastTimestamp))
+                    {
+                        return;
+                    }
+
+                    lastTimestamp = reading.Timestamp;
+                    publish(builder.Build(reading));
+                }
+            });
             return ValueTask.FromResult(true);
         }
     }
@@ -69,6 +85,12 @@ internal sealed class WindowsClawMotionSource : IClawMotionSource
     public ValueTask DisposeAsync()
     {
         return StopAsync(CancellationToken.None);
+    }
+
+    internal static bool CanAcceptReading(DateTimeOffset stamp, DateTimeOffset now, DateTimeOffset? previous)
+    {
+        return stamp <= now && (previous is null || stamp > previous.Value)
+                            && now - stamp < MotionService.StaleReportDelay;
     }
 
     /// <summary>HC's source order: the standard sensors, then the physical pair where the model declares it.</summary>

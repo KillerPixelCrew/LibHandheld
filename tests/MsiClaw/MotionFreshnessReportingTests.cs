@@ -59,6 +59,7 @@ public sealed class MotionFreshnessReportingTests : IDisposable
         motion.Current(Start + TimeSpan.FromSeconds(1) + MotionService.StaleReportDelay
                        + TimeSpan.FromMilliseconds(1));
         publish(Sample(Start + TimeSpan.FromSeconds(3)));
+        motion.Current(Start + TimeSpan.FromSeconds(3));
 
         Assert.Equal(2, host.Changes.Count);
         Assert.Contains("holding rest", host.Changes[0].Message, StringComparison.Ordinal);
@@ -75,11 +76,46 @@ public sealed class MotionFreshnessReportingTests : IDisposable
         {
             var reading = Start + TimeSpan.FromSeconds(pause * 10);
             publish(Sample(reading));
+            motion.Current(reading);
             motion.Current(reading + MotionService.StaleReportDelay + TimeSpan.FromMilliseconds(1));
         }
 
         // Three pauses, each reported once, each ended by the reading that opened the next.
         Assert.Equal(5, host.Changes.Count);
+    }
+
+    [Fact]
+    public async Task QueuedObsoleteOrDuplicateReportsCannotResumeOrReplaceCurrentMotion()
+    {
+        var (motion, host, publish) = await StartCapturingAsync();
+        publish(Sample(Start));
+        motion.Current(Start + TimeSpan.FromMilliseconds(501));
+        for (var index = 1; index < 40; index++)
+        {
+            publish(Sample(Start + TimeSpan.FromMilliseconds(index)));
+            motion.Current(Start + TimeSpan.FromMilliseconds(501 + index));
+        }
+
+        Assert.Single(host.Changes);
+        publish(Sample(Start + TimeSpan.FromSeconds(1)));
+        var fresh = motion.Current(Start + TimeSpan.FromSeconds(1));
+        publish(Sample(Start + TimeSpan.FromMilliseconds(990)));
+        publish(Sample(Start + TimeSpan.FromSeconds(1)));
+        var afterOld = motion.Current(Start + TimeSpan.FromMilliseconds(1008));
+        Assert.Equal(fresh!.Value.SensorTimestamp, afterOld!.Value.SensorTimestamp);
+        Assert.Equal(2, host.Changes.Count);
+    }
+
+    [Fact]
+    public async Task RetiredProducerCannotRepopulateMotionAfterRelease()
+    {
+        var (motion, _, publish) = await StartCapturingAsync();
+        publish(Sample(Start));
+        await motion.ReleaseAsync(
+            new DeviceCycleContext<ClawIdentityState>(Deadline.Never, FakeIdentityReader.CreateState()),
+            CancellationToken.None);
+        publish(Sample(Start + TimeSpan.FromSeconds(1)));
+        Assert.Null(motion.Current(Start + TimeSpan.FromSeconds(1)));
     }
 
     private static MotionSample Sample(DateTimeOffset stamp)

@@ -350,6 +350,7 @@ internal sealed class MotionService(IClawMotionSource source, ClawModel model)
     private readonly Lock _latestGate = new();
     private readonly GyroFrameResampler _resampler = new(MaximumMotionAge);
     private readonly IClawMotionSource _source = source ?? throw new ArgumentNullException(nameof(source));
+    private int _cycle;
     private MotionSample? _latest;
     private int _staleReported;
 
@@ -370,6 +371,9 @@ internal sealed class MotionService(IClawMotionSource source, ClawModel model)
     public MotionSample? Current(DateTimeOffset now)
     {
         MotionSample sample;
+        Vector3 average;
+        var stopped = false;
+        var resumed = false;
         lock (_latestGate)
         {
             if (_latest is not { } latest)
@@ -378,21 +382,33 @@ internal sealed class MotionService(IClawMotionSource source, ClawModel model)
             }
 
             sample = latest;
+            if (sample.SensorTimestamp is not { } stamp)
+            {
+                return sample;
+            }
+
+            var age = now - stamp;
+            if (age >= StaleReportDelay && _staleReported == 0)
+            {
+                _staleReported = 1;
+                stopped = true;
+            }
+            else if (age >= TimeSpan.Zero && age <= MaximumMotionAge && _staleReported != 0)
+            {
+                _staleReported = 0;
+                resumed = true;
+            }
+
+            average = _resampler.FrameAverage(now);
         }
 
-        // A source that supplies no timestamp cannot be aged; it is passed through as before.
-        if (sample.SensorTimestamp is not { } stamp)
-        {
-            return sample;
-        }
-
-        // Crossing MaximumMotionAge is not itself news, and is not tested for here: that threshold
-        // governs the resampler's quiet cap, and the held rest it produces is correct: the average
+        // Crossing MaximumMotionAge is not itself news. That threshold governs the resampler's quiet
+        // cap and only a current measurement can end a reported pause. The held rest is correct: the average
         // decays to zero while the last measured acceleration keeps Steam's fusion anchored, so an
         // Intel transport pause becomes neither continuous rotation nor freefall. Only a pause that
         // outlasts ordinary jitter tells a reader something. This runs on the ~125 Hz controller
         // reader, so it reports once per stretch at most.
-        if (now - stamp >= StaleReportDelay && Interlocked.Exchange(ref _staleReported, 1) == 0)
+        if (stopped)
         {
             DeviceTrace.Change(
                 "motion",
@@ -401,7 +417,11 @@ internal sealed class MotionService(IClawMotionSource source, ClawModel model)
                 + "holding rest (decayed angular velocity, last measured acceleration) until they resume.");
         }
 
-        var average = _resampler.FrameAverage(now);
+        if (resumed)
+        {
+            DeviceTrace.Change("motion", "freshness", "Gyroscope reports resumed.");
+        }
+
         return sample with
         {
             GyroX = average.X,
@@ -414,35 +434,33 @@ internal sealed class MotionService(IClawMotionSource source, ClawModel model)
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
+        int cycle;
         lock (_latestGate)
         {
             _latest = null;
+            _staleReported = 0;
+            cycle = ++_cycle;
+            _resampler.Reset();
         }
 
-        Interlocked.Exchange(ref _staleReported, 0);
-        _resampler.Reset();
         var started = await _source.StartAsync(
             model,
             sample =>
             {
                 lock (_latestGate)
                 {
+                    if (_cycle != cycle)
+                    {
+                        return;
+                    }
+
+                    if (sample.SensorTimestamp is { } stamp && !_resampler.OnReading(
+                            new Vector3(sample.GyroX, sample.GyroY, sample.GyroZ), stamp))
+                    {
+                        return;
+                    }
+
                     _latest = sample;
-                }
-
-                if (sample.SensorTimestamp is { } stamp)
-                {
-                    _resampler.OnReading(
-                        new Vector3(sample.GyroX, sample.GyroY, sample.GyroZ),
-                        stamp);
-                }
-
-                // A fresh reading ends the quiet stretch and re-arms its one-shot report. The
-                // resume line is owed only where the pause was actually reported, so a crossing
-                // too brief to mention stays unmentioned at both ends.
-                if (Interlocked.Exchange(ref _staleReported, 0) != 0)
-                {
-                    DeviceTrace.Change("motion", "freshness", "Gyroscope reports resumed.");
                 }
             },
             cancellationToken).ConfigureAwait(false);
@@ -464,13 +482,19 @@ internal sealed class MotionService(IClawMotionSource source, ClawModel model)
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
+        lock (_latestGate)
+        {
+            // Retire the publication owner before a bounded native stop waits for callbacks.
+            _cycle++;
+        }
+
         await _source.StopAsync(cancellationToken).ConfigureAwait(false);
         lock (_latestGate)
         {
             _latest = null;
+            _resampler.Reset();
         }
 
-        _resampler.Reset();
         return Set(DeviceServiceState.Idle);
     }
 }

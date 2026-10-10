@@ -206,6 +206,50 @@ public sealed class PluginTests
     }
 
     [Fact]
+    public async Task SensorPassesPreserveControlAndOwnershipTimestampsUntilTheyChange()
+    {
+        using var directory = new TemporaryDirectory();
+        var hardware = new AllyFakeHardware();
+        var host = new TestPluginHostAdapter(1);
+        await using var plugin = hardware.CreatePlugin();
+        _ = await plugin.StartAsync(Start(host, directory, "rc72la"), CancellationToken.None);
+        var provider = Assert.IsType<AllyDeviceEngine>(hardware.Provider);
+        Assert.Equal(CommandOutcome.Applied, (await plugin.ExecuteCommandAsync(
+            AcpiCapabilityTests.Command(CapabilityValue.Integer(75), CapabilityIds.ChargeLimit),
+            CancellationToken.None)).Outcome);
+        var control = Latest(CapabilityIds.ChargeLimit);
+        var controller = Latest(CapabilityIds.Controller);
+        var motion = Latest(CapabilityIds.Motion);
+        var sensor = Latest(CapabilityIds.FanReading, CapabilityInstances.Cpu);
+        hardware.Acpi.SetScalar(AsusAcpiId.CpuFanSpeed, 35);
+        await provider.RefreshTelemetryAsync(CancellationToken.None);
+        await provider.RefreshTelemetryAsync(CancellationToken.None);
+        Assert.Equal(control.ObservedAt, Latest(CapabilityIds.ChargeLimit).ObservedAt);
+        Assert.Equal(controller.ObservedAt, Latest(CapabilityIds.Controller).ObservedAt);
+        Assert.Equal(motion.ObservedAt, Latest(CapabilityIds.Motion).ObservedAt);
+        Assert.Equal(35, Latest(CapabilityIds.FanReading, CapabilityInstances.Cpu).ObservedValue!.IntegerValue);
+        Assert.True(Latest(CapabilityIds.FanReading, CapabilityInstances.Cpu).ObservedAt > sensor.ObservedAt);
+        Assert.Equal(CommandOutcome.Applied, (await plugin.ExecuteCommandAsync(
+            AcpiCapabilityTests.Command(CapabilityValue.Integer(80), CapabilityIds.ChargeLimit),
+            CancellationToken.None)).Outcome);
+        Assert.Equal(80, Latest(CapabilityIds.ChargeLimit).ObservedValue!.IntegerValue);
+        Assert.True(Latest(CapabilityIds.ChargeLimit).ObservedAt > control.ObservedAt);
+        await plugin.SetControllerManagementAsync(new EngineControllerManagementContext(false, Deadline.Never),
+            CancellationToken.None);
+        var released = Latest(CapabilityIds.Controller);
+        Assert.NotEqual(controller.ObservedValue!.ChoiceValue, released.ObservedValue!.ChoiceValue);
+        Assert.True(released.ObservedAt > controller.ObservedAt);
+        await provider.RefreshTelemetryAsync(CancellationToken.None);
+        Assert.Equal(released.ObservedAt, Latest(CapabilityIds.Controller).ObservedAt);
+
+        CapabilityState Latest(string id, string? instance = null)
+        {
+            // A direct provider pass updates its merged publications; the outer engine forwards them later.
+            return provider.States.Single(state => state.CapabilityId == id && state.InstanceId == instance);
+        }
+    }
+
+    [Fact]
     public async Task WrittenPowerChargeAndEncodedFanValuesWinOverConflictingFirmwareReadings()
     {
         using var directory = new TemporaryDirectory();

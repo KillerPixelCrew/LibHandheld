@@ -127,9 +127,15 @@ internal sealed partial class AllyDeviceEngine
                 continue;
             }
 
-            _observedValues.Read(descriptor.CapabilityId, descriptor.SupportsRead ? CurrentState(descriptor) : null,
-                descriptor.InstanceId);
-            var value = _observedValues.Value(descriptor.CapabilityId, descriptor.InstanceId);
+            if (descriptor.CapabilityId == CapabilityIds.FanReading)
+            {
+                _observedValues.Read(descriptor.CapabilityId, CurrentState(descriptor), descriptor.InstanceId);
+            }
+
+            var ownership = descriptor.CapabilityId is CapabilityIds.Controller or CapabilityIds.Motion;
+            var value = ownership
+                ? CurrentState(descriptor)
+                : _observedValues.Value(descriptor.CapabilityId, descriptor.InstanceId);
             await _host.PublishCapabilityStateAsync(new CapabilityState
             {
                 CapabilityId = descriptor.CapabilityId,
@@ -142,6 +148,7 @@ internal sealed partial class AllyDeviceEngine
                 Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
                 ObservedAt = value is null ? null
                     : descriptor.CapabilityId == CapabilityIds.FanReading ? _fans?.TelemetryObservedAt
+                    : ownership ? service.ChangedAt
                     : _observedValues.Time(descriptor.CapabilityId, descriptor.InstanceId)
             }, cancellationToken).ConfigureAwait(false);
         }

@@ -9,6 +9,22 @@ public sealed class WindowsMotionSourceTests
     private static readonly DateTimeOffset Timestamp =
         new(2026, 9, 3, 10, 0, 0, TimeSpan.Zero);
 
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(49, true)]
+    [InlineData(59, true)]
+    [InlineData(499, true)]
+    [InlineData(500, false)]
+    [InlineData(1000, false)]
+    [InlineData(-1, false)]
+    public void UtcReportAdmissionPreservesOrdinaryJitterAndRejectsObsoleteOrFutureData(int age, bool accepted)
+    {
+        var now = new DateTimeOffset(2026, 10, 10, 14, 0, 0, TimeSpan.Zero);
+        Assert.Equal(accepted, WindowsClawMotionSource.CanAcceptReading(now.AddMilliseconds(-age), now, null));
+        Assert.False(WindowsClawMotionSource.CanAcceptReading(now, now, now));
+        Assert.False(WindowsClawMotionSource.CanAcceptReading(now.AddMilliseconds(-5), now, now));
+    }
+
     [Fact]
     public void PhysicalImuValuesUseTheSteamDeckApplicationAxisBasisOnce()
     {

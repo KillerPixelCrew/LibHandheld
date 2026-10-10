@@ -230,6 +230,7 @@ internal sealed class GyroFrameResampler
     private readonly TimeSpan _quietAfter;
     private DateTimeOffset? _accountedTo;
     private DateTimeOffset? _lastFrame;
+    private DateTimeOffset? _lastReading;
     private Vector3 _omega;
     private Vector3 _pendingDegrees;
     private DateTimeOffset _quietCap;
@@ -254,19 +255,29 @@ internal sealed class GyroFrameResampler
             _accountedTo = null;
             _pendingDegrees = default;
             _lastFrame = null;
+            _lastReading = null;
         }
     }
 
     /// <summary>Feeds one sensor reading, accumulating the angle the previous one covered.</summary>
     /// <param name="omegaDegreesPerSecond">Angular velocity in the published basis.</param>
     /// <param name="stamp">The reading's sensor timestamp.</param>
-    public void OnReading(Vector3 omegaDegreesPerSecond, DateTimeOffset stamp)
+    /// <returns>False for duplicate, reversed or already expired history; ordinary late delivery remains accepted.</returns>
+    public bool OnReading(Vector3 omegaDegreesPerSecond, DateTimeOffset stamp)
     {
         lock (_gate)
         {
+            if ((_lastReading is { } previous && stamp <= previous)
+                || (_accountedTo is { } accounted && accounted >= stamp + _quietAfter))
+            {
+                return false;
+            }
+
             AdvanceUnderGate(stamp);
             _omega = omegaDegreesPerSecond;
             _quietCap = stamp + _quietAfter;
+            _lastReading = stamp;
+            return true;
         }
     }
 
@@ -280,10 +291,17 @@ internal sealed class GyroFrameResampler
             AdvanceUnderGate(now);
             if (_lastFrame is not { } previous || now <= previous)
             {
+                if (_lastFrame is null && now >= _quietCap)
+                {
+                    // No consumer frame existed during this expired interval. Its historical angle must
+                    // not be banked into the next live frame and revive motion after the quiet cap.
+                    _pendingDegrees = Vector3.Zero;
+                }
+
                 // First frame, or a non-advancing frame clock: the held reading is the only
                 // defensible answer, and pending angle stays banked for the next real frame.
                 _lastFrame ??= now;
-                return _omega;
+                return now >= _quietCap ? Vector3.Zero : _omega;
             }
 
             var average = _pendingDegrees / (float)(now - previous).TotalSeconds;

@@ -463,9 +463,11 @@ internal sealed class AllyFakeHardware(string product = "RC72LA")
 
     public FakeVendorHid Vendor { get; } = new();
 
+    public AllyDeviceEngine? Provider { get; private set; }
+
     public ServiceEngineFixture CreatePlugin()
     {
-        return new ServiceEngineFixture(context => new AllyDeviceEngine(context, new AllyHardwareServices(
+        return new ServiceEngineFixture(context => Provider = new AllyDeviceEngine(context, new AllyHardwareServices(
             Identity,
             Acpi,
             _ => Vendor,

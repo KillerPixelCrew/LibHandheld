@@ -213,6 +213,55 @@ public sealed class ClawDeviceEngineTests
     }
 
     [Fact]
+    public async Task SensorRefreshDoesNotRenewAcceptedControlsOrOwnership()
+    {
+        using TemporaryDirectory state = new();
+        ClawDeviceEngine? provider = null;
+        await using var plugin = new ServiceEngineFixture(context =>
+            provider = new ClawDeviceEngine(context, CreateServices()));
+        TestPluginHostAdapter host = new(FixtureId);
+        _ = await plugin.StartAsync(StartContext(host, state.Root), CancellationToken.None);
+        var commands = new[]
+        {
+            Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+            {
+                PairedPowerLimitWatts = 20
+            },
+            Command(CapabilityIds.Scenario, null, CapabilityValue.Choice("sport")),
+            Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(80)),
+            Command(CapabilityIds.FanMode, null, CapabilityValue.Choice("custom")),
+            Command("fan.duty", null, CapabilityValue.Integer(50)),
+            Command(CapabilityIds.FanCurve, null,
+                CapabilityValue.Curve(Enumerable.Range(0, 6)
+                    .Select(index => new CurvePoint(index * 10, index * 10)).ToArray())),
+            Command(CapabilityIds.LightingBrightness, null, CapabilityValue.Integer(80))
+        };
+        foreach (var command in commands)
+        {
+            Assert.Equal(CommandOutcome.Applied,
+                (await plugin.ExecuteCommandAsync(command, CancellationToken.None)).Outcome);
+        }
+
+        var stableDescriptors = host.DescriptorSets.Last().Descriptors.Where(descriptor =>
+            descriptor.Role is not (CapabilityRole.Telemetry or CapabilityRole.FanMeasuredRpm)).ToArray();
+        var before = stableDescriptors.Select(descriptor => host.CapabilityStates.Last(value =>
+            value.CapabilityId == descriptor.CapabilityId && value.InstanceId == descriptor.InstanceId)).ToArray();
+
+        await provider!.RefreshTelemetryAsync(CancellationToken.None);
+        await provider.RefreshTelemetryAsync(CancellationToken.None);
+
+        var after = stableDescriptors.Select(descriptor => host.CapabilityStates.Last(value =>
+            value.CapabilityId == descriptor.CapabilityId && value.InstanceId == descriptor.InstanceId)).ToArray();
+        Assert.Equal(before, after);
+        var chargeAt = after.Single(value => value.CapabilityId == CapabilityIds.ChargeLimit).ObservedAt;
+        await Task.Delay(1);
+        Assert.Equal(CommandOutcome.Applied, (await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(80)), CancellationToken.None)).Outcome);
+        Assert.True(host.CapabilityStates.Last(value => value.CapabilityId == CapabilityIds.ChargeLimit).ObservedAt
+                    > chargeAt);
+    }
+
+    [Fact]
     public async Task StartupReadsOnlyLiveTelemetryAndOffersControlsWithoutReadback()
     {
         using TemporaryDirectory state = new();
