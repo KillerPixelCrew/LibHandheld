@@ -49,6 +49,9 @@ public sealed record OemControlDescriptor
 
     /// <summary>Suggested semantic behavior; the consuming application's explicit assignment wins.</summary>
     public OemControlDefaultActionHint DefaultActionHint { get; init; }
+
+    /// <summary>The Guide or Quick Access bit this OEM control also forwards through the controller channel.</summary>
+    public CanonicalButtons ControllerButton { get; init; }
 }
 
 /// <summary>A physical control's semantic default, independent of an application or model name.</summary>

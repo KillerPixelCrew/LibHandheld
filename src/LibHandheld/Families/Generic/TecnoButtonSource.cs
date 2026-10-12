@@ -23,7 +23,8 @@ internal sealed class TecnoButtonSource : IProfiledOemSource
         {
             ControlId = field.Id,
             Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = field.Label },
-            Placement = OemControlPlacement.Front, RequiresControllerAcquisition = true
+            Placement = OemControlPlacement.Front, RequiresControllerAcquisition = true,
+            ControllerButton = field.Button
         }).ToArray();
 
     public bool IsConnected => _source.IsConnected;

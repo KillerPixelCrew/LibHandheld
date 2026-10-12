@@ -86,7 +86,13 @@ internal static class SteamDeckModels
                 {
                     ControlId = id, Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = id },
                     Placement = id is "steam" or "quick-access" ? OemControlPlacement.Front : OemControlPlacement.Rear,
-                    RequiresControllerAcquisition = true
+                    RequiresControllerAcquisition = true,
+                    ControllerButton = id switch
+                    {
+                        "steam" => CanonicalButtons.Guide,
+                        "quick-access" => CanonicalButtons.QuickAccess,
+                        _ => CanonicalButtons.None
+                    }
                 }).ToArray()
         };
     }

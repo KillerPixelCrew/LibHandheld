@@ -9,6 +9,20 @@ namespace LibHandheld.Families.RogAlly.Tests;
 public sealed class ProtocolTests
 {
     [Theory]
+    [InlineData("rc72la")]
+    [InlineData("rc73xa")]
+    public void PublishedOemControllerRolesMatchTheExistingVendorMapping(string modelId)
+    {
+        var model = AllyModels.ById(modelId)!;
+        var controls = AllyModels.OemControls(model);
+        foreach (var code in new byte[] { 0xA6, 0x38, 0x93 })
+        {
+            var action = AllyModels.VendorAction(model, code)!.Value;
+            Assert.Equal(action.Button, controls.Single(control => control.ControlId == action.ControlId).ControllerButton);
+        }
+    }
+
+    [Theory]
     [InlineData(new byte[] { 0x5A, 0xA6, 0, 0 }, true, 0xA6)]
     [InlineData(new byte[] { 0x5A, 0x38 }, true, 0x38)]
     [InlineData(new byte[] { 0x5D, 0xA6 }, false, 0)]

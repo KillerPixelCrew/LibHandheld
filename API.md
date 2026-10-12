@@ -79,6 +79,9 @@ profiles, desired state, AutoTDP, virtual-controller routing, HidHide and OEM ac
 complete descriptor replacements, control observations, physical interfaces/haptic capabilities,
 full controller/motion samples, OEM controls/events and faults. Inactive owners ignore new live
 publications. `ApplyHapticsAsync` sends complete motor state; a silent frame stops output.
+`OemControlDescriptor.ControllerButton` identifies the Guide or Quick Access bit an OEM control
+also forwards through the controller channel. It is physical metadata; the host owns alternate
+dispatch when its controller consumer cannot read that channel.
 `GetDiagnosticsAsync` returns `IReadOnlyDictionary<string, string>`. `GlyphResources` and
 `OpenGlyphResource(relativePath)` expose embedded authored resources.
 

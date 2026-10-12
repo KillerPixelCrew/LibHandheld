@@ -361,9 +361,9 @@ internal sealed partial class ClawDeviceEngine
         return
         [
             Oem("oem1", "Claw button", OemControlPlacement.Front, false,
-                false),
+                false) with { ControllerButton = CanonicalButtons.Guide },
             Oem("oem2", "Quick Settings", OemControlPlacement.Front, true,
-                false),
+                false) with { ControllerButton = CanonicalButtons.QuickAccess },
             Oem("oem3", "M1", OemControlPlacement.Rear, false,
                 true),
             Oem("oem4", "M2", OemControlPlacement.Rear, false,

@@ -339,7 +339,7 @@ internal static class AllyModels
     /// <returns>The model's ordered OEM descriptors; this does not probe current input availability.</returns>
     public static IReadOnlyList<OemControlDescriptor> OemControls(AllyModel model)
     {
-        return model.Layout is AllyFrontLayout.Xbox
+        OemControlDescriptor[] controls = model.Layout is AllyFrontLayout.Xbox
             ?
             [
                 Oem(OemControlIds.ArmouryCrate, "Armoury Crate", OemControlPlacement.Front, false) with
@@ -358,6 +358,13 @@ internal static class AllyModels
                 Oem(OemControlIds.M1, "M1", OemControlPlacement.Rear, true),
                 Oem(OemControlIds.M2, "M2", OemControlPlacement.Rear, true)
             ];
+        var buttons = new[] { VendorAction(model, code: 0xA6), VendorAction(model, code: 0x38),
+            VendorAction(model, code: 0x93) };
+        return controls.Select(control => control with
+        {
+            ControllerButton = buttons.FirstOrDefault(button => button?.ControlId == control.ControlId)?.Button
+                               ?? CanonicalButtons.None
+        }).ToArray();
     }
 
     /// <summary>ASUS performance modes, by the value ATKACPI and HC's OEMPowerMode use.</summary>

@@ -659,8 +659,19 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                                 or CanonicalButtons.RearPaddle3 or CanonicalButtons.RearPaddle4
                                 ? OemControlPlacement.Rear
                                 : OemControlPlacement.Front,
-                            RequiresControllerAcquisition = chord.RequiresController
-                        })).GroupBy(control => control.ControlId, StringComparer.Ordinal).Select(group => group.First())
+                            RequiresControllerAcquisition = chord.RequiresController,
+                            ControllerButton = chord.Button & (CanonicalButtons.Guide | CanonicalButtons.QuickAccess)
+                        })).GroupBy(control => control.ControlId, StringComparer.Ordinal).Select(group =>
+                {
+                    var control = group.First();
+                    return control.ControllerButton != CanonicalButtons.None
+                        ? control
+                        : control with
+                        {
+                            ControllerButton = group.Select(item => item.ControllerButton)
+                                .FirstOrDefault(button => button != CanonicalButtons.None)
+                        };
+                })
                 .ToArray()), token);
     }
 }
