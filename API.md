@@ -96,8 +96,8 @@ exact model bounds and command availability.
 is neither an observation nor a write. Explicit native measurements stay separate from accepted
 control targets. Valve's charge measurement is requested by an action rather than periodically
 polling settings; live GPU/fabric clocks join telemetry. GPD WIN 5 publishes a read-only native
-bypass-supply observation from its EC; read failure returns unknown and never gates writable
-controls.
+Type-C-only power-source observation from its EC; read failure returns unknown and never gates
+writable controls.
 
 `ApplyButtonHapticsAsync` and optional native pulses express supported actuator/style feedback.
 Valve repeats its native motor envelope at 10 ms. Output uncertainty disables only haptics until an

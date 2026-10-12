@@ -17,10 +17,10 @@ and `const.py`.
 - Later WIN 4 and WIN Max 2 use 0x4E/0x4F, manual flag 0x275 and duty 0x1809, scale 0–184. WIN Mini
   uses 0x47A, scale 0–244. Mini's known broken speed readback is not published as measured RPM.
 - WIN 5 drives both 0x47A and 0x47B, scale 0–244; RPM is high byte 0x478 and low byte 0x479. Its
-  read-only bypass-supply observation uses indexed 0x4E/0x4F EC address 0x0577, matching HC:
-  0x02/0x10 indicate bypass supply. Failed reads publish unknown and never infer an accepted target.
-  Firmware rear-button reports have genuine edges on 2F24:0137/0135, usage FF00:0001. Firmware
-  without that interface retains the HC keyboard fallback.
+  read-only Type-C-only power-source observation uses indexed 0x4E/0x4F EC address 0x0577, matching
+  HC: 0x02/0x10 indicate Type-C-only supply. Failed reads publish unknown and never infer an
+  accepted target. Firmware rear-button reports have genuine edges on 2F24:0137/0135, usage
+  FF00:0001. Firmware without that interface retains the HC keyboard fallback.
 - WinControls V1/V2 configuration formats retain firmware layout checks, page offsets and pre-EEPROM
   checksums. Rumble intensity, stick deadzones/boundaries and supported RGB fields are persistent
   explicit user commands. V1 rear acquisition changes only macro keys/delays and restores only those
