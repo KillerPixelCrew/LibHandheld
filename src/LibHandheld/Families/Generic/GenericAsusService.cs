@@ -84,6 +84,7 @@ internal sealed class GenericAsusService(
     private DeviceRecoveryJournal? _journal;
     private bool _topologyChanged;
     private bool _unknownOriginal;
+    private bool _xgFanChanged;
     private AsusXgTransport? _xg;
 
     internal static IReadOnlyList<CapabilityRole> AccessoryRoles { get; } =
@@ -277,6 +278,7 @@ internal sealed class GenericAsusService(
                         return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
                     }
 
+                    _xgFanChanged = true;
                     _xg.Fan(curve);
                 }
             }
@@ -506,14 +508,16 @@ internal sealed class GenericAsusService(
     {
         try
         {
+            token.ThrowIfCancellationRequested();
+            _xg?.ReleaseFan();
             foreach (var id in new[] { "fan-cpu", "fan-gpu", "mode" })
             {
                 await RestoreAsync(id, token).ConfigureAwait(false);
             }
 
-            return _unknownOriginal || _journal?.Entries<GenericRecoveryState>().Count > 0
+            return _unknownOriginal || _xgFanChanged || _journal?.Entries<GenericRecoveryState>().Count > 0
                 ? Set(DeviceServiceState.ReleasedUnverified,
-                    Missing("The original ASUS temporary settings were not completely captured for restoration."))
+                    Missing("The original ASUS temporary settings or XG fan restoration could not be verified."))
                 : Set(DeviceServiceState.Idle);
         }
         finally
@@ -557,6 +561,9 @@ internal sealed class GenericAsusService(
         {
             CapabilityId = CapabilityIds.FanCurve, InstanceId = instance, Role = CapabilityRole.FanCurve,
             ValueKind = CapabilityValueKind.Curve,
+            // The same reviewed eight-point ASUS report is used for CPU, GPU and XG channels.
+            CurveInputs = AllyFanCapability.DefaultCpuCurve.Take(AllyFanCapability.PointCount)
+                .Select(value => (int)value).ToArray(),
             Display = CapabilityDescriptors.Label(label), Minimum = 0, Maximum = 100, Unit = CapabilityUnit.Percent,
             SupportsWrite = true,
             Persistence = instance == "xg" ? CapabilityPersistence.Unknown : CapabilityPersistence.Volatile

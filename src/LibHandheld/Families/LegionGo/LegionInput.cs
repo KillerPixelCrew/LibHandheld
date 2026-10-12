@@ -69,8 +69,8 @@ internal static class LegionInputCodec
         held |= (report[20] & 1) != 0 ? CanonicalButtons.Menu : 0;
         held |= (report[20] & 2) != 0 ? CanonicalButtons.View : 0;
         held |= (report[20] & 0x80) != 0 ? CanonicalButtons.RearPaddle1 : 0;
-        held |= (report[20] & 0x40) != 0 ? CanonicalButtons.RearPaddle2 : 0;
-        held |= (report[20] & 4) != 0 ? CanonicalButtons.RearPaddle3 : 0;
+        held |= (report[20] & 0x40) != 0 ? CanonicalButtons.RearPaddle3 : 0;
+        held |= (report[20] & 4) != 0 ? CanonicalButtons.RearPaddle2 : 0;
         held |= (report[20] & 0x20) != 0 ? CanonicalButtons.RearPaddle4 : 0;
         var x = BinaryPrimitives.ReadUInt16BigEndian(report[26..]);
         var y = BinaryPrimitives.ReadUInt16BigEndian(report[28..]);

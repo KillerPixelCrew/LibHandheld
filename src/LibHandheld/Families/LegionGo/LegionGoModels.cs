@@ -13,7 +13,7 @@ internal sealed record LegionGoModel(
 {
     private static readonly ushort[] SlimProducts = [0xE310, 0xE311];
     private static readonly ushort[] TabletProducts = [0x6182, 0x6183, 0x6184, 0x6185, 0x61EB, 0x61EC, 0x61ED, 0x61EE];
-    public string GlyphProfileId => "generic";
+    public string GlyphProfileId => DefinitionId.Replace('.', '-');
     public ushort VendorId => Slim ? (ushort)0x1A86 : (ushort)0x17EF;
     public IReadOnlyList<ushort> ProductIds => Slim ? SlimProducts : TabletProducts;
 }

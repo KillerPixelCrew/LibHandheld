@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 1,
+  "profileId": "gpd-g1622-01-l",
+  "displayName": "GPD G1622-01-L",
+  "revision": 1,
+  "exactDeviceIds": ["gpd-g1622-01-l"],
+  "sourceRevision": "hc-a250b19a4b7e-promptfont-b190b52ef647",
+  "noticePath": "THIRD_PARTY_NOTICES.md",
+  "assets": [],
+  "controllerImages": {},
+  "controls": [
+    {
+      "control": "FaceSouth",
+      "presence": "Absent"
+    },
+    {
+      "control": "FaceEast",
+      "presence": "Absent"
+    },
+    {
+      "control": "FaceWest",
+      "presence": "Absent"
+    },
+    {
+      "control": "FaceNorth",
+      "presence": "Absent"
+    },
+    {
+      "control": "DpadUp",
+      "presence": "Absent"
+    },
+    {
+      "control": "DpadDown",
+      "presence": "Absent"
+    },
+    {
+      "control": "DpadLeft",
+      "presence": "Absent"
+    },
+    {
+      "control": "DpadRight",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftStick",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightStick",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftStickTouch",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightStickTouch",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftShoulder",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightShoulder",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftTrigger",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrigger",
+      "presence": "Absent"
+    },
+    {
+      "control": "Guide",
+      "presence": "Absent"
+    },
+    {
+      "control": "View",
+      "presence": "Absent"
+    },
+    {
+      "control": "Menu",
+      "presence": "Absent"
+    },
+    {
+      "control": "QuickAccess",
+      "presence": "Absent"
+    },
+    {
+      "control": "RearM1",
+      "presence": "Absent"
+    },
+    {
+      "control": "RearM2",
+      "presence": "Absent"
+    },
+    {
+      "control": "RearLeft2",
+      "presence": "Absent"
+    },
+    {
+      "control": "RearRight2",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem1",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem2",
+      "presence": "Absent"
+    },
+    {
+      "control": "Touchscreen",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftTrackpad",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrackpad",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem3",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem4",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem5",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem6",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem7",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem8",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem9",
+      "presence": "Absent"
+    },
+    {
+      "control": "Oem10",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftStickUp",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftStickDown",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftStickLeft",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftStickRight",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightStickUp",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightStickDown",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightStickLeft",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightStickRight",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftTrackpadTouch",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrackpadTouch",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftTrackpadClick",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrackpadClick",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftTrackpadUp",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftTrackpadDown",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftTrackpadLeft",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftTrackpadRight",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrackpadUp",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrackpadDown",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrackpadLeft",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightTrackpadRight",
+      "presence": "Absent"
+    },
+    {
+      "control": "MousePrimary",
+      "presence": "Absent"
+    },
+    {
+      "control": "MouseSecondary",
+      "presence": "Absent"
+    },
+    {
+      "control": "MouseMiddle",
+      "presence": "Absent"
+    },
+    {
+      "control": "MouseWheelUp",
+      "presence": "Absent"
+    },
+    {
+      "control": "MouseWheelDown",
+      "presence": "Absent"
+    },
+    {
+      "control": "VolumeUp",
+      "presence": "Absent"
+    },
+    {
+      "control": "VolumeDown",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftWheelClockwise",
+      "presence": "Absent"
+    },
+    {
+      "control": "LeftWheelCounterclockwise",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightWheelClockwise",
+      "presence": "Absent"
+    },
+    {
+      "control": "RightWheelCounterclockwise",
+      "presence": "Absent"
+    }
+  ],
+  "aliases": []
+}

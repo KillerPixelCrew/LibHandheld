@@ -43,6 +43,8 @@ internal sealed partial class AllyDeviceEngine
 
 
                 ValueKind = CapabilityValueKind.Curve,
+                CurveInputs = AllyFanCapability.DefaultCpuCurve.Take(AllyFanCapability.PointCount)
+                    .Select(value => (int)value).ToArray(),
                 Display = new CapabilityDisplay { Key = DisplayKey.FanCurve },
                 Minimum = 0,
                 Maximum = 100,

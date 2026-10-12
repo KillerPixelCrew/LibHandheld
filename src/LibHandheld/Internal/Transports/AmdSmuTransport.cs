@@ -8,7 +8,7 @@ internal sealed class SmuCommandException(uint command, uint status)
     internal uint Status { get; } = status;
 }
 
-internal sealed class AmdSmuTransport : ICpuPowerTransport
+internal sealed partial class AmdSmuTransport : ICpuPowerTransport
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(2);
     private readonly Lock _gate = new();
@@ -17,19 +17,22 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
     private SmuMailbox _mailbox;
     private bool _moduleMailbox;
 
-    internal AmdSmuTransport(IPawnIoModule module, uint codeName, uint firmwareVersion)
+    internal AmdSmuTransport(IPawnIoModule module, uint codeName, uint firmwareVersion,
+        bool requirePowerCommands = true)
     {
         _module = module;
         CodeName = codeName;
         FirmwareVersion = firmwareVersion;
-        Commands = CommandsFor(codeName) ??
-                   throw new NotSupportedException($"AMD codename {codeName} has no documented power commands.");
+        Commands = CommandsFor(codeName) ?? (requirePowerCommands
+            ? throw new NotSupportedException($"AMD codename {codeName} has no documented power commands.")
+            : default);
         _mailbox = MailboxFor(codeName);
     }
 
     internal uint CodeName { get; }
     internal uint FirmwareVersion { get; }
     internal SmuPowerCommands Commands { get; }
+    public bool SupportsIndependentLimits => Commands.Sustained != 0 && Commands.Slow != 0 && Commands.Boost != 0;
 
     public CpuPowerLimits ReadLimits()
     {
@@ -40,6 +43,11 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
 
     public void WriteLimits(CpuPowerLimits limits)
     {
+        if (!SupportsIndependentLimits)
+        {
+            throw new NotSupportedException("This AMD processor has no documented package power setters.");
+        }
+
         Validate(limits);
         // Validate the complete request before the first write. These are independent firmware
         // commands; if one fails the caller sees the failure and no uncertain command is retried.
@@ -61,14 +69,14 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
         }
     }
 
-    internal static AmdSmuTransport Open()
+    internal static AmdSmuTransport Open(bool requirePowerCommands = true)
     {
         var module = PawnIoModule.OpenRyzen();
         try
         {
             var transport = HardwareBus.Run(HardwareBus.Pci, Timeout, () => new AmdSmuTransport(module,
                 checked((uint)module.Execute("ioctl_get_code_name", [], 1)[0]),
-                checked((uint)module.Execute("ioctl_get_smu_version", [], 1)[0])));
+                checked((uint)module.Execute("ioctl_get_smu_version", [], 1)[0]), requirePowerCommands));
             transport.SelectMailbox();
             return transport;
         }
@@ -79,7 +87,7 @@ internal sealed class AmdSmuTransport : ICpuPowerTransport
         }
     }
 
-    internal void WriteLimit(CpuPowerLimit limit, double watts)
+    public void WriteLimit(CpuPowerLimit limit, double watts)
     {
         var value = CpuPowerEncoding.Milliwatts(watts);
         var command = limit switch

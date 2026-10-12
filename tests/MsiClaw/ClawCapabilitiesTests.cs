@@ -414,6 +414,47 @@ public sealed class ClawCapabilitiesTests
     }
 
     [Fact]
+    public async Task BatteryMasterCanBeDisabledAndEnabledWithoutReplacingAnAcceptedLimit()
+    {
+        FakeWmiTransport wmi = new();
+        var charge = new ClawChargeLimitCapability(wmi);
+        await charge.ApplyAsync(Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(80)), 80,
+            CancellationToken.None);
+        var command = Command(ClawChargeLimitCapability.ProtectionId, null, CapabilityValue.Boolean(false));
+        Assert.Equal(CommandOutcome.Applied,
+            (await charge.ApplyProtectionAsync(command, false, CancellationToken.None)).Outcome);
+        Assert.Equal(80, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
+        Assert.False(charge.WrittenProtection);
+        Assert.Equal(CommandOutcome.Applied,
+            (await charge.ApplyProtectionAsync(command with { RequestedValue = CapabilityValue.Boolean(true) }, true,
+                CancellationToken.None)).Outcome);
+        Assert.Equal(0x80 | 80, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
+        Assert.Equal(0, wmi.Reads);
+    }
+
+    [Fact]
+    public async Task BatteryMasterPreservesReadableLowBitsAndGetterFailureDoesNotGateTheWrite()
+    {
+        FakeWmiTransport readable = new();
+        readable.SetData(ClawHardwareFacts.ChargeLimitAddress, 0x80 | 60);
+        var command = Command(ClawChargeLimitCapability.ProtectionId, null, CapabilityValue.Boolean(false));
+        Assert.Equal(CommandOutcome.Applied,
+            (await new ClawChargeLimitCapability(readable).ApplyProtectionAsync(command, false,
+                CancellationToken.None)).Outcome);
+        Assert.Equal(60, readable.ReadData(ClawHardwareFacts.ChargeLimitAddress));
+        FakeWmiTransport unreadable = new() { GetterTimeout = true };
+        var charge = new ClawChargeLimitCapability(unreadable);
+        Assert.Equal(CommandOutcome.Applied,
+            (await charge.ApplyProtectionAsync(command with { RequestedValue = CapabilityValue.Boolean(true) }, true,
+                CancellationToken.None)).Outcome);
+        Assert.Equal(0x80 | 100, unreadable.ReadData(ClawHardwareFacts.ChargeLimitAddress));
+        unreadable.FailNextSetter = true;
+        Assert.Equal(CommandOutcome.Indeterminate,
+            (await charge.ApplyProtectionAsync(command, false, CancellationToken.None)).Outcome);
+        Assert.Single(unreadable.Writes);
+    }
+
+    [Fact]
     public async Task ApplyCurveAsync_UsesMeasuredSixOffsetsAndPreservesUnknownBytes()
     {
         FakeWmiTransport wmi = new();

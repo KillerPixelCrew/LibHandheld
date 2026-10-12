@@ -4,8 +4,14 @@ internal readonly record struct CpuPowerLimits(double SustainedWatts, double Slo
 
 internal interface ICpuPowerTransport : IDisposable
 {
+    bool SupportsIndependentLimits => false;
     CpuPowerLimits ReadLimits();
     void WriteLimits(CpuPowerLimits limits);
+
+    void WriteLimit(CpuPowerLimit limit, double watts)
+    {
+        throw new NotSupportedException("This transport writes coordinated package power limits.");
+    }
 }
 
 internal enum CpuPowerLimit

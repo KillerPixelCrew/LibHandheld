@@ -34,6 +34,8 @@ internal sealed partial class LegionGoDeviceEngine
             {
                 CapabilityId = CapabilityIds.FanCurve, Role = CapabilityRole.FanCurve,
                 ValueKind = CapabilityValueKind.Curve, Display = CapabilityDescriptors.Label("Fan curve"),
+                // WriteFanTable consumes the ten points at 10, 20, ... 100 degrees Celsius.
+                CurveInputs = Enumerable.Range(1, 10).Select(index => index * 10).ToArray(),
                 Minimum = 0, Maximum = 100, Unit = CapabilityUnit.Percent,
                 SupportsRead = !model.EcFan, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
             },

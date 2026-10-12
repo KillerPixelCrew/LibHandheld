@@ -24,12 +24,15 @@ public readonly record struct HapticOutputFrame
     /// <summary>Right trigger haptic intensity, from 0 to 1, where the device supports one.</summary>
     public float RightTrigger { get; init; }
 
+    /// <summary>One native actuator pulse, delivered without replacing the current motor envelope.</summary>
+    public NativeHapticPulse? NativePulse { get; init; }
+
     /// <summary>When the frame was produced, in UTC.</summary>
     public required DateTimeOffset Timestamp { get; init; }
 
     /// <summary>Whether this frame commands no output at all.</summary>
     public bool IsSilent =>
-        LowFrequency <= 0 && HighFrequency <= 0 && LeftTrigger <= 0 && RightTrigger <= 0;
+        LowFrequency <= 0 && HighFrequency <= 0 && LeftTrigger <= 0 && RightTrigger <= 0 && NativePulse is null;
 
     /// <summary>
     ///     A frame that stops all output.
@@ -44,6 +47,82 @@ public readonly record struct HapticOutputFrame
     public static HapticOutputFrame Stop(DateTimeOffset timestamp)
     {
         return new HapticOutputFrame { Timestamp = timestamp };
+    }
+}
+
+/// <summary>The actuator that renders a native haptic pulse.</summary>
+public enum HapticActuatorSide
+{
+    /// <summary>Right actuator.</summary>
+    Right,
+    /// <summary>Left actuator.</summary>
+    Left
+}
+
+/// <summary>The native pulse waveform.</summary>
+public enum HapticPulseStyle
+{
+    /// <summary>Stop the actuator.</summary>
+    Disabled,
+    /// <summary>Weak pulse waveform.</summary>
+    Weak,
+    /// <summary>Strong pulse waveform.</summary>
+    Strong
+}
+
+/// <summary>Strength of a native button press or release feedback event.</summary>
+public enum ButtonHapticStrength
+{
+    /// <summary>Weak feedback.</summary>
+    Low,
+    /// <summary>Medium feedback.</summary>
+    Medium,
+    /// <summary>Strong feedback.</summary>
+    High
+}
+
+/// <summary>A native pulse with a signed, device-defined intensity.</summary>
+/// <param name="Side">Actuator that renders the pulse.</param>
+/// <param name="Style">Native waveform, or Disabled to stop that actuator.</param>
+/// <param name="Intensity">Signed native intensity; Neptune button feedback ranges from -7 to 5.</param>
+public readonly record struct NativeHapticPulse(HapticActuatorSide Side, HapticPulseStyle Style, sbyte Intensity)
+{
+    /// <summary>Creates Neptune button feedback, including its reversed actuator and softer release pulse.</summary>
+    /// <param name="button">One physical canonical button.</param>
+    /// <param name="strength">Requested press feedback strength.</param>
+    /// <param name="released">Whether this is the softer release feedback.</param>
+    /// <returns>A pulse with the native actuator, waveform and signed intensity.</returns>
+    public static NativeHapticPulse ForButton(CanonicalButtons button, ButtonHapticStrength strength, bool released)
+    {
+        var side = button switch
+        {
+            CanonicalButtons.DPadUp or CanonicalButtons.DPadDown or CanonicalButtons.DPadLeft
+                or CanonicalButtons.DPadRight or CanonicalButtons.LeftShoulder or CanonicalButtons.LeftStick
+                or CanonicalButtons.LeftStickTouch or CanonicalButtons.LeftPadTouch or CanonicalButtons.LeftPadClick
+                or CanonicalButtons.RearPaddle1 or CanonicalButtons.RearPaddle3 or CanonicalButtons.View
+                or CanonicalButtons.QuickAccess => HapticActuatorSide.Right,
+            CanonicalButtons.A or CanonicalButtons.B or CanonicalButtons.X or CanonicalButtons.Y
+                or CanonicalButtons.RightShoulder or CanonicalButtons.RightStick or CanonicalButtons.RightStickTouch
+                or CanonicalButtons.RightPadTouch or CanonicalButtons.RightPadClick or CanonicalButtons.RearPaddle2
+                or CanonicalButtons.RearPaddle4 or CanonicalButtons.Menu or CanonicalButtons.Guide
+                => HapticActuatorSide.Left,
+            _ => throw new ArgumentOutOfRangeException(nameof(button), "Exactly one supported button is required.")
+        };
+        var intensity = strength switch
+        {
+            ButtonHapticStrength.Low => -7,
+            ButtonHapticStrength.Medium => -1,
+            ButtonHapticStrength.High => 5,
+            _ => throw new ArgumentOutOfRangeException(nameof(strength))
+        };
+        if (released)
+        {
+            intensity = Math.Max(-7, intensity - 3);
+        }
+
+        return new NativeHapticPulse(side,
+            strength == ButtonHapticStrength.Low ? HapticPulseStyle.Weak : HapticPulseStyle.Strong,
+            checked((sbyte)intensity));
     }
 }
 
@@ -77,6 +156,9 @@ public sealed record HapticCapabilities
 
     /// <summary>Support for right trigger haptics.</summary>
     public OutputChannelSupport RightTrigger { get; init; } = OutputChannelSupport.Unsupported;
+
+    /// <summary>Support for native actuator pulses, independent of motor envelopes.</summary>
+    public OutputChannelSupport NativePulse { get; init; } = OutputChannelSupport.Unsupported;
 
     /// <summary>Highest output frame rate the device accepts, in frames per second.</summary>
     public int MaxFramesPerSecond { get; init; } = 60;
@@ -113,7 +195,8 @@ public sealed record HapticCapabilities
             LowFrequency = LowFrequency is OutputChannelSupport.Native ? frame.LowFrequency : 0,
             HighFrequency = HighFrequency is OutputChannelSupport.Native ? frame.HighFrequency : 0,
             LeftTrigger = LeftTrigger is OutputChannelSupport.Native ? frame.LeftTrigger : 0,
-            RightTrigger = RightTrigger is OutputChannelSupport.Native ? frame.RightTrigger : 0
+            RightTrigger = RightTrigger is OutputChannelSupport.Native ? frame.RightTrigger : 0,
+            NativePulse = NativePulse is OutputChannelSupport.Native ? frame.NativePulse : null
         };
     }
 }

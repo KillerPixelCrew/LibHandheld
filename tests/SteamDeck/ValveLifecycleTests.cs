@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LibHandheld.Families.SteamDeck;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Transports;
@@ -7,6 +8,87 @@ namespace LibHandheld.Tests.SteamDeck;
 
 public sealed class ValveLifecycleTests
 {
+    [Fact]
+    public async Task ContinuousRumbleRepeatsUntilStopAndButtonPulsePreservesItsEnvelope()
+    {
+        using var directory = new TemporaryDirectory();
+        var pad = new NeptuneFake();
+        var host = new TestPluginHostAdapter(1);
+        var context = new ProfiledFeatureContext(directory.Root, "steamdeck-lcd|bios", host)
+            { Journal = TestRecovery.Open(directory.Root), ControllerManagementEnabled = true };
+        var service = new SteamDeckNativeService(context, () => pad);
+        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
+            new ProfiledCycleIdentity(context.Firmware));
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal(OutputChannelSupport.Native, host.PublishedOutput!.NativePulse);
+        var envelope = new HapticOutputFrame
+            { Timestamp = DateTimeOffset.UnixEpoch, LowFrequency = 1, HighFrequency = 0.5f };
+        service.Rumble(envelope);
+        Assert.True(SpinWait.SpinUntil(() => pad.Output.Count >= 3, millisecondsTimeout: 1000));
+        var pulse = new HapticOutputFrame
+        {
+            Timestamp = DateTimeOffset.UnixEpoch,
+            NativePulse = NativeHapticPulse.ForButton(CanonicalButtons.A, ButtonHapticStrength.High, released: true)
+        };
+        service.Rumble(pulse);
+        var afterPulse = pad.Output.Count;
+        Assert.True(SpinWait.SpinUntil(() => pad.Output.Count > afterPulse, millisecondsTimeout: 1000));
+        Assert.Equal(envelope, pad.Output.Last());
+        Assert.Contains(pulse, pad.Output);
+        service.Rumble(HapticOutputFrame.Stop(DateTimeOffset.UnixEpoch));
+        var afterStop = pad.Output.Count;
+        await Task.Delay(35);
+        Assert.Equal(afterStop, pad.Output.Count);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        var afterRelease = pad.Output.Count;
+        await Task.Delay(35);
+        Assert.Equal(afterRelease, pad.Output.Count);
+        Assert.True(pad.Disposed);
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task UncertainHapticFailurePreservesInputAndRefreshNeverReacquiresOrRetriesOutput()
+    {
+        using var directory = new TemporaryDirectory();
+        var pad = new NeptuneFake();
+        var context = new ProfiledFeatureContext(directory.Root, "steamdeck-lcd|bios", new TestPluginHostAdapter(1))
+            { Journal = TestRecovery.Open(directory.Root), ControllerManagementEnabled = true };
+        var opens = 0;
+        var service = new SteamDeckNativeService(context, () =>
+        {
+            opens++;
+            return pad;
+        });
+        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
+            new ProfiledCycleIdentity(context.Firmware));
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        pad.FailOutput = true;
+        service.Rumble(new HapticOutputFrame { Timestamp = DateTimeOffset.UnixEpoch, LowFrequency = 1 });
+        await Task.Delay(35);
+        Assert.Equal(1, pad.OutputAttempts);
+        Assert.True(service.Connected);
+        var hapticsId = service.Descriptors.Single(descriptor => descriptor.Role == CapabilityRole.HapticSink).CapabilityId;
+        var controllerId = service.Descriptors.Single(descriptor => descriptor.Role == CapabilityRole.ControllerSource).CapabilityId;
+        Assert.False(service.States.Single(state => state.CapabilityId == hapticsId).Available);
+        Assert.NotNull(service.States.Single(state => state.CapabilityId == hapticsId).Reason);
+        Assert.True(service.States.Single(state => state.CapabilityId == controllerId).Available);
+        await service.RefreshAsync(CancellationToken.None);
+        service.Rumble(new HapticOutputFrame { Timestamp = DateTimeOffset.UnixEpoch, LowFrequency = 0.5f });
+        await Task.Delay(35);
+        Assert.True(service.Connected);
+        Assert.False(pad.Stopped);
+        Assert.False(pad.Disposed);
+        Assert.Equal(1, opens);
+        Assert.Equal(1, pad.OutputAttempts);
+        Assert.False(service.States.Single(state => state.CapabilityId == hapticsId).Available);
+        var release = await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Equal(DeviceServiceState.ReleasedUnverified, release.State);
+        Assert.NotNull(release.Reason);
+        Assert.Equal(1, pad.OutputAttempts);
+        await service.DisposeAsync();
+    }
+
     [Fact]
     public async Task RuntimeControllerToggleRetiresReaderAndRestoresDesktopMappingsAndCapturedGyroMode()
     {
@@ -112,6 +194,45 @@ public sealed class ValveLifecycleTests
         Assert.DoesNotContain(module.Calls, call => call.StartsWith("ioctl_get_", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task NativeMeasurementActionReadsChargeOnceAndDoesNotReplaceAcceptedSettings()
+    {
+        using var directory = new TemporaryDirectory();
+        var memory = new MemoryFake { Board = 10, ChargeCeiling = 75 };
+        var clocks = new MemoryFake();
+        var context = new ProfiledFeatureContext(directory.Root, "steamdeck-lcd|bios", new TestPluginHostAdapter(1))
+            { Journal = TestRecovery.Open(directory.Root), ControllerManagementEnabled = false };
+        var service = new SteamDeckNativeService(context, () => new NeptuneFake(), () => memory,
+            () => new VangoghPower(clocks, 0x80300000));
+        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
+            new ProfiledCycleIdentity(context.Firmware));
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Command("charge.limit", CapabilityValue.Integer(80)), context.Firmware,
+            CancellationToken.None);
+        await service.ExecuteAsync(Command("steamdeck.gpu-clock-min", CapabilityValue.Integer(1200)), context.Firmware,
+            CancellationToken.None);
+        memory.Reads.Clear();
+        Assert.Equal(CommandOutcome.Applied, (await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = SteamDeckNativeService.RefreshMeasurementsId,
+            Deadline = Deadline.Never
+        }, context.Firmware, CancellationToken.None)).Outcome);
+        Assert.Equal(1, memory.ChargeByteReads);
+        Assert.Equal(75, service.States.Single(state => state.CapabilityId == "battery.measured-charge-ceiling")
+            .ObservedValue!.IntegerValue);
+        Assert.Equal(80, service.States.Single(state => state.CapabilityId == "charge.limit")
+            .ObservedValue!.IntegerValue);
+        Assert.Equal(1500, service.States.Single(state => state.CapabilityId == "steamdeck.gpu-clock-current")
+            .ObservedValue!.IntegerValue);
+        Assert.Equal(800, service.States.Single(state => state.CapabilityId == "steamdeck.fabric-clock-current")
+            .ObservedValue!.IntegerValue);
+        Assert.Equal(1200, service.States.Single(state => state.CapabilityId == "steamdeck.gpu-clock-min")
+            .ObservedValue!.IntegerValue);
+        await service.RefreshTelemetryAsync(CancellationToken.None);
+        Assert.Equal(1, memory.ChargeByteReads);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
     private static CapabilityCommand Command(string id, CapabilityValue value)
     {
         return new CapabilityCommand
@@ -150,7 +271,9 @@ public sealed class ValveLifecycleTests
         public List<bool> MappingChanges { get; } = [];
         public List<byte> SettingReads { get; } = [];
         public bool ManagedMappings { get; private set; }
-        public List<HapticOutputFrame> Output { get; } = [];
+        public ConcurrentQueue<HapticOutputFrame> Output { get; } = new();
+        public bool FailOutput { get; set; }
+        public int OutputAttempts { get; private set; }
         public bool Disposed { get; private set; }
         public bool Stopped { get; private set; }
         public string FirmwareIdentity => "firmware|serial|USB(1)";
@@ -200,7 +323,13 @@ public sealed class ValveLifecycleTests
 
         public void Rumble(HapticOutputFrame frame)
         {
-            Output.Add(frame);
+            OutputAttempts++;
+            if (FailOutput)
+            {
+                throw new IOException("The feature write completion is unknown.");
+            }
+
+            Output.Enqueue(frame);
         }
 
         public void Dispose()
@@ -213,21 +342,35 @@ public sealed class ValveLifecycleTests
     private sealed class MemoryFake : ISteamDeckMemory
     {
         public uint Board { get; init; } = 6;
+        public uint ChargeCeiling { get; init; } = 1;
+        public int ChargeByteReads { get; private set; }
+        private uint _clockCommand;
         public List<uint> Reads { get; } = [];
 
         public uint Read(uint address, int width)
         {
             Reads.Add(address);
+            if (address == 0xFE700B9F && width == 8)
+            {
+                ChargeByteReads++;
+            }
+
             return address switch
             {
                 0xFE700C4C => 0xB030, 0xFE7003BD => Board, 0xFE700C01 => 0, 0xFE7003B0 => 2000,
                 0xFE700B92 => 2500, 0xFE70046E => 0xAC0A,
+                0xFE700B9F => ChargeCeiling,
+                0x80300000 + 0x16292 * 4 => _clockCommand switch { 0x1B => 1500, 0x1C => 800, _ => 1 },
                 _ => 1
             };
         }
 
         public void Write(uint address, uint value, int width)
         {
+            if (address == 0x80300000 + 0x16282 * 4)
+            {
+                _clockCommand = value;
+            }
         }
 
         public void WriteFanMode(byte mode)

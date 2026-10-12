@@ -13,8 +13,8 @@ internal static class GenericModels
     internal const string FamilyId = "generic";
     private static readonly StandardControllerProfile Xbox = new([new ControllerUsbId(0x045E, 0x028E)]);
 
-    private static readonly StandardMotionProfile LokiMotion = new(new MotionAxisMap(1, 2, 0, 1, -1, -1),
-        new MotionAxisMap(0, 2, 1, -1, 1, -1));
+    private static readonly StandardMotionProfile LokiMotion = new(MotionAxisMap.FromInputToOutput(1, 2, 0, 1, -1, -1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, -1, 1, -1));
 
     private static readonly StandardMotionProfile HhdLokiMotion =
         new(new MotionAxisMap(0, 2, 1, 1, -1, 1), new MotionAxisMap(0, 2, 1, 1, -1, 1));
@@ -44,9 +44,12 @@ internal static class GenericModels
                 // HC MinisforumV3 profiles; its OEM mode is not a Windows control implemented here.
                 PowerPresets =
                 [
-                    new DevicePowerPreset("battery", "Battery", 15, 15, DevicePowerMode.BetterBattery),
-                    new DevicePowerPreset("balanced", "Balanced", 22, 22, DevicePowerMode.Balanced),
+                    new DevicePowerPreset("battery", "Battery", 15, 15, DevicePowerMode.BetterBattery)
+                        { FastWatts = 15 },
+                    new DevicePowerPreset("balanced", "Balanced", 22, 22, DevicePowerMode.Balanced)
+                        { FastWatts = 22 },
                     new DevicePowerPreset("performance", "Performance", 28, 28, DevicePowerMode.BestPerformance)
+                        { FastWatts = 28 }
                 ],
                 Motion = new StandardMotionProfile(new MotionAxisMap(0, 2, 1, 1, 1, -1),
                     new MotionAxisMap(0, 2, 1, -1, -1, 1))
@@ -183,7 +186,7 @@ internal static class GenericModels
 
     private static HandheldDefinition Definition(string id, string name, CpuPowerKind cpu, bool controller = false)
     {
-        return new HandheldDefinition(id, id.Split('-')[0] == "asus" ? "asus-flow" : id.Split('-')[0], name, "generic")
+        return new HandheldDefinition(id, id.Split('-')[0] == "asus" ? "asus-flow" : id.Split('-')[0], name, id)
         {
             HasController = controller,
             HardwareAccess = DeviceHardwareAccess.PawnIo |

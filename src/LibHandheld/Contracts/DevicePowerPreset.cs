@@ -35,6 +35,9 @@ public sealed record DevicePowerPreset(
     int SlowWatts,
     DevicePowerMode WindowsMode)
 {
+    /// <summary>Optional independent fast-PPT target; when omitted on a three-limit device, use SlowWatts.</summary>
+    public int? FastWatts { get; init; }
+
     /// <summary>Optional ScenarioMode choice applied before watt limits on AC power.</summary>
     /// <remarks>
     ///     Declare both scenario targets or neither. Choices belong to the single readable,
@@ -80,6 +83,7 @@ public sealed record DevicePowerPreset(
                                    || !Enum.IsDefined(preset.WindowsMode) || preset.SustainedWatts > preset.SlowWatts
                                    || !DevicePowerPair.Fits(preset.SustainedWatts, descriptor)
                                    || !DevicePowerPair.Fits(preset.SlowWatts, slow[0])
+                                   || !ValidFast(preset, descriptors)
                                    || !ValidScenario(preset, descriptors)))
             {
                 return false;
@@ -88,6 +92,14 @@ public sealed record DevicePowerPreset(
 
         error = null;
         return true;
+    }
+
+    private static bool ValidFast(DevicePowerPreset preset, IReadOnlyList<CapabilityDescriptor> descriptors)
+    {
+        var fast = descriptors.Where(descriptor => descriptor.Role == CapabilityRole.PowerFastLimit).ToArray();
+        return fast.Length == 0 ? preset.FastWatts is null
+            : fast.Length == 1 && DevicePowerPair.IsLimit(fast[0])
+                               && DevicePowerPair.Fits(preset.FastWatts ?? preset.SlowWatts, fast[0]);
     }
 
     private static bool ValidScenario(DevicePowerPreset preset, IReadOnlyList<CapabilityDescriptor> descriptors)

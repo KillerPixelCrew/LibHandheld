@@ -35,6 +35,7 @@ internal static class DeviceFamilies
                 HardwareVerified = model.HardwareVerified,
                 DeclaredRoles = Array.AsReadOnly([
                     CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ChargeLimit,
+                    CapabilityRole.ChargeProtectionMode,
                     CapabilityRole.ScenarioMode, CapabilityRole.FanMode, CapabilityRole.FanDuty,
                     CapabilityRole.LightingBrightness, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
                     CapabilityRole.HapticSink, CapabilityRole.Telemetry, CapabilityRole.FanMeasuredRpm,
@@ -95,8 +96,14 @@ internal static class DeviceFamilies
     {
         Models = Array.AsReadOnly(family.Models.Select(model => model with
         {
+            // Processor settings join the exact device owner and use the signed SMU module or pinned Intel helper.
+            HardwareAccess = model.HardwareAccess
+                | (model.HardwareAccess.HasFlag(DeviceHardwareAccess.IntelKx)
+                   || family.Id == ClawHardwareFacts.PackageId && model.Id != ClawModels.A8Bz2Em.DefinitionId
+                    ? DeviceHardwareAccess.IntelKx : DeviceHardwareAccess.PawnIo),
             // An approved USB accessory may add these controls to any exact supported model.
-            DeclaredRoles = model.DeclaredRoles.Concat(GenericAsusService.AccessoryRoles).Distinct().ToArray()
+            DeclaredRoles = model.DeclaredRoles.Concat(GenericAsusService.AccessoryRoles)
+                .Append(CapabilityRole.GenericRange).Append(CapabilityRole.GenericAction).Distinct().ToArray()
         }).ToArray())
     }).ToArray();
 

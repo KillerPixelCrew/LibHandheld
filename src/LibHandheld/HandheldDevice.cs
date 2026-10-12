@@ -19,6 +19,7 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
     private readonly HandheldResources _resources;
     private readonly string _stateDirectory;
     private volatile bool _active;
+    private volatile HapticCapabilities? _hapticOutputCapabilities;
     private bool _disposed;
     private bool _started;
     private DeviceStopResult? _stopResult;
@@ -116,9 +117,13 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
     ValueTask IDeviceSink.PublishPhysicalDevicesAsync(IReadOnlyList<PhysicalDeviceIdentity> devices,
         HapticCapabilities? output, CancellationToken token)
     {
-        return !_disposed && (_active || devices.Count == 0)
-            ? Observer?.PhysicalDevicesChangedAsync(devices, output, token) ?? ValueTask.CompletedTask
-            : ValueTask.CompletedTask;
+        if (_disposed || (!_active && devices.Count != 0))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        _hapticOutputCapabilities = output;
+        return Observer?.PhysicalDevicesChangedAsync(devices, output, token) ?? ValueTask.CompletedTask;
     }
 
     ValueTask IDeviceSink.PublishControllerSampleAsync(CanonicalControllerSample sample, CancellationToken token)
@@ -336,9 +341,38 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
     /// <summary>Delivers complete motor state; zero requests an explicit stop.</summary>
     public ValueTask ApplyHapticsAsync(HapticOutputFrame frame, CancellationToken cancellationToken = default)
     {
-        return _active && !_disposed
-            ? _engine.ApplyHapticOutputAsync(frame, cancellationToken)
-            : ValueTask.CompletedTask;
+        if (!_active || _disposed)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        if (frame.NativePulse is { } pulse)
+        {
+            if (_hapticOutputCapabilities?.NativePulse != OutputChannelSupport.Native)
+            {
+                throw new NotSupportedException("This handheld does not support native actuator pulses.");
+            }
+
+            if (pulse.Side is not (HapticActuatorSide.Left or HapticActuatorSide.Right)
+                || pulse.Style is not (HapticPulseStyle.Disabled or HapticPulseStyle.Weak or HapticPulseStyle.Strong))
+            {
+                throw new ArgumentOutOfRangeException(nameof(frame));
+            }
+        }
+
+        return _engine.ApplyHapticOutputAsync(frame, cancellationToken);
+    }
+
+    /// <summary>Delivers a native button pulse without replacing ongoing virtual-controller rumble.</summary>
+    /// <remarks>Call only when the published output capabilities declare native pulse support.</remarks>
+    public ValueTask ApplyButtonHapticsAsync(CanonicalButtons button, ButtonHapticStrength strength, bool released,
+        CancellationToken cancellationToken = default)
+    {
+        return ApplyHapticsAsync(new HapticOutputFrame
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            NativePulse = NativeHapticPulse.ForButton(button, strength, released)
+        }, cancellationToken);
     }
 
     /// <summary>Returns current native diagnostics.</summary>

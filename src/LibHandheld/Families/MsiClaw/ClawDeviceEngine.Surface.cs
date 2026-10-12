@@ -49,6 +49,15 @@ internal sealed partial class ClawDeviceEngine
                     // HC's BatteryBypassStep: the limit is 60, 80 or 100 percent.
                     Step = ClawChargeLimitCapability.StepPercent
                 },
+            new CapabilityDescriptor
+            {
+                CapabilityId = ClawChargeLimitCapability.ProtectionId,
+                Role = CapabilityRole.ChargeProtectionMode,
+                ValueKind = CapabilityValueKind.Boolean,
+                Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "Battery Master" },
+                SupportsWrite = true,
+                Persistence = CapabilityPersistence.DevicePersistent
+            },
             ChoiceDescriptor(
                 CapabilityIds.Scenario,
                 CapabilityRole.ScenarioMode,
@@ -176,6 +185,9 @@ internal sealed partial class ClawDeviceEngine
 
 
             ValueKind = CapabilityValueKind.Curve,
+            // ClawFanCapability.TryValidateCurve admits six monotonic temperatures within 0..100.
+            // This is a legal first-edit template, not a claim about the firmware's current table.
+            CurveInputs = [0, 20, 40, 60, 80, 100],
             Display = new CapabilityDisplay { Key = DisplayKey.FanCurve },
             Minimum = 0,
             Maximum = 100,
@@ -271,6 +283,9 @@ internal sealed partial class ClawDeviceEngine
                     ? CapabilityValue.Integer(value.Percent)
                     : null;
             }
+            case ClawChargeLimitCapability.ProtectionId:
+                return _chargeLimitCapability!.WrittenProtection is { } enabled
+                    ? CapabilityValue.Boolean(enabled) : null;
             case CapabilityIds.FanMode:
             {
                 return _fanCapability!.WrittenMode is { } value ? CapabilityValue.Choice(value) : null;
@@ -331,6 +346,7 @@ internal sealed partial class ClawDeviceEngine
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => _powerCapability!.LimitsWrittenAt,
             CapabilityIds.Scenario => _powerCapability!.ScenarioWrittenAt,
             CapabilityIds.ChargeLimit => _chargeLimitCapability!.WrittenAt,
+            ClawChargeLimitCapability.ProtectionId => _chargeLimitCapability!.ProtectionWrittenAt,
             CapabilityIds.FanMode => _fanCapability!.ModeWrittenAt,
             "fan.duty" => _fanCapability!.DutyWrittenAt,
             CapabilityIds.FanCurve => _fanCapability!.CurveWrittenAt,

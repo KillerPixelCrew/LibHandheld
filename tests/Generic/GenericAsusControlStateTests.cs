@@ -9,6 +9,44 @@ namespace LibHandheld.Tests.Generic;
 public sealed class GenericAsusControlStateTests
 {
     [Fact]
+    public void XgDisableResetsAutomaticFanBeforeAcpiAndReleaseDoesNotRepeatIt()
+    {
+        var acpi = new WriteOnlyAcpi();
+        List<byte[]> reports = [];
+        using var transport = new AsusXgTransport(acpi, [], report =>
+        {
+            Assert.Empty(acpi.Writes);
+            reports.Add(report);
+        });
+        transport.Fan(AsusAcpiProtocol.FlatFanCurve(55));
+        reports.Clear();
+        transport.Enable(false);
+        transport.ReleaseFan();
+        Assert.Equal(new byte[] { 0x5E, 0xD1, 2 }, Assert.Single(reports));
+        Assert.Equal((AsusAcpiId.XgEnabled, 0U), Assert.Single(acpi.Writes));
+    }
+
+    [Fact]
+    public void XgReleaseResetsCustomFanOnceAndNeverRepeatsAnUncertainReset()
+    {
+        var acpi = new WriteOnlyAcpi();
+        var resets = 0;
+        using var transport = new AsusXgTransport(acpi, [], report =>
+        {
+            if (report.SequenceEqual(new byte[] { 0x5E, 0xD1, 2 }))
+            {
+                resets++;
+                throw new IOException("Reset result unknown");
+            }
+        });
+        transport.Fan(AsusAcpiProtocol.FlatFanCurve(55));
+        Assert.Throws<IOException>(transport.ReleaseFan);
+        transport.ReleaseFan();
+        Assert.Equal(1, resets);
+        Assert.Empty(acpi.Writes);
+    }
+
+    [Fact]
     public async Task RefreshNeverQueriesControlStateAndFailedRestoreCaptureDoesNotGateModeWrites()
     {
         using var directory = new TemporaryDirectory();

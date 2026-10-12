@@ -162,11 +162,22 @@ internal sealed class NeptuneDevice : INeptuneDevice
     {
         lock (_gate)
         {
-            // Valve's simple rumble command directly drives both trackpad actuators and accepts explicit zero.
             ObjectDisposedException.ThrowIf(_disposed, this);
-            NeptuneReport.EncodeRumble(_request, frame);
-            Send();
+            if (frame.NativePulse is { } pulse)
+            {
+                SendPulse(pulse);
+                return;
+            }
+
+            SendPulse(NeptuneReport.MotorPulse(HapticActuatorSide.Left, frame.LowFrequency));
+            SendPulse(NeptuneReport.MotorPulse(HapticActuatorSide.Right, frame.HighFrequency));
         }
+    }
+
+    private void SendPulse(NativeHapticPulse pulse)
+    {
+        NeptuneReport.EncodeHapticPulse(_request, pulse, Environment.TickCount);
+        Send();
     }
 
     public void Dispose()

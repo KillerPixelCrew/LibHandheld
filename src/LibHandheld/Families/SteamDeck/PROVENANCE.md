@@ -34,13 +34,18 @@ The independent
 [Linux Valve HID driver](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-steam.c) and
 Valve's
 [SDL controller definitions](https://github.com/libsdl-org/SDL/tree/main/src/joystick/hidapi/steam)
-cross-check the explicit simple-rumble command `0xEB` and firmware settings 9 (lizard), 71
-(watchdog), 48 (IMU). The backend changes only those settings and restores captured values; it never
-clears digital mappings, factory resets the controller or overwrites Steam's custom mappings.
-Setting read failures retain unknown originals and produce an unverified cleanup result. Firmware
-defaults enable Neptune motion; an unreadable IMU setting is left untouched. Disconnect and release
-stop haptics, retire the actual read operation and publish neutral input before retracting physical
-nodes.
+cross-check firmware settings 9 (lizard), 71 (watchdog), 48 (IMU). The backend changes only those
+settings and restores captured values; it never clears digital mappings, factory resets the
+controller or overwrites Steam's custom mappings. Setting read failures retain unknown originals and
+produce an unverified cleanup result. Firmware defaults enable Neptune motion; an unreadable IMU
+setting is left untouched. Disconnect and release stop haptics, retire the actual read operation and
+publish neutral input before retracting physical nodes.
+
+Native haptics follow HC 1.3.3.1 `NeptuneController.SetHaptic2`: command `0xEA`, length 13, signed
+intensity, weak/strong style and paired tick timestamps. The source-backed motor envelope is
+repeated every 10 ms; button feedback preserves the envelope. An output failure disables only
+haptics and remains latched until an explicit lifecycle or controller-management action. No
+uncertain output is automatically retried. `0xEB` remains the explicit zero-output stop packet.
 
 Fremont uses the unmodified signed upstream
 [`LedsValve.p`](https://github.com/namazso/PawnIO.Modules/blob/main/LedsValve.p) module through

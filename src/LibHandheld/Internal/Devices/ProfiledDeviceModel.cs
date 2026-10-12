@@ -13,6 +13,7 @@ internal sealed record ProfiledDeviceModel
     internal bool UseStandardServices { get; init; } = true;
     internal IReadOnlyList<Func<ProfiledFeatureContext, ProfiledFeatureService>> ServiceFactories { get; init; } = [];
     internal Func<ProfiledFeatureContext, ICpuPowerTransport>? OpenPower { get; init; }
+    internal bool IndependentPowerLimits => UseStandardServices && Cpu == CpuPowerKind.Amd && OpenPower is null;
     internal IReadOnlyList<DevicePowerPreset> PowerPresets { get; init; } = [];
 
     internal HandheldDefinition DeclaredDefinition
@@ -23,6 +24,10 @@ internal sealed record ProfiledDeviceModel
             if (UseStandardServices)
             {
                 roles.AddRange([CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit]);
+                if (IndependentPowerLimits)
+                {
+                    roles.Add(CapabilityRole.PowerFastLimit);
+                }
             }
 
             if (Fan is not null)
@@ -159,7 +164,9 @@ internal sealed record EcFanProfile(
     byte UnlockMask = 0x80,
     ushort? RpmHighAddress = null,
     ushort? RpmLowAddress = null,
-    bool ReadDuty = true)
+    bool ReadDuty = true,
+    bool ObserveDuty = false,
+    ushort? AutomaticDutyAddress = null)
 {
     internal byte EncodeDuty(int percentage)
     {
@@ -191,6 +198,22 @@ internal readonly record struct ControllerUsbId(ushort Vendor, ushort Product);
 
 internal readonly record struct MotionAxisMap(int X, int Y, int Z, float SignX, float SignY, float SignZ)
 {
+    // The constructor selects one input for each output. HC instead stores the output
+    // destination of each input; its signs still belong to the output axes.
+    internal static MotionAxisMap FromInputToOutput(int x, int y, int z, float signX, float signY, float signZ)
+    {
+        if (x is < 0 or > 2 || y is < 0 or > 2 || z is < 0 or > 2 || x == y || x == z || y == z)
+        {
+            throw new ArgumentException("A motion axis mapping must contain each output axis exactly once.");
+        }
+
+        return new MotionAxisMap(
+            x == 0 ? 0 : y == 0 ? 1 : 2,
+            x == 1 ? 0 : y == 1 ? 1 : 2,
+            x == 2 ? 0 : y == 2 ? 1 : 2,
+            signX, signY, signZ);
+    }
+
     internal Vector3 Apply(Vector3 value)
     {
         return new Vector3(
@@ -199,7 +222,7 @@ internal readonly record struct MotionAxisMap(int X, int Y, int Z, float SignX, 
 
     private static float Pick(Vector3 value, int axis)
     {
-        return axis switch { 0 => value.X, 1 => value.Y, _ => value.Z };
+        return axis switch { -1 => 0, 0 => value.X, 1 => value.Y, _ => value.Z };
     }
 }
 

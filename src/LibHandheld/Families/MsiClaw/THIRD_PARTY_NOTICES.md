@@ -150,3 +150,12 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
+
+## Additional HC parity glyphs
+
+The `pf-*.svg` stick-direction and Xbox-guide outlines come from original HC PromptFont at revision
+`a250b19a4b7e29dac3b383f2d1ac517d1af43e4e`, SHA-256
+`b190b52ef647e20e8850f5f4c3a972d2c5cf0e14e4c3e104b90d65646cb7559a`. Contours and proportions are
+unchanged; only SVG coordinates and white paint are selected. Copyright 2018-2026, Yukari Hafner.
+Copyright 2011-2016, Severin Meyer. PromptFont by Shinmera (Yukari Hafner),
+https://shinmera.com/promptfont. SIL OFL 1.1 above applies.

@@ -13,7 +13,7 @@ internal static class ZotacModels
     private static readonly ProfiledDeviceModel Zone = new()
     {
         Definition = new HandheldDefinition("zotac-zone", FamilyId, "ZOTAC GAMING ZONE", "zotac-zone")
-            { HardwareAccess = DeviceHardwareAccess.PawnIo },
+            { HardwareAccess = DeviceHardwareAccess.PawnIo | DeviceHardwareAccess.InpOut },
         SourceFamilyId = "GamingZone", Manufacturers = ["PC PARTNER LIMITED", "ZOTAC"], Products = ["G0A1W"],
         Cpu = CpuPowerKind.Amd, MinimumWatts = 8, MaximumWatts = 30,
         // HC GamingZone.DevicePowerProfiles, equal sustained/slow targets.
@@ -23,7 +23,7 @@ internal static class ZotacModels
             new DevicePowerPreset("balanced", "Balanced", 15, 15, DevicePowerMode.Balanced),
             new DevicePowerPreset("performance", "Performance", 28, 28, DevicePowerMode.BestPerformance)
         ],
-        Fan = new EcFanProfile(0x4E, 0x4F, [0x044B], 255, 0x044A),
+        Fan = new EcFanProfile(0x4E, 0x4F, [0x044B], 255, 0x044A, ObserveDuty: true),
         Controller = new StandardControllerProfile([new ControllerUsbId(0x1EE9, 0x1590)]),
         Motion = new StandardMotionProfile(new MotionAxisMap(0, 2, 1, 1, 1, -1), new MotionAxisMap(0, 2, 1, 1, 1, 1)),
         KeyboardChords =

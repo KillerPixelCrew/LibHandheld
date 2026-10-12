@@ -26,6 +26,9 @@ public sealed record CapabilityCommand
     /// <summary>The other member of a consumer-coordinated power limit pair.</summary>
     public int? PairedPowerLimitWatts { get; init; }
 
+    /// <summary>Whether this coordinated command requests one uniform target on every declared power limit.</summary>
+    public bool ApplyUniformPowerTarget { get; init; }
+
 
     /// <summary>When the command stops being worth applying, on the active clock.</summary>
     public required Deadline Deadline { get; init; }

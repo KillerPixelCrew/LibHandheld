@@ -4,7 +4,7 @@ using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Internal.Transports;
 
-internal sealed class IntelPowerTransport : ICpuPowerTransport
+internal sealed partial class IntelPowerTransport : ICpuPowerTransport
 {
     internal const string KxDigest = "1695E6C7877979B1297179680E5AA3C767EAF13D27EE259D8F332EC60083EAE0";
     private readonly Lock _gate = new();

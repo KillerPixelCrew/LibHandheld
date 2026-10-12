@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "profileId": "msi-claw",
   "displayName": "MSI Claw",
-  "revision": 2,
+  "revision": 3,
   "exactDeviceIds": ["ms-1t41", "ms-1t42", "ms-1t52", "ms-1t8k", "ms-1t91"],
-  "sourceRevision": "promptfont-ca3d628fd182",
+  "sourceRevision": "handheld-controller-glyphs-46792aadf3b1-hc-a250b19a4b7e",
   "noticePath": "THIRD_PARTY_NOTICES.md",
   "assets": [
     {
@@ -493,6 +493,94 @@
         "width": 32,
         "height": 32
       }
+    },
+    {
+      "assetId": "pf-21be",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-21c2",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-21bc",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-21c0",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-21bf",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-21c3",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-21bd",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-21c1",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
     }
   ],
   "controllerImages": {
@@ -606,7 +694,8 @@
       "presence": "Present",
       "physicalLabel": "MSI",
       "assetId": "guide",
-      "highlightAssetId": "guide-highlight"
+      "highlightAssetId": "guide-highlight",
+      "oemControlId": "oem1"
     },
     {
       "control": "View",
@@ -624,7 +713,8 @@
       "control": "QuickAccess",
       "presence": "Present",
       "assetId": "quick-access",
-      "highlightAssetId": "quick-access-highlight"
+      "highlightAssetId": "quick-access-highlight",
+      "oemControlId": "oem2"
     },
     {
       "control": "RearM1",
@@ -632,7 +722,8 @@
       "side": "Left",
       "physicalLabel": "M1",
       "assetId": "rear-m1",
-      "highlightAssetId": "rear-m1-highlight"
+      "highlightAssetId": "rear-m1-highlight",
+      "oemControlId": "oem3"
     },
     {
       "control": "RearM2",
@@ -640,7 +731,48 @@
       "side": "Right",
       "physicalLabel": "M2",
       "assetId": "rear-m2",
-      "highlightAssetId": "rear-m2-highlight"
+      "highlightAssetId": "rear-m2-highlight",
+      "oemControlId": "oem4"
+    },
+    {
+      "control": "LeftStickUp",
+      "presence": "Present",
+      "assetId": "pf-21be"
+    },
+    {
+      "control": "LeftStickDown",
+      "presence": "Present",
+      "assetId": "pf-21c2"
+    },
+    {
+      "control": "LeftStickLeft",
+      "presence": "Present",
+      "assetId": "pf-21bc"
+    },
+    {
+      "control": "LeftStickRight",
+      "presence": "Present",
+      "assetId": "pf-21c0"
+    },
+    {
+      "control": "RightStickUp",
+      "presence": "Present",
+      "assetId": "pf-21bf"
+    },
+    {
+      "control": "RightStickDown",
+      "presence": "Present",
+      "assetId": "pf-21c3"
+    },
+    {
+      "control": "RightStickLeft",
+      "presence": "Present",
+      "assetId": "pf-21bd"
+    },
+    {
+      "control": "RightStickRight",
+      "presence": "Present",
+      "assetId": "pf-21c1"
     }
   ],
   "aliases": []

@@ -318,10 +318,14 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
 
     /// <summary>MSI's Battery Master flag, bit 7 of 0xD7: the limit is only enforced while it is set.</summary>
     internal const byte BatteryMaster = 0x80;
+    internal const string ProtectionId = "battery.charge-protection";
 
     private readonly IMsiWmiTransport _transport = transport ?? throw new ArgumentNullException(nameof(transport));
     internal ChargeLimitState? Written { get; private set; }
     internal DateTimeOffset? WrittenAt { get; private set; }
+    internal bool? WrittenProtection { get; private set; }
+    internal DateTimeOffset? ProtectionWrittenAt { get; private set; }
+    private byte? _chargeEnvelope;
 
     public async ValueTask<CapabilityCommandResult> ApplyAsync(
         CapabilityCommand command,
@@ -350,6 +354,65 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
 
         Written = new ChargeLimitState(percent, wanted);
         WrittenAt = DateTimeOffset.UtcNow;
+        _chargeEnvelope = wanted;
+        WrittenProtection = true;
+        ProtectionWrittenAt = WrittenAt;
+        return CommandResults.Applied(command);
+    }
+
+    internal async ValueTask<CapabilityCommandResult> ApplyProtectionAsync(CapabilityCommand command, bool enabled,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
+                "The Battery Master command was cancelled before dispatch.");
+        }
+
+        if (_chargeEnvelope is null)
+        {
+            try
+            {
+                var response = await _transport.InvokeGetterAsync("Get_Data", ClawHardwareFacts.ChargeLimitAddress,
+                    cancellationToken).ConfigureAwait(false);
+                _chargeEnvelope = ClawApplied.Byte(response, 1, "charge-protection");
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // Preserve a readable envelope, but never make it a prerequisite for Battery Master.
+                // Without any known percentage, use the supported unrestricted 100 percent setting.
+            }
+        }
+
+        var percentage = (byte)((_chargeEnvelope ?? MaximumPercent) & 0x7F);
+        var wanted = (byte)(percentage | (enabled ? BatteryMaster : 0));
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException exception)
+        {
+            return ClawApplied.Refused(command, "charge-protection", exception, cancellationToken);
+        }
+
+        try
+        {
+            await WriteRawAsync(wanted, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return ClawApplied.Failed(command, "charge-protection", exception, cancellationToken);
+        }
+
+        _chargeEnvelope = wanted;
+        WrittenProtection = enabled;
+        ProtectionWrittenAt = DateTimeOffset.UtcNow;
+        if (percentage is >= MinimumPercent and <= MaximumPercent && percentage % StepPercent == 0)
+        {
+            Written = new ChargeLimitState(percentage, wanted);
+            WrittenAt = ProtectionWrittenAt;
+        }
+
         return CommandResults.Applied(command);
     }
 

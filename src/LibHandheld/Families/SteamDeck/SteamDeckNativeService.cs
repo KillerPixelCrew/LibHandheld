@@ -16,6 +16,7 @@ internal sealed partial class SteamDeckNativeService(
     private static readonly HapticCapabilities Haptics = new()
     {
         LowFrequency = OutputChannelSupport.Native, HighFrequency = OutputChannelSupport.Native,
+        NativePulse = OutputChannelSupport.Native,
         MaxFramesPerSecond = 100
     };
 
@@ -31,8 +32,17 @@ internal sealed partial class SteamDeckNativeService(
         }
     ];
 
+    internal const string RefreshMeasurementsId = "steamdeck.refresh-native-measurements";
+    private static readonly CapabilityDescriptor RefreshMeasurements = new()
+    {
+        CapabilityId = RefreshMeasurementsId, Role = CapabilityRole.GenericAction,
+        ValueKind = CapabilityValueKind.None, Display = CapabilityDescriptors.Label("Refresh native measurements"),
+        SupportsAction = true, Persistence = CapabilityPersistence.Volatile
+    };
+
     private readonly StationaryGyroBiasCalibrator _gyroBias = new();
     private readonly Lock _outputGate = new();
+    private readonly ManualResetEventSlim _rumbleStop = new(false);
     private readonly Dictionary<string, string> _pressIds = new(StringComparer.Ordinal);
     private volatile bool _connected;
     private INeptuneDevice? _controller;
@@ -47,22 +57,34 @@ internal sealed partial class SteamDeckNativeService(
     private CanonicalButtons _previousButtons;
     private Thread? _reader;
     private volatile bool _reading;
+    private Thread? _rumbleWorker;
+    private HapticOutputFrame _rumbleFrame;
+    private volatile bool _hapticFaulted;
+    private CapabilityReason? _hapticReason;
+    private bool _hapticsStopped;
     internal bool Connected => _connected;
     public override bool Suspendable => true;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
-        Array.AsReadOnly(ControllerDescriptors.Concat(HardwareDescriptors).Concat(ClockDescriptors).ToArray());
+        Array.AsReadOnly(ControllerDescriptors.Concat(HardwareDescriptors).Concat(ClockDescriptors)
+            .Append(RefreshMeasurements).ToArray());
 
     internal override IReadOnlyList<CapabilityState> States => ControllerDescriptors.Select(descriptor =>
         new CapabilityState
         {
-            CapabilityId = descriptor.CapabilityId, Available = _management && Connected, Reason = _controllerReason,
+            CapabilityId = descriptor.CapabilityId,
+            Available = _management && Connected && (descriptor.Role != CapabilityRole.HapticSink || !_hapticFaulted),
+            Reason = descriptor.Role == CapabilityRole.HapticSink ? _hapticReason ?? _controllerReason : _controllerReason,
             ObservedValue = descriptor.Role == CapabilityRole.HapticSink
                 ? null
                 : CapabilityValue.Choice(Connected ? SourceOwnership.Managed : SourceOwnership.Unavailable),
             Quality = Connected ? HardwareStateQuality.Observed : HardwareStateQuality.Unknown,
             ObservedAt = Connected ? DateTimeOffset.UtcNow : null
-        }).Concat(HardwareStates()).Concat(ClockStates()).ToArray();
+        }).Concat(HardwareStates()).Concat(ClockStates()).Append(new CapabilityState
+        {
+            CapabilityId = RefreshMeasurementsId, Available = _memory is not null || _clocks is not null,
+            Quality = HardwareStateQuality.Unknown
+        }).ToArray();
 
     internal override ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken token)
     {
@@ -80,7 +102,7 @@ internal sealed partial class SteamDeckNativeService(
         AcquireClocks();
         if (_management)
         {
-            await AcquireControllerAsync(token).ConfigureAwait(false);
+            await AcquireControllerAsync(token, explicitEnable: true).ConfigureAwait(false);
         }
 
         return Set(_memory is null && _clocks is null && !Connected ? DeviceServiceState.Passive
@@ -123,9 +145,19 @@ internal sealed partial class SteamDeckNativeService(
             _reading = true;
             _connected = true;
             _controllerReason = null;
+            _rumbleFrame = HapticOutputFrame.Stop(DateTimeOffset.UtcNow);
+            if (explicitEnable)
+            {
+                _hapticFaulted = false;
+                _hapticReason = null;
+            }
+            _hapticsStopped = false;
+            _rumbleStop.Reset();
             await context.Sink.PublishPhysicalDevicesAsync(device.Identities, Haptics, token).ConfigureAwait(false);
             _reader = new Thread(ReadLoop) { IsBackground = true, Name = "LibHandheld Neptune" };
             _reader.Start();
+            _rumbleWorker = new Thread(RumbleLoop) { IsBackground = true, Name = "LibHandheld Neptune haptics" };
+            _rumbleWorker.Start();
             _mappingCancellation = new CancellationTokenSource();
             _mappingWatchdog = MaintainMappingsAsync(_mappingCancellation.Token);
         }
@@ -224,7 +256,13 @@ internal sealed partial class SteamDeckNativeService(
         }
         finally
         {
-            _connected = false;
+            lock (_outputGate)
+            {
+                _connected = false;
+                _rumbleStop.Set();
+                StopHaptics();
+            }
+
             try
             {
                 PublishOemEdges(CanonicalButtons.None);
@@ -295,27 +333,75 @@ internal sealed partial class SteamDeckNativeService(
     {
         lock (_outputGate)
         {
-            if (!_management || !_connected || _controller is null)
+            if (!_reading || !_management || !_connected || _controller is null || _hapticFaulted)
             {
                 return;
             }
 
-            try
+            if (frame.NativePulse is null)
             {
-                _controller.Rumble(frame);
+                _rumbleFrame = frame;
             }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
+
+            SendHapticFrame(frame);
+        }
+    }
+
+    private void RumbleLoop()
+    {
+        // The firmware renders short pulses; continuous game rumble requires HC's 10 ms repetition.
+        while (!_rumbleStop.Wait(10))
+        {
+            lock (_outputGate)
             {
-                _connected = false;
-                _controllerReason = new CapabilityReason(CapabilityReasonCode.TransportFaulted,
-                    "Physical haptic output failed; the output was not retried.");
+                if (!_reading || !_management || !_connected || _controller is null || _hapticFaulted)
+                {
+                    return;
+                }
+
+                if (!_rumbleFrame.IsSilent)
+                {
+                    SendHapticFrame(_rumbleFrame);
+                }
             }
+        }
+    }
+
+    private void SendHapticFrame(HapticOutputFrame frame)
+    {
+        try
+        {
+            _controller!.Rumble(frame);
+            _hapticsStopped = frame.IsSilent;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            _hapticReason = new CapabilityReason(CapabilityReasonCode.TransportFaulted,
+                "Physical haptic output failed; the uncertain output was not retried.");
+            _hapticFaulted = true;
+            _rumbleStop.Set();
+        }
+    }
+
+    private void StopHaptics()
+    {
+        _rumbleFrame = HapticOutputFrame.Stop(DateTimeOffset.UtcNow);
+        if (_controller is not null && !_hapticFaulted && !_hapticsStopped)
+        {
+            SendHapticFrame(_rumbleFrame);
         }
     }
 
     private async ValueTask StopInputAsync(CancellationToken token)
     {
         _reading = false;
+        _rumbleStop.Set();
+        if (_rumbleWorker is { IsAlive: true } rumbleWorker && !rumbleWorker.Join(3000))
+        {
+            throw new TimeoutException("The Neptune haptic worker has not retired; its handles remain owned.");
+        }
+
+        _rumbleWorker = null;
         _mappingCancellation?.Cancel();
         if (_mappingWatchdog is { } watchdog)
         {
@@ -347,6 +433,7 @@ internal sealed partial class SteamDeckNativeService(
         _memory = null;
         _clocks?.Dispose();
         _clocks = null;
+        _rumbleStop.Dispose();
     }
 
     private async ValueTask ReleaseControllerAsync(CancellationToken token)
@@ -357,15 +444,7 @@ internal sealed partial class SteamDeckNativeService(
         {
             lock (_outputGate)
             {
-                try
-                {
-                    device.Rumble(HapticOutputFrame.Stop(DateTimeOffset.UtcNow));
-                }
-                catch (Exception exception) when (exception is not OutOfMemoryException)
-                {
-                    _controllerReason = new CapabilityReason(CapabilityReasonCode.TransportFaulted,
-                        "The haptic stop could not be confirmed.");
-                }
+                StopHaptics();
             }
 
             try
@@ -461,12 +540,13 @@ internal sealed partial class SteamDeckNativeService(
                 _clocks?.Dispose();
                 _clocks = null;
                 _writtenClocks.Clear();
+                _measuredClocks.Clear();
             }
         }
 
-        return Set(_journal?.Entries<SteamDeckOriginal>().Count > 0
+        return Set(_hapticFaulted || _journal?.Entries<SteamDeckOriginal>().Count > 0
             ? DeviceServiceState.ReleasedUnverified
-            : DeviceServiceState.Idle);
+            : DeviceServiceState.Idle, _hapticFaulted ? _hapticReason : null);
     }
 
     internal override async ValueTask SetControllerManagementAsync(bool enabled, CancellationToken token)
@@ -487,8 +567,9 @@ internal sealed partial class SteamDeckNativeService(
     internal override ValueTask RefreshTelemetryAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        // Read measured fan RPM and battery temperature only; controller reconnect stays on the slow pass.
+        // Live clock queries measure frequencies; accepted clock limits and charge settings are not polled.
         RefreshHardware();
+        RefreshClockMeasurements();
         return ValueTask.CompletedTask;
     }
 
@@ -505,6 +586,21 @@ internal sealed partial class SteamDeckNativeService(
     internal override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
     {
+        if (command.CapabilityId == RefreshMeasurementsId)
+        {
+            if (token.IsCancellationRequested || _memory is null && _clocks is null)
+            {
+                return ValueTask.FromResult(CommandResults.Rejected(command,
+                    CapabilityReasonCode.PrerequisiteMissing, "Native measurement access is unavailable or cancelled."));
+            }
+
+            var charge = RefreshChargeMeasurement();
+            var clocks = RefreshClockMeasurements();
+            return ValueTask.FromResult(charge && clocks ? CommandResults.Applied(command)
+                : CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
+                    "Some native measurements were unavailable; accepted settings are retained."));
+        }
+
         return command.CapabilityId.StartsWith("steamdeck.", StringComparison.Ordinal)
             ? ExecuteClockAsync(command, token)
             : ExecuteHardwareAsync(command, token);

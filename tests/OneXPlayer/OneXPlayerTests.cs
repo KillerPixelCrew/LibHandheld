@@ -221,6 +221,48 @@ public sealed class OneXPlayerTests
         Assert.Equal(new byte[] { 0x12, 0x34, 0x3F, 0xFD }, serial[^4..]);
     }
 
+    [Theory]
+    [InlineData("rainbow")]
+    [InlineData("monster-woke")]
+    [InlineData("solid")]
+    public void SerialRearColorsRemainSolidUnderControllerPresets(string effect)
+    {
+        Assert.Equal(effect, OneXNativeService.ColorEffect(OneXLightingKind.Serial, "primary", effect));
+        Assert.Equal("solid", OneXNativeService.ColorEffect(OneXLightingKind.Serial, "secondary", effect));
+        Assert.Equal(effect, OneXNativeService.ColorEffect(OneXLightingKind.HidV1X2, "secondary", effect));
+    }
+
+    [Fact]
+    public async Task X2FanMeasurementIsSeparateFromAcceptedDutyAndFailedReadsDoNotDisableWrites()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FakeEc();
+        ec.Values[0x44B] = 92;
+        var service = new OneXNativeService(
+            new ProfiledFeatureContext(directory.Root, "bios1", new TestPluginHostAdapter(1))
+                { Journal = TestRecovery.Open(directory.Root), ControllerManagementEnabled = false },
+            new OneXProtocolProfile(OneXEcKind.Indexed, 0x44A, 0x44B, 0, 184, OneXLightingKind.None, X2: true),
+            _ => ec, () => ec);
+        await service.AcquireAsync(Cycle(), CancellationToken.None);
+        Assert.Equal(50, service.States.Single(state => state.CapabilityId == "fan.measured-duty")
+            .ObservedValue!.IntegerValue);
+        Assert.Equal(CommandOutcome.Applied, (await service.ExecuteAsync(
+            Command("fan.duty", CapabilityValue.Integer(65)), "bios1", CancellationToken.None)).Outcome);
+        ec.Values[0x44B] = 92;
+        await service.RefreshAsync(CancellationToken.None);
+        Assert.Equal(65, service.States.Single(state => state.CapabilityId == "fan.duty")
+            .ObservedValue!.IntegerValue);
+        Assert.Equal(50, service.States.Single(state => state.CapabilityId == "fan.measured-duty")
+            .ObservedValue!.IntegerValue);
+        ec.ReadUnavailable = true;
+        await service.RefreshAsync(CancellationToken.None);
+        Assert.Null(service.States.Single(state => state.CapabilityId == "fan.measured-duty").ObservedValue);
+        Assert.True(service.States.Single(state => state.CapabilityId == "fan.duty").Available);
+        Assert.Equal(CommandOutcome.Applied, (await service.ExecuteAsync(
+            Command("fan.duty", CapabilityValue.Integer(70)), "bios1", CancellationToken.None)).Outcome);
+        await service.ReleaseAsync(Cycle(), CancellationToken.None);
+    }
+
     [Fact]
     public void NativeButtonCodeMeansDifferentPhysicalControlsOnEachGeneration()
     {
@@ -347,7 +389,7 @@ public sealed class OneXPlayerTests
         internal Dictionary<ushort, byte> Values { get; } = [];
         internal List<(ushort Address, byte Value)> Writes { get; } = [];
         internal List<ushort> Reads { get; } = [];
-        internal bool ReadUnavailable { get; init; }
+        internal bool ReadUnavailable { get; set; }
         internal bool FailWrite { get; set; }
         internal bool Disposed { get; private set; }
 

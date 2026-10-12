@@ -100,10 +100,132 @@ public sealed class LegionTests
             { Timestamp = time, Buttons = CanonicalButtons.RightPadTouch, RightPadX = 0.2f, RightPadY = 0.2f };
         _ = touch.Apply(down);
         Assert.False(touch.SecondaryHeld);
-        _ = touch.Apply(down with { Timestamp = time.AddMilliseconds(501) });
+        var held = touch.Apply(down with { Timestamp = time.AddMilliseconds(501), RightPadForce = 1 });
         Assert.True(touch.SecondaryHeld);
+        Assert.Equal(CanonicalButtons.None, held.Buttons & CanonicalButtons.RightPadTouch);
+        Assert.Equal(0, held.RightPadForce);
         _ = touch.Apply(CanonicalControllerSample.Neutral(time.AddMilliseconds(502)));
         Assert.False(touch.SecondaryHeld);
+        var idle = touch.Apply(CanonicalControllerSample.Neutral(time.AddMilliseconds(1100)));
+        Assert.Equal(CanonicalButtons.None, idle.Buttons & CanonicalButtons.RightPadClick);
+    }
+
+    [Theory]
+    [InlineData(0x80, CanonicalButtons.RearPaddle1, 4)]
+    [InlineData(0x40, CanonicalButtons.RearPaddle3, 8)]
+    [InlineData(0x04, CanonicalButtons.RearPaddle2, 16)]
+    [InlineData(0x20, CanonicalButtons.RearPaddle4, 32)]
+    public void TabletPaddlesFollowL4R4L5R5WhileOemIdsRetainTheirOrder(byte mask,
+        CanonicalButtons expected, ushort oem)
+    {
+        var report = new byte[64];
+        report[0] = 0x74;
+        report[20] = mask;
+        foreach (var model in LegionGoModels.All.Where(item => !item.Slim))
+        {
+            Assert.True(LegionInputCodec.TryDecode(model, report, DateTimeOffset.UnixEpoch,
+                rightGyro: false, nativeTouchpad: false, out var decoded));
+            Assert.Equal(expected, decoded.Sample.Buttons);
+            Assert.Equal(oem, decoded.OemButtons);
+        }
+    }
+
+    [Fact]
+    public void SingleTapUsesConfiguredDelayAndPulsesForOneSample()
+    {
+        var touch = new LegionTouchState(doubleTapMilliseconds: 200, longTapMilliseconds: 350);
+        var down = TabletTouch(DateTimeOffset.UnixEpoch);
+        _ = touch.Apply(down);
+        _ = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(10)));
+        var boundary = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(210)));
+        Assert.Equal(CanonicalButtons.None, boundary.Buttons & CanonicalButtons.RightPadClick);
+        var pulse = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(211)));
+        Assert.Equal(CanonicalButtons.RightPadClick, pulse.Buttons & CanonicalButtons.RightPadClick);
+        var after = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(212)));
+        Assert.Equal(CanonicalButtons.None, after.Buttons & CanonicalButtons.RightPadClick);
+    }
+
+    [Fact]
+    public void DoubleTapIncludesConfiguredBoundaryAndHoldsTouchAndClickDuringDragging()
+    {
+        var touch = new LegionTouchState(doubleTapMilliseconds: 200, longTapMilliseconds: 350);
+        var down = TabletTouch(DateTimeOffset.UnixEpoch);
+        _ = touch.Apply(down);
+        _ = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(10)));
+        var second = touch.Apply(down with { Timestamp = down.Timestamp.AddMilliseconds(210) });
+        Assert.Equal(CanonicalButtons.RightPadTouch | CanonicalButtons.RightPadClick, second.Buttons);
+        var dragged = touch.Apply(down with { Timestamp = down.Timestamp.AddMilliseconds(900), RightPadX = 0.9f });
+        Assert.Equal(CanonicalButtons.RightPadTouch | CanonicalButtons.RightPadClick, dragged.Buttons);
+        Assert.False(touch.SecondaryHeld);
+        var up = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(901)));
+        Assert.Equal(CanonicalButtons.None, up.Buttons);
+        var idle = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(1200)));
+        Assert.Equal(CanonicalButtons.None, idle.Buttons);
+    }
+
+    [Fact]
+    public void ConfiguredLongPressSuppressesContactAtTheExactThresholdAndResetReleasesIt()
+    {
+        var touch = new LegionTouchState(doubleTapMilliseconds: 200, longTapMilliseconds: 350);
+        var down = TabletTouch(DateTimeOffset.UnixEpoch);
+        _ = touch.Apply(down);
+        var before = touch.Apply(down with { Timestamp = down.Timestamp.AddMilliseconds(349) });
+        Assert.Equal(CanonicalButtons.RightPadTouch, before.Buttons);
+        Assert.False(touch.SecondaryHeld);
+        var held = touch.Apply(down with { Timestamp = down.Timestamp.AddMilliseconds(350) });
+        Assert.Equal(CanonicalButtons.None, held.Buttons);
+        Assert.Equal(0, held.RightPadForce);
+        Assert.True(touch.SecondaryHeld);
+        touch.Reset();
+        Assert.False(touch.SecondaryHeld);
+        Assert.Equal(CanonicalButtons.None,
+            touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(1000))).Buttons);
+    }
+
+    [Fact]
+    public void MovementPreventsSingleAndLongClicksButStillAllowsTheHcDoubleTapWindow()
+    {
+        var touch = new LegionTouchState(doubleTapMilliseconds: 200, longTapMilliseconds: 350);
+        var down = TabletTouch(DateTimeOffset.UnixEpoch);
+        var moved = down with { Timestamp = down.Timestamp.AddMilliseconds(350), RightPadX = 0.5f };
+        _ = touch.Apply(down);
+        _ = touch.Apply(moved);
+        Assert.False(touch.SecondaryHeld);
+        _ = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(351)));
+        var idle = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(552)));
+        Assert.Equal(CanonicalButtons.None, idle.Buttons);
+        touch.Reset();
+        _ = touch.Apply(down);
+        _ = touch.Apply(moved);
+        _ = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(351)));
+        var second = touch.Apply(moved with { Timestamp = down.Timestamp.AddMilliseconds(551) });
+        Assert.Equal(CanonicalButtons.RightPadTouch | CanonicalButtons.RightPadClick, second.Buttons);
+    }
+
+    [Fact]
+    public void ZeroWindowsTimingUsesHcSingleTapAndLongPressFallbacks()
+    {
+        var touch = new LegionTouchState(doubleTapMilliseconds: 0, longTapMilliseconds: 0);
+        var down = TabletTouch(DateTimeOffset.UnixEpoch);
+        _ = touch.Apply(down);
+        _ = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(10)));
+        var pulse = touch.Apply(CanonicalControllerSample.Neutral(down.Timestamp.AddMilliseconds(311)));
+        Assert.Equal(CanonicalButtons.RightPadClick, pulse.Buttons);
+        touch.Reset();
+        _ = touch.Apply(down);
+        _ = touch.Apply(down with { Timestamp = down.Timestamp.AddMilliseconds(499) });
+        Assert.False(touch.SecondaryHeld);
+        _ = touch.Apply(down with { Timestamp = down.Timestamp.AddMilliseconds(500) });
+        Assert.True(touch.SecondaryHeld);
+    }
+
+    private static CanonicalControllerSample TabletTouch(DateTimeOffset timestamp)
+    {
+        return new CanonicalControllerSample
+        {
+            Timestamp = timestamp, Buttons = CanonicalButtons.RightPadTouch,
+            RightPadX = 0.2f, RightPadY = 0.2f, RightPadForce = 1
+        };
     }
 
     [Theory]

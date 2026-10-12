@@ -30,9 +30,10 @@ to the maintainer's manual-first acceptance sequence.
 
 [TASKS.md](TASKS.md) is the active implementation task list. It includes the shared model/backend
 abstraction and public device operations, all native families and their delivery. Source coverage
-now maps all 201 records to 123 runtime definitions, including 11 named ranges. The nine original
-seed definitions are preserved. Family backends, shared Windows services and semantic operations are
-implemented; final packaging/deployment and hardware acceptance are recorded separately.
+now maps all 201 records to 112 exact runtime definitions, with vendor/CPU fallback records retained
+as policy exclusions. The nine original seed definitions are preserved. Family backends, shared
+Windows services and semantic operations are implemented; final packaging/deployment and hardware
+acceptance are recorded separately.
 
 1. Resolve ambiguous board, CPU and firmware variants against the pinned inventory, preserving HC >
    HHD > OpenGamepadUI precedence and lower-priority observations.

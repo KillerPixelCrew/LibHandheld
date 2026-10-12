@@ -12,11 +12,11 @@ internal static class SteamDeckModels
 
     internal static IReadOnlyList<HandheldDefinition> Definitions { get; } = Array.AsReadOnly<HandheldDefinition>(
     [
-        new HandheldDefinition("steamdeck-lcd", FamilyId, "Steam Deck LCD", "generic")
+        new HandheldDefinition("steamdeck-lcd", FamilyId, "Steam Deck LCD", "steamdeck-lcd")
             { HardwareAccess = DeviceHardwareAccess.InpOut, DeclaredRoles = DeckRoles },
-        new HandheldDefinition("steamdeck-oled", FamilyId, "Steam Deck OLED", "generic")
+        new HandheldDefinition("steamdeck-oled", FamilyId, "Steam Deck OLED", "steamdeck-oled")
             { HardwareAccess = DeviceHardwareAccess.InpOut, DeclaredRoles = DeckRoles },
-        new HandheldDefinition("steam-machine", FamilyId, "Steam Machine", "generic")
+        new HandheldDefinition("steam-machine", FamilyId, "Steam Machine", "steam-machine")
         {
             HardwareAccess = DeviceHardwareAccess.PawnIo, HasController = false,
             DeclaredRoles =
@@ -34,7 +34,7 @@ internal static class SteamDeckModels
         CapabilityRole.ControllerSource, CapabilityRole.MotionSource, CapabilityRole.HapticSink,
         CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanTargetRpm,
         CapabilityRole.FanMeasuredRpm, CapabilityRole.ChargeLimit, CapabilityRole.Telemetry,
-        CapabilityRole.GenericRange
+        CapabilityRole.GenericRange, CapabilityRole.GenericAction
     ];
 
     internal static string? Match(DeviceIdentitySnapshot identity)

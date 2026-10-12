@@ -14,6 +14,7 @@ internal sealed partial class ProfiledPowerService(
     private bool _captureAttempted;
     private ICpuPowerTransport? _transport;
     private bool _unknownOriginalChanged;
+    private readonly Dictionary<CpuPowerLimit, (double Watts, DateTimeOffset At)> _writtenLimits = [];
     internal CpuPowerLimits? Observed { get; private set; }
     internal DateTimeOffset? ObservedAt { get; private set; }
     public override bool Suspendable => true;
@@ -46,6 +47,45 @@ internal sealed partial class ProfiledPowerService(
     internal async ValueTask WriteAsync(CpuPowerLimits limits, string firmware, CancellationToken token,
         Action dispatched)
     {
+        await CapturePowerOriginalAsync(firmware, token).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        dispatched();
+        _transport!.WriteLimits(limits);
+        var at = DateTimeOffset.UtcNow;
+        _writtenLimits[CpuPowerLimit.Sustained] = (limits.SustainedWatts, at);
+        _writtenLimits[CpuPowerLimit.Slow] = (limits.SlowWatts, at);
+        _writtenLimits[CpuPowerLimit.Boost] = (limits.BoostWatts, at);
+        Observed = limits;
+        ObservedAt = at;
+    }
+
+    private async ValueTask WriteIndependentAsync(CpuPowerLimit limit, int watts, string firmware,
+        CancellationToken token, Action dispatched)
+    {
+        await CapturePowerOriginalAsync(firmware, token).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        dispatched();
+        try
+        {
+            _transport!.WriteLimit(limit, watts);
+            _writtenLimits[limit] = (watts, DateTimeOffset.UtcNow);
+        }
+        catch
+        {
+            _writtenLimits.Remove(limit);
+            throw;
+        }
+
+        ObservedAt = DateTimeOffset.UtcNow;
+        Observed = _writtenLimits.TryGetValue(CpuPowerLimit.Sustained, out var sustained)
+                   && _writtenLimits.TryGetValue(CpuPowerLimit.Slow, out var slow)
+                   && _writtenLimits.TryGetValue(CpuPowerLimit.Boost, out var fast)
+            ? new CpuPowerLimits(sustained.Watts, slow.Watts, fast.Watts)
+            : null;
+    }
+
+    private async ValueTask CapturePowerOriginalAsync(string firmware, CancellationToken token)
+    {
         if (_transport is null)
         {
             throw new InvalidOperationException("CPU power transport is not owned.");
@@ -64,16 +104,11 @@ internal sealed partial class ProfiledPowerService(
             }, token).ConfigureAwait(false);
         }
 
-        token.ThrowIfCancellationRequested();
         if (journal.EntryFor<ProfiledRecoveryState>(ServiceId) is null)
         {
             _unknownOriginalChanged = true;
         }
 
-        dispatched();
-        _transport.WriteLimits(limits);
-        Observed = limits;
-        ObservedAt = DateTimeOffset.UtcNow;
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> context,
@@ -115,6 +150,7 @@ internal sealed partial class ProfiledPowerService(
             _transport = null;
             Observed = null;
             ObservedAt = null;
+            _writtenLimits.Clear();
         }
     }
 
@@ -140,9 +176,11 @@ internal sealed partial class ProfiledFanService(
     private bool _unknownOriginalChanged;
     internal int? Duty { get; private set; }
     internal int? Rpm { get; private set; }
+    internal int? MeasuredDuty { get; private set; }
     internal string? Mode { get; private set; }
     internal DateTimeOffset? ObservedAt { get; private set; }
     internal DateTimeOffset? RpmObservedAt { get; private set; }
+    internal DateTimeOffset? MeasuredDutyObservedAt { get; private set; }
     public override bool Suspendable => true;
 
     internal override ValueTask DisposeAsync()
@@ -198,6 +236,21 @@ internal sealed partial class ProfiledFanService(
 
         try
         {
+            if (profile.ObserveDuty)
+            {
+                var raw = _ec.ReadByte(profile.DutyAddresses[0]);
+                MeasuredDuty = Math.Clamp((int)Math.Round(raw * 100d / profile.MaximumDuty), 0, 100);
+                MeasuredDutyObservedAt = DateTimeOffset.UtcNow;
+            }
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            MeasuredDuty = null;
+            MeasuredDutyObservedAt = null;
+        }
+
+        try
+        {
             if (profile.RpmHighAddress is { } high && profile.RpmLowAddress is { } low)
             {
                 Rpm = _ec.Transaction(() => (_ec.ReadByte(high) << 8) | _ec.ReadByte(low));
@@ -225,6 +278,8 @@ internal sealed partial class ProfiledFanService(
                 List<ushort> addresses = [];
                 List<byte> values = [];
                 foreach (var address in profile.DutyAddresses
+                             .Concat(profile.AutomaticDutyAddress is { } automatic
+                                 ? [automatic] : Array.Empty<ushort>())
                              .Concat(profile.ManualAddress is { } manual ? [manual] : Array.Empty<ushort>()).Distinct())
                 {
                     if (!profile.ReadDuty && profile.DutyAddresses.Contains(address))
@@ -268,7 +323,9 @@ internal sealed partial class ProfiledFanService(
 
             if (mode == "automatic" && profile.ManualAddress is null)
             {
-                foreach (var address in profile.DutyAddresses)
+                var automaticAddresses = profile.AutomaticDutyAddress is { } automatic
+                    ? new[] { automatic } : profile.DutyAddresses;
+                foreach (var address in automaticAddresses)
                 {
                     _ec.WriteByte(address, 0);
                 }
@@ -346,6 +403,8 @@ internal sealed partial class ProfiledFanService(
             Mode = null;
             ObservedAt = null;
             RpmObservedAt = null;
+            MeasuredDuty = null;
+            MeasuredDutyObservedAt = null;
         }
     }
 

@@ -77,6 +77,20 @@ public sealed class AyaneoTests
         Assert.Equal("Touchpad / ABXY", AyaneoSuperJoy.RightModule(0x52));
     }
 
+    [Fact]
+    public void SuperJoyLightingDoesNotConfigureTriggersAndOffZerosRgb()
+    {
+        var frame = AyaneoSuperJoy.Lighting(0x123456, 0xABCDEF, 100, false, eject: 7, vibration: 0x30);
+        Assert.Equal(new byte[] { 0xFF, 0, 0, 0 }, frame[8..12]);
+        Assert.Equal(new byte[] { 0xFF, 0, 0, 0 }, frame[12..16]);
+        Assert.Equal(7, frame[20]);
+        Assert.Equal(0x30, frame[24]);
+        Assert.Equal(1, frame[32]);
+        Assert.All(new[] { 22, 23, 37, 38 }, index => Assert.Equal(0, frame[index]));
+        Assert.Equal((ushort)frame[7..].Sum(value => value),
+            BinaryPrimitives.ReadUInt16LittleEndian(frame.AsSpan(1)));
+    }
+
     [Theory]
     [InlineData("2", 0x1E, 0x55)]
     [InlineData("air-plus-intel", 0xD1D1, 1)]
@@ -187,12 +201,12 @@ public sealed class AyaneoTests
         var result = await service.ExecuteAsync(Command(AyaneoNativeService.SecondaryId,
             CapabilityValue.Integer(50)), "bios1", CancellationToken.None);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
-        Assert.Equal(new (ushort, byte)[] { (0x4F, 0), (0x4E, 127) }, ec.Writes);
+        Assert.Equal(new (ushort, byte)[] { (0xFF, 0), (0x4E, 127) }, ec.Writes);
         await service.ReleaseAsync(Cycle(), CancellationToken.None);
     }
 
     [Fact]
-    public async Task KunZoneThreeAndFourUseTheirSeparateBgrChannelOrders()
+    public async Task KunZoneThreeAndFourUseCurrentHcGrbAndGbrChannelOrders()
     {
         using var directory = new TemporaryDirectory();
         var ec = new FakeEc();
@@ -223,11 +237,11 @@ public sealed class AyaneoTests
             }
         }
 
-        Assert.Contains(((byte)9, (byte)84), left);
+        Assert.Contains(((byte)9, (byte)60), left);
         Assert.Contains(((byte)10, (byte)36), left);
-        Assert.Contains(((byte)11, (byte)60), left);
-        Assert.Contains(((byte)12, (byte)84), left);
-        Assert.Contains(((byte)13, (byte)60), left);
+        Assert.Contains(((byte)11, (byte)84), left);
+        Assert.Contains(((byte)12, (byte)60), left);
+        Assert.Contains(((byte)13, (byte)84), left);
         Assert.Contains(((byte)14, (byte)36), left);
         await service.ReleaseAsync(Cycle(), CancellationToken.None);
     }

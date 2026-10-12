@@ -60,8 +60,8 @@ corresponding source JSON record for those details.
 
 These statuses describe upstream source evidence. The saved JSON/CSV research snapshot retains its
 original `planned` migration status; it is not a live implementation registry. LibHandheld now
-implements nine seed definitions (five Claw, four Ally), documented in the [plan](../PLAN.md) and
-`HandheldDevice.Definitions`. The remaining HC/HHD target still requires implementation. Source
+implements 112 exact definitions across nine native families, documented in the [plan](../PLAN.md)
+and `HandheldDevice.Definitions`. Vendor/CPU fallback records remain policy exclusions. Source
 support, applied library code and hardware validation are separate evidence.
 
 Related records are linked by name or selector-text overlap. That is a research association, not

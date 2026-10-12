@@ -33,9 +33,16 @@ Implementation coverage is maintained in `inventory/implementation-coverage.json
 observations remain separate. New automated tests and test-bearing gates follow the maintainer's
 manual-first policy.
 
-Delivery: WSGM implementation commit f1e212d8 consumes LibHandheld 0499bd0. The full setup and
-development installation are version 2.1.0.1660. Whole-solution Release compilation passed with zero
-warnings/errors; Rider cleanup and Steam asset checks passed. Native libraries, helpers and
+Earlier delivery: WSGM implementation commit f1e212d8 consumes LibHandheld 0499bd0. The full setup
+and development installation are version 2.1.0.1660. Whole-solution Release compilation passed with
+zero warnings/errors; Rider cleanup and Steam asset checks passed. Native libraries, helpers and
 installed assembly hashes match the staged output. Automated tests remain deferred; no new handheld
 hardware acceptance is claimed. Later tracker-only commits do not change this delivered source
 snapshot.
+
+HC 1.3.3.1 parity follow-up, 2026-10-12: 112 exact definitions now select 106 authored glyph
+profiles. Native packet, motion/rear mapping, processor settings, observations and haptic
+corrections are integrated through both WSGM control surfaces. Release compilation passed without
+warnings or errors; the focused regression and rendered UI evidence is recorded in WSGM's parity
+audit. Broad vendor/CPU fallbacks remain excluded by exact-identity policy. Hardware purchases and
+per-model physical acceptance are not implementation gates; no new hardware pass is claimed.

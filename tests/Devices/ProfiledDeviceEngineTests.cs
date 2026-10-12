@@ -123,7 +123,7 @@ public sealed class ProfiledDeviceEngineTests
         return new ProfiledDeviceEngine(GpdModels.All.Single(model => model.Definition.Id == "gpd-win4-8840u") with
         {
             Fan = null, Controller = null, Motion = null, Touchpad = null, KeyboardChords = [],
-            ServiceFactories = []
+            ServiceFactories = [], OpenPower = _ => power
         }, () => power, _ => throw new InvalidOperationException());
     }
 

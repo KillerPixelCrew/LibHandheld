@@ -48,3 +48,8 @@ The HHD-only X1 Air and X1 Pro EVA-02 inherit the X1-family control envelope whe
 selector/protocol but no Windows power envelope. Those inherited values need hardware confirmation.
 Compilation and packet fixtures are separate from live hardware acceptance; no new hardware pass is
 claimed by this source port.
+
+HC a250b19's Apex IMU resource assigns both raw X and Z to output Y. The later Z assignment wins;
+output Z remains zero. The library reproduces that source behavior explicitly, rather than
+duplicating raw Y or inventing an unmeasured physical axis. This is source parity, not a claim that
+the upstream orientation is correct.

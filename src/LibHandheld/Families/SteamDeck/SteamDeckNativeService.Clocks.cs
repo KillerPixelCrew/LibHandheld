@@ -10,6 +10,8 @@ internal sealed partial class SteamDeckNativeService
         Clock("steamdeck.gpu-clock-min", null, "Minimum GPU clock", 200, 1900),
         Clock("steamdeck.gpu-clock-soft-min", null, "Soft minimum GPU clock", 200, 1900),
         Clock("steamdeck.gpu-clock-max", null, "Maximum GPU clock", 200, 1900),
+        MeasuredClock("steamdeck.gpu-clock-current", "Current GPU clock"),
+        MeasuredClock("steamdeck.fabric-clock-current", "Current fabric clock"),
         .. Enumerable.Range(0, 4).SelectMany(core => new[]
         {
             Clock("steamdeck.cpu-clock-min", $"core{core}", $"Core {core} minimum clock", 1400, 4000),
@@ -18,8 +20,50 @@ internal sealed partial class SteamDeckNativeService
     ];
 
     private readonly Dictionary<(string Id, string? Instance), ClockObservation> _writtenClocks = [];
+    private readonly Dictionary<string, ClockObservation> _measuredClocks = [];
     private CapabilityReason? _clockReason;
     private VangoghPower? _clocks;
+
+    private bool RefreshClockMeasurements()
+    {
+        if (_clocks is null)
+        {
+            _measuredClocks.Clear();
+            return true;
+        }
+
+        var success = true;
+        foreach (var id in new[] { "steamdeck.gpu-clock-current", "steamdeck.fabric-clock-current" })
+        {
+            try
+            {
+                var raw = _clocks.Exchange(ClockMeasurementCommand(id), 0);
+                if (raw > 10000)
+                {
+                    throw new InvalidDataException("The native clock measurement is outside the declared range.");
+                }
+
+                _measuredClocks[id] = new ClockObservation(checked((int)raw), DateTimeOffset.UtcNow);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                _measuredClocks.Remove(id);
+                success = false;
+            }
+        }
+
+        return success;
+    }
+
+    internal static uint ClockMeasurementCommand(string id)
+    {
+        return id switch
+        {
+            "steamdeck.gpu-clock-current" => 0x1B,
+            "steamdeck.fabric-clock-current" => 0x1C,
+            _ => throw new ArgumentOutOfRangeException(nameof(id))
+        };
+    }
 
     private void AcquireClocks()
     {
@@ -147,11 +191,24 @@ internal sealed partial class SteamDeckNativeService
         };
     }
 
+    private static CapabilityDescriptor MeasuredClock(string id, string label)
+    {
+        return new CapabilityDescriptor
+        {
+            CapabilityId = id, Role = CapabilityRole.Telemetry, ValueKind = CapabilityValueKind.Integer,
+            Display = CapabilityDescriptors.Label(label), Minimum = 0, Maximum = 10000, Step = 1,
+            Unit = CapabilityUnit.Megahertz, SupportsRead = true, Persistence = CapabilityPersistence.Volatile
+        };
+    }
+
     private IEnumerable<CapabilityState> ClockStates()
     {
         foreach (var descriptor in ClockDescriptors)
         {
-            var value = _writtenClocks.TryGetValue((descriptor.CapabilityId, descriptor.InstanceId), out var written)
+            var known = descriptor.SupportsWrite
+                ? _writtenClocks.TryGetValue((descriptor.CapabilityId, descriptor.InstanceId), out var written)
+                : _measuredClocks.TryGetValue(descriptor.CapabilityId, out written);
+            var value = known
                 ? CapabilityValue.Integer(written.Megahertz)
                 : null;
             yield return new CapabilityState

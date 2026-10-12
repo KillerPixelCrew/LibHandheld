@@ -150,6 +150,13 @@ internal static class AyaneoModels
         return new ProfiledDeviceEngine(All.Single(model => model.Profile.Definition.Id == definition.Id).Profile);
     }
 
+    private static int PresetTarget(string id, DevicePowerPreset preset)
+    {
+        return id is "3-8840u" or "3-hx370" or "next-2"
+            ? preset.Id switch { "battery" => 15, "balanced" => 30, _ => 45 }
+            : preset.SustainedWatts;
+    }
+
     private static AyaneoModel Model(string id, string name, string[] products, int minimum, int maximum,
         AyaneoEcProtocol protocol = AyaneoEcProtocol.CEc, AyaneoLighting? lighting = null,
         bool confirmation = true, bool secondary = false, bool modular = false,
@@ -160,7 +167,7 @@ internal static class AyaneoModels
             : protocol == AyaneoEcProtocol.CEii ? AyaneoLighting.CEii : AyaneoLighting.CEc);
         var model = new AyaneoModel(new ProfiledDeviceModel
         {
-            Definition = new HandheldDefinition("ayaneo." + id, FamilyId, name, "ayaneo")
+            Definition = new HandheldDefinition("ayaneo." + id, FamilyId, name, "ayaneo-" + id)
             {
                 HardwareAccess = DeviceHardwareAccess.PawnIo | (cpu == CpuPowerKind.Intel
                     ? DeviceHardwareAccess.IntelKx
@@ -176,7 +183,7 @@ internal static class AyaneoModels
             },
             Cpu = cpu,
             MinimumWatts = minimum, MaximumWatts = maximum,
-            // HC AYANEODevice declares these three equal sustained/slow targets.
+            // HC AYANEODevice authors equal STAPM/slow/fast targets; AYANEO3/NEXT2 replace all three.
             PowerPresets = new[]
             {
                 new DevicePowerPreset("battery", "Battery", 8, 8, DevicePowerMode.BetterBattery),
@@ -184,8 +191,11 @@ internal static class AyaneoModels
                 new DevicePowerPreset("performance", "Performance", 28, 28, DevicePowerMode.BestPerformance)
             }.Select(preset => preset with
             {
-                SustainedWatts = Math.Clamp(preset.SustainedWatts, minimum, maximum),
-                SlowWatts = Math.Clamp(preset.SlowWatts, minimum, maximum)
+                SustainedWatts = Math.Clamp(PresetTarget(id, preset), minimum, maximum),
+                SlowWatts = Math.Clamp(PresetTarget(id, preset), minimum, maximum),
+                FastWatts = cpu == CpuPowerKind.Amd
+                    ? Math.Clamp(PresetTarget(id, preset), minimum, maximum)
+                    : null
             }).ToArray(),
             Fan = protocol == AyaneoEcProtocol.None
                 ? null
@@ -308,8 +318,8 @@ internal static class AyaneoModels
         [
             .. Modern(), Chord("t", "T", CanonicalButtons.None, 0x7F),
             Chord("l4", "Left rear 1", CanonicalButtons.RearPaddle1, 0x82),
-            Chord("l5", "Left rear 2", CanonicalButtons.RearPaddle2, 0x80),
-            Chord("r4", "Right rear 1", CanonicalButtons.RearPaddle3, 0x83),
+            Chord("l5", "Left rear 2", CanonicalButtons.RearPaddle3, 0x80),
+            Chord("r4", "Right rear 1", CanonicalButtons.RearPaddle2, 0x83),
             Chord("r5", "Right rear 2", CanonicalButtons.RearPaddle4, 0x81),
             .. next
                 ? new[] { Chord("quick-win", "Quick access", CanonicalButtons.QuickAccess, 0x5B, 0x44) }

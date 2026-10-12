@@ -18,7 +18,7 @@ internal static class GpdModels
     private const string CpuHx370 = "AMD Ryzen AI 9 HX 370 w/ Radeon 890M";
 
     private static readonly EcFanProfile Win4Fan = new(0x2E, 0x2F, [0xC311], 127,
-        UnlockChipAddress: 0x2000, UnlockAddress: 0x1060);
+        UnlockChipAddress: 0x2000, UnlockAddress: 0x1060, AutomaticDutyAddress: 0xC880);
 
     private static readonly EcFanProfile MaxFan = new(0x4E, 0x4F, [0x1809], 184, 0x275);
     private static readonly EcFanProfile MiniFan = new(0x4E, 0x4F, [0x047A], 244, ReadDuty: false);
@@ -26,29 +26,29 @@ internal static class GpdModels
     private static readonly EcFanProfile Win5Fan = new(0x4E, 0x4F, [0x047A, 0x047B], 244,
         RpmHighAddress: 0x0478, RpmLowAddress: 0x0479);
 
-    private static readonly StandardMotionProfile Win4Motion = new(new MotionAxisMap(0, 2, 1, 1, 1, 1),
-        new MotionAxisMap(0, 2, 1, 1, 1, 1));
+    private static readonly StandardMotionProfile Win4Motion = new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, 1, 1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, 1, 1, 1));
 
-    private static readonly StandardMotionProfile ModernMotion = new(new MotionAxisMap(1, 2, 0, 1, -1, -1),
-        new MotionAxisMap(0, 2, 1, -1, -1, 1));
+    private static readonly StandardMotionProfile ModernMotion = new(MotionAxisMap.FromInputToOutput(1, 2, 0, 1, -1, -1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, -1, -1, 1));
 
-    private static readonly StandardMotionProfile MaxMotion = new(new MotionAxisMap(1, 2, 0, 1, -1, -1),
-        new MotionAxisMap(0, 2, 1, -1, 1, 1));
+    private static readonly StandardMotionProfile MaxMotion = new(MotionAxisMap.FromInputToOutput(1, 2, 0, 1, -1, -1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, -1, 1, 1));
 
-    private static readonly StandardMotionProfile MiniMotion = new(new MotionAxisMap(2, 0, 1, 1, -1, -1),
-        new MotionAxisMap(2, 0, 1, 1, 1, 1));
+    private static readonly StandardMotionProfile MiniMotion = new(MotionAxisMap.FromInputToOutput(2, 0, 1, 1, -1, -1),
+        MotionAxisMap.FromInputToOutput(2, 0, 1, 1, 1, 1));
 
-    private static readonly StandardMotionProfile MiniHxMotion = new(new MotionAxisMap(1, 2, 0, -1, -1, 1),
-        new MotionAxisMap(0, 2, 1, -1, 1, 1));
+    private static readonly StandardMotionProfile MiniHxMotion = new(MotionAxisMap.FromInputToOutput(1, 2, 0, -1, -1, 1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, -1, 1, 1));
 
     private static readonly StandardMotionProfile Mini8840Motion =
-        new(new MotionAxisMap(0, 2, 1, 1, -1, 1), new MotionAxisMap(0, 2, 1, -1, 1, 1));
+        new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, 1), MotionAxisMap.FromInputToOutput(0, 2, 1, -1, 1, 1));
 
     private static readonly StandardMotionProfile MaxIntelMotion =
-        new(new MotionAxisMap(0, 2, 1, 1, 1, 1), new MotionAxisMap(0, 2, 1, -1, -1, 1));
+        new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, 1, 1), MotionAxisMap.FromInputToOutput(0, 2, 1, -1, -1, 1));
 
-    private static readonly StandardMotionProfile MaxHxMotion = new(new MotionAxisMap(0, 2, 1, 1, -1, 1),
-        new MotionAxisMap(0, 2, 1, -1, -1, 1));
+    private static readonly StandardMotionProfile MaxHxMotion = new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, 1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, -1, -1, 1));
 
     private static readonly KeyboardOemChord[] RearChords =
     [
@@ -115,6 +115,12 @@ internal static class GpdModels
         Model("gpd-win5", "GPD WIN 5", "GPDWin5", ["G1618-05"], [], 8, 85, Win5Fan, ModernMotion) with
         {
             CreateOemSource = () => new GpdWin5OemSource(),
+            NativeRoles =
+            [
+                CapabilityRole.GenericChoice, CapabilityRole.GenericRange, CapabilityRole.LightingEffect,
+                CapabilityRole.LightingZoneColor, CapabilityRole.GenericReadOnly
+            ],
+            ServiceFactories = [_ => new GpdNativeService(), _ => new GpdWin5PowerSourceService()],
             KeyboardChords =
             [
                 new KeyboardOemChord("keyboard", "Keyboard", [0xA2, 0x5B, 0x4F], CanonicalButtons.None),
@@ -156,7 +162,7 @@ internal static class GpdModels
     {
         return new ProfiledDeviceModel
         {
-            Definition = new HandheldDefinition(id, FamilyId, name, "gpd")
+            Definition = new HandheldDefinition(id, FamilyId, name, id)
             {
                 HardwareAccess = DeviceHardwareAccess.PawnIo |
                                  (cpu == CpuPowerKind.Intel ? DeviceHardwareAccess.IntelKx : DeviceHardwareAccess.None)

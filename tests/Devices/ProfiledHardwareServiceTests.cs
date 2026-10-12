@@ -101,6 +101,86 @@ public sealed class ProfiledHardwareServiceTests
         await fan.DisposeAsync();
     }
 
+    [Fact]
+    public async Task ActualFanDutyDoesNotReplaceAcceptedTargetsOrGateWritesWhenItsReadFails()
+    {
+        using var directory = new TemporaryDirectory();
+        var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        var ec = new SettingsEc { DutyValue = 50 };
+        var fan = new ProfiledFanService(new EcFanProfile(0x4E, 0x4F, [0x10], 100,
+            0x11, ObserveDuty: true), () => ec, journal);
+        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never, new ProfiledCycleIdentity("test"));
+        await fan.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal(50, fan.MeasuredDuty);
+        await fan.WriteAsync("custom", 65, "test", CancellationToken.None, () => { });
+        await fan.RefreshAsync(CancellationToken.None);
+        Assert.Equal(50, fan.MeasuredDuty);
+        Assert.Equal(65, fan.Duty);
+        ec.FailDutyRead = true;
+        await fan.RefreshAsync(CancellationToken.None);
+        Assert.Null(fan.MeasuredDuty);
+        Assert.Null(fan.MeasuredDutyObservedAt);
+        Assert.Equal(65, fan.Duty);
+        Assert.True(fan.States.Single(state => state.CapabilityId == "fan.duty").Available);
+        await fan.WriteAsync("custom", 70, "test", CancellationToken.None, () => { });
+        Assert.Equal(70, fan.Duty);
+        await fan.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task OriginalWin4UsesTheHcAutomaticRegisterAndRestoresBothDistinctRegisters()
+    {
+        using var directory = new TemporaryDirectory();
+        var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        var ec = new AutomaticFanEc();
+        var fan = new ProfiledFanService(new EcFanProfile(0x2E, 0x2F, [0xC311], 127,
+            AutomaticDutyAddress: 0xC880), () => ec, journal);
+        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never, new ProfiledCycleIdentity("test"));
+        await fan.AcquireAsync(cycle, CancellationToken.None);
+        await fan.WriteAsync("custom", 50, "test", CancellationToken.None, () => { });
+        Assert.Equal(((ushort)0xC311, (byte)64), Assert.Single(ec.Writes));
+        ec.Writes.Clear();
+        await fan.WriteAsync("automatic", null, "test", CancellationToken.None, () => { });
+        Assert.Equal(((ushort)0xC880, (byte)0), Assert.Single(ec.Writes));
+        ec.Writes.Clear();
+        await fan.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Equal(new (ushort, byte)[] { (0xC311, 20), (0xC880, 35) }, ec.Writes);
+    }
+
+    private sealed class AutomaticFanEc : IEmbeddedController
+    {
+        internal List<(ushort Address, byte Value)> Writes { get; } = [];
+
+        public byte ReadByte(ushort address)
+        {
+            return address switch { 0xC311 => 20, 0xC880 => 35, _ => 0 };
+        }
+
+        public void WriteByte(ushort address, byte value)
+        {
+            Writes.Add((address, value));
+        }
+
+        public T Transaction<T>(Func<T> operation)
+        {
+            return operation();
+        }
+
+        public void Dispose()
+        {
+        }
+
+        public ushort ReadUInt16(ushort address)
+        {
+            throw new NotSupportedException();
+        }
+
+        public void WriteUInt16(ushort address, ushort value)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
     private sealed class RecordingEc : IEmbeddedController
     {
         private bool _inTransaction;
@@ -176,11 +256,18 @@ public sealed class ProfiledHardwareServiceTests
     private sealed class SettingsEc : IEmbeddedController
     {
         internal List<ushort> Reads { get; } = [];
+        internal byte DutyValue { get; init; } = 20;
+        internal bool FailDutyRead { get; set; }
 
         public byte ReadByte(ushort address)
         {
             Reads.Add(address);
-            return address switch { 0x10 => 20, 0x11 => 1, 0x20 => 0x12, 0x42 => 0x34, _ => 0 };
+            if (address == 0x10 && FailDutyRead)
+            {
+                throw new IOException("Fan measurement unavailable");
+            }
+
+            return address switch { 0x10 => DutyValue, 0x11 => 1, 0x20 => 0x12, 0x42 => 0x34, _ => 0 };
         }
 
         public void WriteByte(ushort address, byte value)

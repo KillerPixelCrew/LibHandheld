@@ -22,34 +22,34 @@ internal static class OneXPlayerModels
     };
 
     private static readonly StandardMotionProfile DefaultMotion =
-        new(new MotionAxisMap(0, 2, 1, 1, -1, 1), new MotionAxisMap(0, 2, 1, 1, -1, -1));
+        new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, 1), MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, -1));
 
-    private static readonly StandardMotionProfile MiniMotion = new(new MotionAxisMap(0, 2, 1, 1, -1, 1),
-        new MotionAxisMap(0, 2, 1, 1, 1, 1));
+    private static readonly StandardMotionProfile MiniMotion = new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, 1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, 1, 1, 1));
 
     private static readonly StandardMotionProfile MiniIntelMotion =
-        new(new MotionAxisMap(1, 2, 0, 1, -1, -1), new MotionAxisMap(0, 2, 1, 1, -1, -1));
+        new(MotionAxisMap.FromInputToOutput(1, 2, 0, 1, -1, -1), MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, -1));
 
     private static readonly StandardMotionProfile MiniProMotion =
-        new(new MotionAxisMap(0, 2, 1, 1, 1, 1), new MotionAxisMap(0, 2, 1, 1, -1, 1));
+        new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, 1, 1), MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, 1));
 
-    private static readonly StandardMotionProfile FlyMotion = new(new MotionAxisMap(0, 2, 1, 1, -1, 1),
-        new MotionAxisMap(0, 2, 1, -1, -1, 1));
+    private static readonly StandardMotionProfile FlyMotion = new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, 1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, -1, -1, 1));
 
-    private static readonly StandardMotionProfile TwoMotion = new(new MotionAxisMap(0, 2, 1, -1, -1, -1),
-        new MotionAxisMap(0, 2, 1, 1, -1, -1));
+    private static readonly StandardMotionProfile TwoMotion = new(MotionAxisMap.FromInputToOutput(0, 2, 1, -1, -1, -1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, -1));
 
-    private static readonly StandardMotionProfile X2Motion = new(new MotionAxisMap(1, 2, 0, 1, 1, -1),
-        new MotionAxisMap(1, 2, 0, 1, 1, -1));
+    private static readonly StandardMotionProfile X2Motion = new(MotionAxisMap.FromInputToOutput(1, 2, 0, 1, 1, -1),
+        MotionAxisMap.FromInputToOutput(1, 2, 0, 1, 1, -1));
 
-    private static readonly StandardMotionProfile X2MiniMotion = new(new MotionAxisMap(2, 0, 1, 1, -1, -1),
-        new MotionAxisMap(0, 2, 1, -1, -1, 1));
+    private static readonly StandardMotionProfile X2MiniMotion = new(MotionAxisMap.FromInputToOutput(2, 0, 1, 1, -1, -1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, -1, -1, 1));
 
-    private static readonly StandardMotionProfile ThreeMotion = new(new MotionAxisMap(1, 0, 2, 1, 1, 1),
-        new MotionAxisMap(1, 0, 2, 1, 1, 1));
+    private static readonly StandardMotionProfile ThreeMotion = new(MotionAxisMap.FromInputToOutput(1, 0, 2, 1, 1, 1),
+        MotionAxisMap.FromInputToOutput(1, 0, 2, 1, 1, 1));
 
-    private static readonly StandardMotionProfile G1Motion = new(new MotionAxisMap(0, 2, 1, 1, 1, 1),
-        new MotionAxisMap(0, 2, 1, 1, -1, 1));
+    private static readonly StandardMotionProfile G1Motion = new(MotionAxisMap.FromInputToOutput(0, 2, 1, 1, 1, 1),
+        MotionAxisMap.FromInputToOutput(0, 2, 1, 1, -1, 1));
 
     internal static IReadOnlyList<ProfiledDeviceModel> All { get; } = Array.AsReadOnly<ProfiledDeviceModel>(
     [
@@ -139,10 +139,15 @@ internal static class OneXPlayerModels
             {
                 IdentitySource = ProfileIdentitySource.System
             },
+        // HC's Apex matrix repeats output Y and is not a permutation. Its orientation
+        // requires a raw three-axis hardware capture before the inherited map can be corrected.
         Model("oxp-apex", "ONEXPLAYER Apex", "OneXPlayerApex", ["ONEXPLAYER APEX", "ONEXPLAYERAPEX"], 25, 65,
             new OneXProtocolProfile(OneXEcKind.Indexed, 0x44A, 0x44B, 0, 184, OneXLightingKind.Serial,
                 VendorButtons: true, Apex: true, Vibration: true, Charge: OneXChargeKind.Amd),
-            new StandardMotionProfile(new MotionAxisMap(1, 0, 1, 1, -1, 1), new MotionAxisMap(1, 0, 1, -1, 1, -1))),
+            // HC's Apex map assigns both X and Z to output Y: the later Z wins and output Z remains zero.
+            // Preserve that published mapping rather than inventing a physical orientation.
+            new StandardMotionProfile(new MotionAxisMap(1, 2, -1, 1, -1, 1),
+                new MotionAxisMap(1, 2, -1, -1, 1, -1))),
         Model("oxp-x2", "ONEXPLAYER X2", "OneXPlayerX2", ["ONEXPLAYER X2"], 3, 35,
             new OneXProtocolProfile(OneXEcKind.Wmi, 0x44A, 0x44B, 0, 184, OneXLightingKind.HidV1, VendorButtons: true,
                 X2: true, Temperature: true), X2Motion, CpuPowerKind.Intel),
@@ -234,8 +239,7 @@ internal static class OneXPlayerModels
     {
         return new ProfiledDeviceModel
         {
-            Definition = new HandheldDefinition(id, FamilyId, name,
-                source.StartsWith("AOKZOE", StringComparison.Ordinal) ? "aokzoe" : "onexplayer")
+            Definition = new HandheldDefinition(id, FamilyId, name, id)
             {
                 HardwareAccess = DeviceHardwareAccess.PawnIo | (cpu == CpuPowerKind.Intel
                     ? DeviceHardwareAccess.IntelKx
@@ -244,7 +248,7 @@ internal static class OneXPlayerModels
             SourceFamilyId = source, Manufacturers = OneNetbook, Products = products,
             SystemProducts = HhdProducts(source), Cpu = cpu,
             MinimumWatts = minimum, MaximumWatts = maximum, Controller = Controller, Motion = motion,
-            PowerPresets = Presets(source, minimum, maximum),
+            PowerPresets = Presets(source, minimum, maximum, cpu),
             KeyboardChords = Chords(source, protocol),
             NativeRoles =
             [
@@ -276,29 +280,35 @@ internal static class OneXPlayerModels
         };
     }
 
-    private static IReadOnlyList<DevicePowerPreset> Presets(string source, int minimum, int maximum)
+    private static IReadOnlyList<DevicePowerPreset> Presets(string source, int minimum, int maximum, CpuPowerKind cpu)
     {
         // HC IDevice's default profile uses its 15 W sustained/slow pair. X1AMD/Intel
         // additionally author 15/30/35 W profiles. PerformanceManager:414-423 clamps every
         // profile target to the model cTDP (X1AMD:15-30 W, X1Intel:6-35 W), including its 64 W peak.
         List<DevicePowerPreset> presets =
         [
-            new("default", "Default", 15, 15, DevicePowerMode.Balanced)
+            new("default", "Default", 15, 15, DevicePowerMode.Balanced) { FastWatts = 20 }
         ];
         if (source is "OneXPlayerX1AMD" or "OneXPlayerX1Intel" or "OneXPlayerX1Pro")
         {
             presets.AddRange(
             [
-                new DevicePowerPreset("battery", "Battery", 15, 15, DevicePowerMode.BetterBattery),
-                new DevicePowerPreset("balanced", "Balanced", 30, 30, DevicePowerMode.Balanced),
+                new DevicePowerPreset("battery", "Battery", 15, 15, DevicePowerMode.BetterBattery)
+                    { FastWatts = 15 },
+                new DevicePowerPreset("balanced", "Balanced", 30, 30, DevicePowerMode.Balanced)
+                    { FastWatts = 30 },
                 new DevicePowerPreset("performance", "Performance", 35, 35, DevicePowerMode.BestPerformance)
+                    { FastWatts = 64 }
             ]);
         }
 
         return presets.Select(preset => preset with
         {
             SustainedWatts = Math.Clamp(preset.SustainedWatts, minimum, maximum),
-            SlowWatts = Math.Clamp(preset.SlowWatts, minimum, maximum)
+            SlowWatts = Math.Clamp(preset.SlowWatts, minimum, maximum),
+            FastWatts = cpu == CpuPowerKind.Amd
+                ? Math.Clamp(preset.FastWatts ?? preset.SlowWatts, minimum, maximum)
+                : null
         }).ToArray();
     }
 

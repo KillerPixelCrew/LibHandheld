@@ -7,6 +7,8 @@ namespace LibHandheld.Internal.Devices;
 
 internal sealed partial class ProfiledPowerService
 {
+    private bool IndependentPowerLimits => model?.IndependentPowerLimits == true;
+
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => model is null
         ? []
         :
@@ -19,17 +21,31 @@ internal sealed partial class ProfiledPowerService
                     PairedPowerLimitId = CapabilityIds.PowerBoost, PowerPresets = model.PowerPresets
                 },
             ProviderControls.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
-                DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, false)
+                DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, false),
+            .. IndependentPowerLimits
+                ? new[]
+                {
+                    ProviderControls.Integer(CapabilityIds.PowerFast, CapabilityRole.PowerFastLimit,
+                        DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt,
+                        true, false) with { Display = CapabilityDescriptors.Label("Fast PPT limit") }
+                }
+                : []
         ];
 
     internal override IReadOnlyList<CapabilityState> States =>
     [
         ProviderControls.State(CapabilityIds.PowerSustained, State == DeviceServiceState.Owned,
-            Observed is { } limits ? CapabilityValue.Integer((int)Math.Round(limits.SustainedWatts)) : null, ObservedAt,
-            Reason),
+            PowerObservation(CpuPowerLimit.Sustained), PowerObservationTime(CpuPowerLimit.Sustained), Reason),
         ProviderControls.State(CapabilityIds.PowerBoost, State == DeviceServiceState.Owned,
-            Observed is { } slowLimits ? CapabilityValue.Integer((int)Math.Round(slowLimits.SlowWatts)) : null,
-            ObservedAt, Reason)
+            PowerObservation(CpuPowerLimit.Slow), PowerObservationTime(CpuPowerLimit.Slow), Reason),
+        .. IndependentPowerLimits
+            ? new[]
+            {
+                ProviderControls.State(CapabilityIds.PowerFast,
+                    State == DeviceServiceState.Owned && _transport?.SupportsIndependentLimits == true,
+                    PowerObservation(CpuPowerLimit.Boost), PowerObservationTime(CpuPowerLimit.Boost), Reason)
+            }
+            : []
     ];
 
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
@@ -41,22 +57,75 @@ internal sealed partial class ProfiledPowerService
                 "CPU power access is unavailable.");
         }
 
-        if (!DevicePowerPair.TryResolve(command, Descriptors, out var sustained, out var boost, out var error))
+        var fastOnly = IndependentPowerLimits && command.CapabilityId == CapabilityIds.PowerFast;
+        var sustained = 0;
+        var boost = 0;
+        if (!fastOnly && !DevicePowerPair.TryResolve(command, Descriptors, out sustained, out boost, out var error))
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
         }
 
         var dispatched = false;
+        if (IndependentPowerLimits && command.ApplyUniformPowerTarget
+            && !DevicePowerPair.Fits(command.RequestedValue!.IntegerValue!.Value,
+                Descriptors.Single(descriptor => descriptor.CapabilityId == CapabilityIds.PowerFast)))
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
+                "The uniform target is outside the independent fast PPT range.");
+        }
+
         try
         {
-            await WriteAsync(new CpuPowerLimits(sustained, boost, boost), firmware, token, () => dispatched = true)
-                .ConfigureAwait(false);
+            if (IndependentPowerLimits)
+            {
+                if (_transport?.SupportsIndependentLimits != true)
+                {
+                    return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
+                        "Independent SMU power limits are unavailable on this transport.");
+                }
+
+                if (fastOnly)
+                {
+                    await WriteIndependentAsync(CpuPowerLimit.Boost, command.RequestedValue!.IntegerValue!.Value,
+                        firmware, token, () => dispatched = true).ConfigureAwait(false);
+                }
+                else
+                {
+                    await WriteIndependentAsync(CpuPowerLimit.Sustained, sustained, firmware, token,
+                        () => dispatched = true).ConfigureAwait(false);
+                    await WriteIndependentAsync(CpuPowerLimit.Slow, boost, firmware, token,
+                        () => dispatched = true).ConfigureAwait(false);
+                    if (command.ApplyUniformPowerTarget)
+                    {
+                        await WriteIndependentAsync(CpuPowerLimit.Boost,
+                            command.RequestedValue!.IntegerValue!.Value, firmware, token,
+                            () => dispatched = true).ConfigureAwait(false);
+                    }
+                }
+            }
+            else
+            {
+                await WriteAsync(new CpuPowerLimits(sustained, boost, boost), firmware, token, () => dispatched = true)
+                    .ConfigureAwait(false);
+            }
             return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return CommandResults.TransportFailure(command, dispatched, exception);
         }
+    }
+
+    private CapabilityValue? PowerObservation(CpuPowerLimit limit)
+    {
+        return _writtenLimits.TryGetValue(limit, out var written)
+            ? CapabilityValue.Integer((int)Math.Round(written.Watts))
+            : null;
+    }
+
+    private DateTimeOffset? PowerObservationTime(CpuPowerLimit limit)
+    {
+        return _writtenLimits.TryGetValue(limit, out var written) ? written.At : null;
     }
 }
 
@@ -86,6 +155,12 @@ internal sealed partial class ProfiledFanService
                     DisplayKey.FanSpeed, 0, 65535, CapabilityUnit.Rpm, false));
             }
 
+            if (profile.ObserveDuty)
+            {
+                descriptors.Add(ProviderControls.Integer("fan.measured-duty", CapabilityRole.Telemetry,
+                    DisplayKey.FanSpeed, 0, 100, CapabilityUnit.Percent, false));
+            }
+
             return descriptors;
         }
     }
@@ -96,6 +171,14 @@ internal sealed partial class ProfiledFanService
             Mode is null ? null : CapabilityValue.Choice(Mode), ObservedAt, Reason),
         ProviderControls.State("fan.duty", State == DeviceServiceState.Owned,
             Duty is { } duty ? CapabilityValue.Integer(duty) : null, ObservedAt, Reason),
+        .. !profile.ObserveDuty
+            ? Array.Empty<CapabilityState>()
+            : new[]
+            {
+                ProviderControls.State("fan.measured-duty", State == DeviceServiceState.Owned,
+                    MeasuredDuty is { } measured ? CapabilityValue.Integer(measured) : null,
+                    MeasuredDutyObservedAt, Reason)
+            },
         .. profile.RpmHighAddress is null
             ? Array.Empty<CapabilityState>()
             : new[]

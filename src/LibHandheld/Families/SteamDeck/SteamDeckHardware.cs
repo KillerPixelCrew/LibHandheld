@@ -19,7 +19,7 @@ internal interface ISteamDeckMemory : IDisposable
 }
 
 /// <summary>The pinned InpOut ABI; the pre-existing driver must be ready before DLL loading.</summary>
-internal sealed class SteamDeckMemory : ISteamDeckMemory
+internal sealed partial class SteamDeckMemory : ISteamDeckMemory
 {
     private readonly Lock _gate = new();
     private readonly FileStream _held;
@@ -205,7 +205,8 @@ internal sealed class SteamDeckMemory : ISteamDeckMemory
                                                            address == selected + 0x16292 * 4))
                || (address, width) is (0xFE700C4C, 16) or (0xFE7003BD, 8) or (0xFE700C01, 8)
                or (0xFE700B92, 16) or (0xFE700B95, 16) or (0xFE700B97, 16)
-               or (0xFE7003B0, 16) or (0xFE70046E, 16) or (0xFE700B9F, 32) or (0xFE700C01, 8);
+               or (0xFE7003B0, 16) or (0xFE70046E, 16) or (0xFE700B9F, 32) or (0xFE700B9F, 8)
+               or (0xFE700C01, 8);
     }
 
     private T Export<T>(string name) where T : Delegate

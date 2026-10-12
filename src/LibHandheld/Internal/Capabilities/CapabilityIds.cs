@@ -14,6 +14,9 @@ internal static class CapabilityIds
     /// <summary>The boost power limit (PL2, SPPT and FPPT).</summary>
     public const string PowerBoost = "power.boost-limit";
 
+    /// <summary>The independent AMD fast PPT limit.</summary>
+    public const string PowerFast = "power.fast-limit";
+
     /// <summary>The firmware's performance scenario or mode.</summary>
     public const string Scenario = "power.scenario";
 

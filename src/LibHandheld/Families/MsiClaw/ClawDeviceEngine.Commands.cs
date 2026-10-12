@@ -126,6 +126,8 @@ internal sealed partial class ClawDeviceEngine
                 command,
                 command.RequestedValue!.IntegerValue!.Value,
                 cancellationToken),
+            ClawChargeLimitCapability.ProtectionId => chargeLimit.ApplyProtectionAsync(
+                command, command.RequestedValue!.BooleanValue!.Value, cancellationToken),
             CapabilityIds.FanMode => JournalCommandAsync(
                 ServiceIds.Fans,
                 binding,
@@ -196,7 +198,7 @@ internal sealed partial class ClawDeviceEngine
         return capabilityId switch
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power,
-            CapabilityIds.ChargeLimit => _chargeLimit,
+            CapabilityIds.ChargeLimit or ClawChargeLimitCapability.ProtectionId => _chargeLimit,
             CapabilityIds.FanMode or CapabilityIds.FanCurve or "fan.duty" => _fans,
             CapabilityIds.FanRpm or CapabilityIds.Temperature => _telemetry,
             CapabilityIds.LightingBrightness or CapabilityIds.LightingColor => _lighting,

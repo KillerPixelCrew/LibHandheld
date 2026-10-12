@@ -90,20 +90,37 @@ internal static class NeptuneReport
         return Math.Clamp(BinaryPrimitives.ReadInt16LittleEndian(value[offset..]) / 32767f, 0, 1);
     }
 
-    internal static void EncodeRumble(Span<byte> packet, HapticOutputFrame frame)
+    internal static void EncodeHapticPulse(Span<byte> packet, NativeHapticPulse pulse, int timestamp)
     {
-        packet.Clear();
-        packet[1] = 0xEB;
-        packet[2] = 9;
-        BinaryPrimitives.WriteUInt16LittleEndian(packet[6..], Speed(frame.LowFrequency));
-        BinaryPrimitives.WriteUInt16LittleEndian(packet[8..], Speed(frame.HighFrequency));
-        packet[10] = 2;
-
-        static ushort Speed(float value)
+        if (packet.Length < 17)
         {
-            return float.IsFinite(value)
-                ? checked((ushort)Math.Round(Math.Clamp(value, 0, 1) * ushort.MaxValue))
-                : (ushort)0;
+            throw new ArgumentException("A native Neptune haptic feature report requires at least 17 bytes.", nameof(packet));
         }
+
+        if (pulse.Side is not (HapticActuatorSide.Left or HapticActuatorSide.Right)
+            || pulse.Style is not (HapticPulseStyle.Disabled or HapticPulseStyle.Weak or HapticPulseStyle.Strong))
+        {
+            throw new ArgumentOutOfRangeException(nameof(pulse));
+        }
+
+        packet.Clear();
+        // HC NCHapticPacket2 has default 4-byte integer alignment, then Windows adds report ID zero.
+        packet[1] = 0xEA;
+        packet[2] = 13;
+        packet[3] = (byte)pulse.Side;
+        packet[4] = (byte)pulse.Style;
+        packet[6] = unchecked((byte)pulse.Intensity);
+        packet[7] = 4;
+        BinaryPrimitives.WriteInt32LittleEndian(packet[9..], timestamp);
+        BinaryPrimitives.WriteInt32LittleEndian(packet[13..], timestamp);
+    }
+
+    internal static NativeHapticPulse MotorPulse(HapticActuatorSide side, float intensity)
+    {
+        // HC maps byte motor feedback from -2..10 dB, then subtracts 5 for Neptune's signed field.
+        return !float.IsFinite(intensity) || intensity <= 0
+            ? new NativeHapticPulse(side, HapticPulseStyle.Disabled, 0)
+            : new NativeHapticPulse(side, HapticPulseStyle.Weak,
+                checked((sbyte)(-7 + 12 * Math.Clamp(intensity, 0, 1))));
     }
 }

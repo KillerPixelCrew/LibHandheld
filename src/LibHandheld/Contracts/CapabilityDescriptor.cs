@@ -61,6 +61,18 @@ public sealed record CapabilityDescriptor
     /// <summary>Legal options for a choice capability.</summary>
     public IReadOnlyList<CapabilityChoice> Choices { get; init; } = [];
 
+    /// <summary>Source-declared starting inputs for a curve editor when no current curve can be read.</summary>
+    /// <remarks>These form an editable starting template, never an observed hardware value. A reported curve supplies its own inputs instead.</remarks>
+    public IReadOnlyList<int> CurveInputs
+    {
+        get;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            field = Array.AsReadOnly<int>([.. value]);
+        }
+    } = [];
+
     /// <summary>
     ///     Optional device-authored shortcuts on the single-instance sustained power limit.
     ///     Empty by default. Assignment takes a read-only snapshot so later edits to the supplied

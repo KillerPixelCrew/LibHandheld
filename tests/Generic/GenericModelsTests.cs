@@ -17,7 +17,7 @@ public sealed class GenericModelsTests
         Assert.NotNull(profile);
         Assert.Equal(expected, profile.Definition.Id);
         Assert.Single(profile.ServiceFactories);
-        Assert.Equal(new Vector3(2, -3, -1), profile.Motion!.Gyro.Apply(new Vector3(1, 2, 3)));
+        Assert.Equal(new Vector3(3, -1, -2), profile.Motion!.Gyro.Apply(new Vector3(1, 2, 3)));
     }
 
     [Fact]

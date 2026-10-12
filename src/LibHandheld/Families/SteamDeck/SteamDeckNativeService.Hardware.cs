@@ -57,6 +57,8 @@ internal sealed partial class SteamDeckNativeService
         Range("fan.rpm", CapabilityRole.FanMeasuredRpm, "Fan RPM", 0, 65535, CapabilityUnit.Rpm, false),
         Range("charge.limit", CapabilityRole.ChargeLimit, "Battery charge ceiling", 0, 100, CapabilityUnit.Percent,
             true),
+        Range("battery.measured-charge-ceiling", CapabilityRole.Telemetry, "Measured charge ceiling", 0, 100,
+            CapabilityUnit.Percent, false),
         Range("battery.temperature", CapabilityRole.Telemetry, "Battery temperature", -40, 150, CapabilityUnit.Celsius,
             false)
     ];
@@ -64,6 +66,8 @@ internal sealed partial class SteamDeckNativeService
     private int? _batteryTemperature;
     private DateTimeOffset? _chargeAt;
     private int? _chargeLimit;
+    private int? _measuredChargeLimit;
+    private DateTimeOffset? _measuredChargeAt;
     private string? _fanMode;
     private int? _fanRpm;
     private int? _fanTarget;
@@ -136,6 +140,34 @@ internal sealed partial class SteamDeckNativeService
         {
             _hardwareReason = new CapabilityReason(CapabilityReasonCode.TransportFaulted,
                 "Valve EC observation is unavailable; write support is retained.");
+        }
+    }
+
+    private bool RefreshChargeMeasurement()
+    {
+        _measuredChargeLimit = null;
+        _measuredChargeAt = null;
+        if (_memory is null || _firmware?.ChargeLimit != true)
+        {
+            return true;
+        }
+
+        try
+        {
+            var raw = HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2),
+                () => _memory.Read(ChargeLimit, 8));
+            if (raw > 100)
+            {
+                return false;
+            }
+
+            _measuredChargeLimit = (int)raw;
+            _measuredChargeAt = DateTimeOffset.UtcNow;
+            return true;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return false;
         }
     }
 
@@ -298,6 +330,8 @@ internal sealed partial class SteamDeckNativeService
             _fanRpm = null;
             _fanTarget = null;
             _chargeLimit = null;
+            _measuredChargeLimit = null;
+            _measuredChargeAt = null;
             _batteryTemperature = null;
             _fanMode = null;
             _rpmAt = null;
@@ -325,7 +359,9 @@ internal sealed partial class SteamDeckNativeService
         foreach (var descriptor in HardwareDescriptors)
         {
             var available = _memory is not null &&
-                            (descriptor.Role != CapabilityRole.ChargeLimit || _firmware?.ChargeLimit == true);
+                            (descriptor.Role != CapabilityRole.ChargeLimit &&
+                             descriptor.CapabilityId != "battery.measured-charge-ceiling" ||
+                             _firmware?.ChargeLimit == true);
             var value = descriptor.CapabilityId switch
             {
                 "fan.mode" => _fanMode is null ? null : CapabilityValue.Choice(_fanMode),
@@ -337,6 +373,8 @@ internal sealed partial class SteamDeckNativeService
                     : null,
                 "fan.rpm" => _fanRpm is { } measured ? CapabilityValue.Integer(measured) : null,
                 "charge.limit" => _chargeLimit is { } charge ? CapabilityValue.Integer(charge) : null,
+                "battery.measured-charge-ceiling" => _measuredChargeLimit is { } ceiling
+                    ? CapabilityValue.Integer(ceiling) : null,
                 "battery.temperature" => _batteryTemperature is { } temp ? CapabilityValue.Integer(temp) : null,
                 _ => null
             };
@@ -351,7 +389,8 @@ internal sealed partial class SteamDeckNativeService
                     : descriptor.CapabilityId switch
                     {
                         "fan.mode" => _modeAt, "fan.duty" or "fan.target-rpm" => _targetAt, "fan.rpm" => _rpmAt,
-                        "charge.limit" => _chargeAt, "battery.temperature" => _temperatureAt, _ => null
+                        "charge.limit" => _chargeAt, "battery.measured-charge-ceiling" => _measuredChargeAt,
+                        "battery.temperature" => _temperatureAt, _ => null
                     }
             };
         }

@@ -229,7 +229,7 @@ internal sealed class AyaneoNativeService(
             case SecondaryId:
                 _ec.Transaction(() =>
                 {
-                    _ec.WriteByte(0x4F, 0);
+                    _ec.WriteByte(0xFF, 0);
                     _ec.WriteByte(0x4E, (byte)(command.RequestedValue!.IntegerValue!.Value * 255 / 100));
                     return true;
                 });
@@ -366,8 +366,8 @@ internal sealed class AyaneoNativeService(
             {
                 1 => (green, red, blue),
                 2 => (green, blue, red),
-                3 => (blue, red, green),
-                4 => (blue, green, red),
+                3 => (green, red, blue),
+                4 => (green, blue, red),
                 _ => (red, green, blue)
             } : (red, green, blue);
         var address = (byte)(zone * 3);

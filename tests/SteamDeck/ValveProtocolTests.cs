@@ -82,19 +82,59 @@ public sealed class ValveProtocolTests
     }
 
     [Fact]
-    public void NativeRumbleEncodesBothActuatorsAndExplicitStop()
+    public void NativeHapticPulseRetainsReportIdStructAlignmentAndBothTimestamps()
     {
         var report = new byte[65];
-        NeptuneReport.EncodeRumble(report,
-            new HapticOutputFrame { Timestamp = DateTimeOffset.UnixEpoch, LowFrequency = 1, HighFrequency = 0.5f });
-        Assert.Equal(0xEB, report[1]);
-        Assert.Equal(9, report[2]);
-        Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(report.AsSpan(4)));
-        Assert.Equal(65535, BinaryPrimitives.ReadUInt16LittleEndian(report.AsSpan(6)));
-        Assert.Equal(32768, BinaryPrimitives.ReadUInt16LittleEndian(report.AsSpan(8)));
-        NeptuneReport.EncodeRumble(report, HapticOutputFrame.Stop(DateTimeOffset.UnixEpoch));
-        Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(report.AsSpan(6)));
-        Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(report.AsSpan(8)));
+        NeptuneReport.EncodeHapticPulse(report,
+            new NativeHapticPulse(HapticActuatorSide.Left, HapticPulseStyle.Strong, -7), unchecked((int)0xABCDEF12));
+        Assert.Equal(0, report[0]);
+        Assert.Equal(0xEA, report[1]);
+        Assert.Equal(13, report[2]);
+        Assert.Equal(1, report[3]);
+        Assert.Equal(2, report[4]);
+        Assert.Equal(0, report[5]);
+        Assert.Equal(0xF9, report[6]);
+        Assert.Equal(4, report[7]);
+        Assert.Equal(0, report[8]);
+        Assert.Equal(unchecked((int)0xABCDEF12), BinaryPrimitives.ReadInt32LittleEndian(report.AsSpan(9)));
+        Assert.Equal(unchecked((int)0xABCDEF12), BinaryPrimitives.ReadInt32LittleEndian(report.AsSpan(13)));
+        Assert.All(report.Skip(17), value => Assert.Equal(0, value));
+        NeptuneReport.EncodeHapticPulse(report,
+            NeptuneReport.MotorPulse(HapticActuatorSide.Right, 0), timestamp: 5);
+        Assert.Equal(0, report[3]);
+        Assert.Equal(0, report[4]);
+        Assert.Equal(0, report[6]);
+    }
+
+    [Theory]
+    [InlineData(0, HapticPulseStyle.Disabled, 0)]
+    [InlineData(1f / 255, HapticPulseStyle.Weak, -6)]
+    [InlineData(128f / 255, HapticPulseStyle.Weak, 0)]
+    [InlineData(1, HapticPulseStyle.Weak, 5)]
+    [InlineData(2, HapticPulseStyle.Weak, 5)]
+    [InlineData(float.NaN, HapticPulseStyle.Disabled, 0)]
+    public void MotorEnvelopeUsesHcSignedIntensity(float intensity, HapticPulseStyle style, sbyte expected)
+    {
+        Assert.Equal(new NativeHapticPulse(HapticActuatorSide.Left, style, expected),
+            NeptuneReport.MotorPulse(HapticActuatorSide.Left, intensity));
+    }
+
+    [Theory]
+    [InlineData(ButtonHapticStrength.Low, false, HapticPulseStyle.Weak, -7)]
+    [InlineData(ButtonHapticStrength.Low, true, HapticPulseStyle.Weak, -7)]
+    [InlineData(ButtonHapticStrength.Medium, false, HapticPulseStyle.Strong, -1)]
+    [InlineData(ButtonHapticStrength.Medium, true, HapticPulseStyle.Strong, -4)]
+    [InlineData(ButtonHapticStrength.High, false, HapticPulseStyle.Strong, 5)]
+    [InlineData(ButtonHapticStrength.High, true, HapticPulseStyle.Strong, 2)]
+    public void ButtonFeedbackReversesActuatorAndSoftensRelease(ButtonHapticStrength strength, bool released,
+        HapticPulseStyle style, sbyte intensity)
+    {
+        Assert.Equal(new NativeHapticPulse(HapticActuatorSide.Right, style, intensity),
+            NativeHapticPulse.ForButton(CanonicalButtons.RearPaddle1, strength, released));
+        Assert.Equal(new NativeHapticPulse(HapticActuatorSide.Left, style, intensity),
+            NativeHapticPulse.ForButton(CanonicalButtons.A, strength, released));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            NativeHapticPulse.ForButton(CanonicalButtons.A | CanonicalButtons.B, strength, released));
     }
 
     [Fact]
@@ -108,7 +148,16 @@ public sealed class ValveProtocolTests
         Assert.False(SteamDeckMemory.IsAllowed(0xFE700000, 8, null));
         Assert.True(SteamDeckMemory.IsAllowed(0xFE700C01, 8, null));
         Assert.True(SteamDeckMemory.IsAllowed(0xFE700B9F, 32, null));
-        Assert.False(SteamDeckMemory.IsAllowed(0xFE700B9F, 8, null));
+        Assert.True(SteamDeckMemory.IsAllowed(0xFE700B9F, 8, null));
+    }
+
+    [Fact]
+    public void LiveClockGettersHaveDistinctHcCommandsAndCannotBecomeLimitSetters()
+    {
+        Assert.Equal(0x1Bu, SteamDeckNativeService.ClockMeasurementCommand("steamdeck.gpu-clock-current"));
+        Assert.Equal(0x1Cu, SteamDeckNativeService.ClockMeasurementCommand("steamdeck.fabric-clock-current"));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SteamDeckNativeService.ClockMeasurementCommand("steamdeck.gpu-clock-min"));
     }
 
     [Fact]

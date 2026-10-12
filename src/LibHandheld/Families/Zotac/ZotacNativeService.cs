@@ -1,8 +1,10 @@
 using System.Management;
 using System.Runtime.InteropServices;
 using LibHandheld.Contracts;
+using LibHandheld.Families.SteamDeck;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Windows;
 
@@ -26,6 +28,7 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
     private DeviceRecoveryJournal? _journal;
     private bool _manage = context.ControllerManagementEnabled;
     private uint _ram;
+    private SteamDeckMemory? _cmos;
     private ManagementObject? _uma;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Array.AsReadOnly(Lighting.Concat(new[]
@@ -40,7 +43,7 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
     internal override IReadOnlyList<CapabilityState> States => Array.AsReadOnly(Descriptors.Select(descriptor =>
     {
         var available = descriptor.CapabilityId == "firmware.vram-addition"
-            ? _uma is not null && _ram < 64
+            ? (_cmos is not null || _uma is not null) && _ram < 64
             : State == DeviceServiceState.Owned;
         var value = _observed.Value(descriptor.CapabilityId, descriptor.InstanceId);
         return new CapabilityState
@@ -50,6 +53,9 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
             Reason = descriptor.CapabilityId == "firmware.vram-addition" && _ram >= 64
                 ? new CapabilityReason(CapabilityReasonCode.Unsupported,
                     "The 8-bit UMA encoding cannot represent a 64 GB base allocation.")
+                : descriptor.CapabilityId == "firmware.vram-addition" && _cmos is null && _uma is null
+                    ? new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
+                        "The pre-installed InpOut CMOS route and Zone UMAInterface WMI alternative are unavailable.")
                 : null,
             Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
             ObservedAt = _observed.Time(descriptor.CapabilityId, descriptor.InstanceId)
@@ -63,6 +69,19 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
     {
         token.ThrowIfCancellationRequested();
         _hid = ZotacCommandTransport.Open();
+        if (!string.IsNullOrWhiteSpace(context.Resources.InpOutPath))
+        {
+            try
+            {
+                _cmos = SteamDeckMemory.Open(context.Resources.InpOutPath);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                _cmos = null;
+                DeviceTrace.Change("zotac-controls", "uma-cmos", exception.Message, DeviceTraceLevel.Warn);
+            }
+        }
+
         try
         {
             _uma = WmiProvider.TryOpen("root\\WMI", "SELECT * FROM UMAInterface");
@@ -98,8 +117,10 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
             }
         }
 
-        return Set(_hid is not null || _uma is not null ? DeviceServiceState.Owned : DeviceServiceState.Passive,
-            _hid is null && _uma is null ? Missing("The Zone vendor HID and UMA WMI providers are absent.") : null);
+        return Set(_hid is not null || _cmos is not null || _uma is not null
+                ? DeviceServiceState.Owned : DeviceServiceState.Passive,
+            _hid is null && _cmos is null && _uma is null
+                ? Missing("The Zone vendor HID, pre-installed InpOut and UMA WMI providers are absent.") : null);
     }
 
     internal override async ValueTask SetControllerManagementAsync(bool enabled, CancellationToken token)
@@ -173,15 +194,25 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         {
             if (command.CapabilityId == "firmware.vram-addition")
             {
-                if (_uma is null)
+                if (_cmos is null && _uma is null)
                 {
                     return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
-                        "The Zone UMAInterface WMI provider is absent.");
+                        "The pre-installed InpOut CMOS route and Zone UMAInterface WMI alternative are unavailable.");
                 }
 
-                using var input = _uma.GetMethodParameters("SetEcValue");
+                var allocation = EncodeVram(_ram, checked((uint)command.RequestedValue!.IntegerValue!.Value));
+                if (_cmos is not null)
+                {
+                    token.ThrowIfCancellationRequested();
+                    dispatched = true;
+                    _cmos.WriteZotacUma(allocation);
+                    _observed.Written(command.CapabilityId, command.RequestedValue!, command.InstanceId);
+                    return CommandResults.Applied(command);
+                }
+
+                using var input = _uma!.GetMethodParameters("SetEcValue");
                 input["Index"] = (ushort)122;
-                input["Value"] = EncodeVram(_ram, checked((uint)command.RequestedValue!.IntegerValue!.Value));
+                input["Value"] = allocation;
                 token.ThrowIfCancellationRequested();
                 dispatched = true;
                 using var output = WmiProvider.Invoke(_uma, "SetEcValue", input);
@@ -277,6 +308,8 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
             _hid = null;
             _uma?.Dispose();
             _uma = null;
+            _cmos?.Dispose();
+            _cmos = null;
             _observed.Clear();
         }
     }
@@ -288,6 +321,8 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         _hid = null;
         _uma?.Dispose();
         _uma = null;
+        _cmos?.Dispose();
+        _cmos = null;
         _observed.Clear();
         return ValueTask.CompletedTask;
     }

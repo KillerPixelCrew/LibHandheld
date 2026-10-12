@@ -79,15 +79,12 @@ internal sealed class AyaneoSuperJoy : IAsyncDisposable
         var frame = Command(0x09);
         frame[3] = 0x21;
         var mode = !enabled ? (byte)0xFF : effect switch { "pulse" => (byte)2, "rainbow" => (byte)3, _ => (byte)1 };
-        WriteColor(frame.AsSpan(8, 4), rightRgb, brightness, mode);
-        WriteColor(frame.AsSpan(12, 4), leftRgb, brightness, mode);
+        var level = enabled ? Math.Clamp(brightness, 0, 100) : 0;
+        WriteColor(frame.AsSpan(8, 4), rightRgb, level, mode);
+        WriteColor(frame.AsSpan(12, 4), leftRgb, level, mode);
         frame[20] = eject;
-        frame[22] = 0x33;
-        frame[23] = 0x22;
         frame[24] = vibration;
         frame[32] = 1;
-        frame[37] = 100;
-        frame[38] = 100;
         Checksum(frame);
         return frame;
     }

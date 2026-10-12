@@ -287,7 +287,7 @@ internal sealed class OneXNativeService(
                         }
 
                         await ApplyColorAsync("primary", token, () => sent = true).ConfigureAwait(false);
-                        if (SecondarySides().Count != 0)
+                        if (SecondarySides().Count != 0 && profile.Lighting != OneXLightingKind.Serial)
                         {
                             await ApplyColorAsync("secondary", token, () => sent = true).ConfigureAwait(false);
                         }
@@ -335,7 +335,7 @@ internal sealed class OneXNativeService(
         {
             dispatch();
             _lights!.Write(OneXCommandCodec.Lighting(profile.Lighting,
-                _effect == "off" ? "solid" : _effect, _colors[zone], side), token);
+                ColorEffect(profile.Lighting, zone, _effect), _colors[zone], side), token);
             await Gap(token).ConfigureAwait(false);
         }
     }
@@ -343,6 +343,13 @@ internal sealed class OneXNativeService(
     private Task Gap(CancellationToken token)
     {
         return Task.Delay(LightingDelay(profile.Lighting), token);
+    }
+
+    internal static string ColorEffect(OneXLightingKind kind, string zone, string effect)
+    {
+        // HC's serial presets address controller position zero only. Rear positions retain their
+        // independently selected solid color, including when authored under a controller preset.
+        return effect == "off" || kind == OneXLightingKind.Serial && zone == "secondary" ? "solid" : effect;
     }
 
     internal static int LightingDelay(OneXLightingKind kind)
@@ -380,6 +387,12 @@ internal sealed class OneXNativeService(
         token.ThrowIfCancellationRequested();
         if (_ec is not null)
         {
+            if (profile.X2 || profile.Three)
+            {
+                Read("fan.measured-duty", profile.FanDuty,
+                    raw => CapabilityValue.Integer(DecodeDuty(profile, raw)));
+            }
+
             if (profile.Temperature)
             {
                 Read(CapabilityIds.Temperature, 0x470,
@@ -388,6 +401,11 @@ internal sealed class OneXNativeService(
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    internal override ValueTask RefreshTelemetryAsync(CancellationToken token)
+    {
+        return RefreshAsync(token);
     }
 
     private void Read(string id, ushort address, Func<byte, CapabilityValue?> convert)
@@ -401,6 +419,8 @@ internal sealed class OneXNativeService(
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
+            _observed.Remove((id, null));
+            _observedAt.Remove((id, null));
         }
     }
 
@@ -534,6 +554,11 @@ internal sealed class OneXNativeService(
                 false),
             Range("fan.duty", CapabilityRole.FanDuty, "Fan speed", 0, 100, CapabilityUnit.Percent, true, false)
         ];
+        if (profile.X2 || profile.Three)
+        {
+            descriptors.Add(Range("fan.measured-duty", CapabilityRole.Telemetry, "Measured fan duty", 0, 100,
+                CapabilityUnit.Percent, false, false));
+        }
         if (profile.Temperature)
         {
             descriptors.Add(Range(CapabilityIds.Temperature, CapabilityRole.Telemetry, "CPU temperature", 0, 110,
@@ -591,6 +616,12 @@ internal sealed class OneXNativeService(
         }
 
         return Array.AsReadOnly(descriptors.ToArray());
+    }
+
+    internal static int DecodeDuty(OneXProtocolProfile profile, byte raw)
+    {
+        return Math.Clamp((int)Math.Round((raw - profile.MinimumDuty) * 100d /
+            (profile.MaximumDuty - profile.MinimumDuty)), 0, 100);
     }
 
     private IEmbeddedController OpenAcpi()

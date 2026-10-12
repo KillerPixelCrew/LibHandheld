@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
@@ -25,7 +26,7 @@ internal interface ILegionHid : IAsyncDisposable
 }
 
 /// <summary>Command collection and controller acquisition are independent; releasing input retains lighting.</summary>
-internal sealed class WindowsLegionHid : ILegionHid
+internal sealed partial class WindowsLegionHid : ILegionHid
 {
     private readonly Lock _output = new();
     private readonly long[] _pressIds = new long[14];
@@ -260,6 +261,7 @@ internal sealed class WindowsLegionHid : ILegionHid
         {
             await StopAsync(CancellationToken.None).ConfigureAwait(false);
             await StopReaderAsync().ConfigureAwait(false);
+            _touch.ConfigureTiming(ReadGestureMilliseconds(), ReadGestureMilliseconds());
             _input = HidDevices.OpenStream(source);
             _readerCancellation = new CancellationTokenSource();
         }
@@ -325,6 +327,17 @@ internal sealed class WindowsLegionHid : ILegionHid
             _reader = ReadAsync(model, source, sink, token);
         }
     }
+
+    private static uint ReadGestureMilliseconds()
+    {
+        var duration = 500u;
+        // HC uses SPI_GETMOUSEHOVERTIME for both tablet gesture delays.
+        return SystemParametersInfo(action: 0x006A, parameter: 0, value: ref duration, flags: 0) ? duration : 500u;
+    }
+
+    [LibraryImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SystemParametersInfo(uint action, uint parameter, ref uint value, uint flags);
 
     private async ValueTask StopReaderAsync()
     {
@@ -559,16 +572,29 @@ internal sealed class WindowsLegionHid : ILegionHid
 internal sealed class LegionTouchState
 {
     private bool _double;
+    private TimeSpan _doubleTapDelay;
     private DateTimeOffset _down;
     private DateTimeOffset _lastUp;
     private float _lastX;
     private float _lastY;
     private bool _long;
+    private TimeSpan _longTapDelay;
     private bool _pending;
     private float _startX;
     private float _startY;
     private bool _touching;
     public bool SecondaryHeld => _long && _touching;
+
+    public LegionTouchState(uint doubleTapMilliseconds = 500, uint longTapMilliseconds = 500)
+    {
+        ConfigureTiming(doubleTapMilliseconds, longTapMilliseconds);
+    }
+
+    internal void ConfigureTiming(uint doubleTapMilliseconds, uint longTapMilliseconds)
+    {
+        _doubleTapDelay = TimeSpan.FromMilliseconds(doubleTapMilliseconds > 0 ? doubleTapMilliseconds : 300);
+        _longTapDelay = TimeSpan.FromMilliseconds(longTapMilliseconds > 0 ? longTapMilliseconds : 500);
+    }
 
     public CanonicalControllerSample Apply(CanonicalControllerSample sample)
     {
@@ -576,7 +602,7 @@ internal sealed class LegionTouchState
         var click = false;
         if (touched && !_touching)
         {
-            _double = _pending && sample.Timestamp - _lastUp < TimeSpan.FromMilliseconds(500) &&
+            _double = _pending && sample.Timestamp - _lastUp <= _doubleTapDelay &&
                       Distance(sample.RightPadX, sample.RightPadY, _lastX, _lastY) <= 0.48f;
             _pending = false;
             _long = false;
@@ -589,26 +615,36 @@ internal sealed class LegionTouchState
         {
             _lastX = sample.RightPadX;
             _lastY = sample.RightPadY;
-            _long |= !_double && sample.Timestamp - _down >= TimeSpan.FromMilliseconds(500) &&
+            _long |= !_double && sample.Timestamp - _down >= _longTapDelay &&
                      Distance(_lastX, _lastY, _startX, _startY) <= 0.1f;
             click = _double;
         }
         else if (_touching)
         {
-            _pending = !_double && !_long && Distance(_lastX, _lastY, _startX, _startY) <= 0.1f;
+            _pending = !_double && !_long;
             _lastUp = sample.Timestamp;
             _double = false;
             _long = false;
         }
 
-        if (!touched && _pending && sample.Timestamp - _lastUp > TimeSpan.FromMilliseconds(500))
+        if (!touched && _pending && sample.Timestamp - _lastUp > _doubleTapDelay)
         {
-            click = true;
+            click = Distance(_lastX, _lastY, _startX, _startY) <= 0.1f;
             _pending = false;
         }
 
         _touching = touched;
-        return sample with { Buttons = sample.Buttons | (click ? CanonicalButtons.RightPadClick : 0) };
+        var buttons = sample.Buttons;
+        if (_long)
+        {
+            buttons &= ~CanonicalButtons.RightPadTouch;
+        }
+
+        return sample with
+        {
+            Buttons = buttons | (click ? CanonicalButtons.RightPadClick : 0),
+            RightPadForce = _long ? 0 : sample.RightPadForce
+        };
     }
 
     public void Reset()

@@ -118,6 +118,15 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             }
 
             _nativeServices.Clear();
+            var processorClocks = ProcessorClockLimits.For(context.DeviceDefinitionId, context.Identity.ProcessorName);
+            if (_profile.UseStandardServices || !string.IsNullOrWhiteSpace(context.Identity.ProcessorName))
+            {
+                var processor = new ProfiledProcessorService(featureContext, _profile.Cpu,
+                    processorClocks.Minimum, processorClocks.Maximum);
+                _nativeServices.Add(processor);
+                _services.Add(processor);
+            }
+
             foreach (var factory in _profile.ServiceFactories)
             {
                 var service = factory(featureContext);
@@ -532,7 +541,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
         token.ThrowIfCancellationRequested();
         if (_fan is { State: DeviceServiceState.Owned })
         {
-            // The shared fan provider's refresh reads measured RPM only, never duty/control registers.
+            // Only explicitly declared sensors are sampled; accepted control intent is retained.
             await _fan.RefreshAsync(token).ConfigureAwait(false);
         }
 

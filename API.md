@@ -82,6 +82,27 @@ publications. `ApplyHapticsAsync` sends complete motor state; a silent frame sto
 `GetDiagnosticsAsync` returns `IReadOnlyDictionary<string, string>`. `GlyphResources` and
 `OpenGlyphResource(relativePath)` expose embedded authored resources.
 
+All exact definitions have authored glyph selection, including directional, touch and OEM controls.
+Native OEM identifiers accompany their physical glyph mappings. Both consumers use the same original
+artwork; the Avalonia adapter parses compact SVG paths with its own rendering backend.
+
+Default AMD transports expose independent fast PPT alongside the existing sustained/slow pair.
+`SetTdpAsync` updates every declared limit; explicit paired changes retain independently authored
+fast values. Presets and saved custom profiles carry the optional fast target. Processor GPU clocks,
+supported curve/thermal controls and Intel undervolting are ordinary typed descriptor commands, with
+exact model bounds and command availability.
+
+`CurveInputs` supplies legal starting breakpoints for an editor when a native curve is unknown; it
+is neither an observation nor a write. Explicit native measurements stay separate from accepted
+control targets. Valve's charge measurement is requested by an action rather than periodically
+polling settings; live GPU/fabric clocks join telemetry. GPD WIN 5 publishes a read-only native
+bypass-supply observation from its EC; read failure returns unknown and never gates writable
+controls.
+
+`ApplyButtonHapticsAsync` and optional native pulses express supported actuator/style feedback.
+Valve repeats its native motor envelope at 10 ms. Output uncertainty disables only haptics until an
+explicit lifecycle or controller-management action; healthy input remains available.
+
 ## Recovery
 
 One shared `recovery.json` stores service IDs and captured originals for the device. It preserves
