@@ -10,6 +10,36 @@ namespace LibHandheld.Tests.Devices;
 
 public sealed class ProfiledDeviceEngineTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task QuiescingForwardsTheReleaseOfAHeldNativeOemControl(bool stop)
+    {
+        using var directory = new TemporaryDirectory();
+        var source = new FakeOemSource();
+        var profile = GpdModels.All.Single(model => model.Definition.Id == "gpd-win4-8840u") with
+        {
+            UseStandardServices = false, Fan = null, Controller = null, Motion = null, Touchpad = null,
+            KeyboardChords = [], ServiceFactories = [], CreateOemSource = () => source,
+            NativeOemRequiresController = false
+        };
+        await using var engine = new ProfiledDeviceEngine(profile);
+        var host = await Start(engine, directory.Root);
+        source.Press();
+        if (stop)
+        {
+            await engine.StopAsync(new EngineStopContext(Deadline.Never), CancellationToken.None);
+        }
+        else
+        {
+            await engine.SuspendAsync(new EngineQuiesceContext(Deadline.Never), CancellationToken.None);
+        }
+
+        Assert.Equal(new[] { OemControlEdge.Pressed, OemControlEdge.Released },
+            host.OemEvents.Select(input => input.Edge));
+        Assert.Equal(host.OemEvents[0].DeduplicationId, host.OemEvents[1].DeduplicationId);
+    }
+
     [Fact]
     public async Task SharedFanMeasurementsRefreshBeforeHostExpiryWithoutReadingControls()
     {
@@ -149,6 +179,41 @@ public sealed class ProfiledDeviceEngineTests
             PairedPowerLimitWatts = 25,
             Deadline = Deadline.Never
         };
+    }
+
+    private sealed class FakeOemSource : IProfiledOemSource
+    {
+        private Action<string, CanonicalButtons, bool>? _publish;
+        private bool _held;
+
+        public ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish, CancellationToken token)
+        {
+            _publish = publish;
+            return ValueTask.FromResult(true);
+        }
+
+        internal void Press()
+        {
+            _held = true;
+            _publish!("home", CanonicalButtons.Guide, true);
+        }
+
+        public ValueTask StopAsync(CancellationToken token)
+        {
+            if (_held)
+            {
+                _held = false;
+                _publish!("home", CanonicalButtons.Guide, false);
+            }
+
+            _publish = null;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return StopAsync(CancellationToken.None);
+        }
     }
 
     private sealed class FakePower : ICpuPowerTransport

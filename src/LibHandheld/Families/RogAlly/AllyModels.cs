@@ -344,7 +344,8 @@ internal static class AllyModels
             [
                 Oem(OemControlIds.ArmouryCrate, "Armoury Crate", OemControlPlacement.Front, false) with
                 {
-                    CompanionApplication = true
+                    CompanionApplication = true,
+                    DefaultActionHint = OemControlDefaultActionHint.CompanionApplication
                 },
                 Oem(OemControlIds.Library, "Library", OemControlPlacement.Front, false),
                 Oem(OemControlIds.M1, "M1", OemControlPlacement.Rear, true),

@@ -41,6 +41,41 @@ public sealed class HandheldObserverTests
         Assert.Equal(1, native.Starts);
     }
 
+    [Theory]
+    [InlineData("suspend")]
+    [InlineData("stop")]
+    [InlineData("fault")]
+    public async Task ClosingInputAdmissionStillForwardsOemReleases(string transition)
+    {
+        var native = new FakeNative();
+        var observer = new Observer();
+        await using var device = Create(native, observer);
+        await device.StartAsync();
+        var press = new OemControlEvent("rear", OemPressKind.Short, DateTimeOffset.UtcNow, "held");
+        await native.Sink!.PublishOemEventAsync(press, CancellationToken.None);
+        switch (transition)
+        {
+            case "suspend":
+                await device.SuspendAsync(Deadline.Never);
+                break;
+            case "stop":
+                await device.StopAsync(Deadline.Never);
+                break;
+            default:
+                native.Sink.ReportFault("input", "reader failed");
+                break;
+        }
+
+        await native.Sink.PublishOemEventAsync(press with { DeduplicationId = "new" }, CancellationToken.None);
+        var release = press with { Edge = OemControlEdge.Released };
+        await native.Sink.PublishOemEventAsync(release, CancellationToken.None);
+        Assert.Equal(new[] { press, release }, observer.Events);
+
+        await device.DisposeAsync();
+        await native.Sink.PublishOemEventAsync(release, CancellationToken.None);
+        Assert.Equal(2, observer.Events.Count);
+    }
+
     [Fact]
     public async Task ReplacementDescriptorsRemoveRetiredControlState()
     {

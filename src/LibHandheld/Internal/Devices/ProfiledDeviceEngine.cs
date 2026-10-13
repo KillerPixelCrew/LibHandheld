@@ -493,7 +493,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             }
         }
 
-        if (_sink is { } sink && !_quiescing)
+        if (_sink is { } sink && (!_quiescing || !down))
         {
             var input = new OemControlEvent(id, OemPressKind.Short, DateTimeOffset.UtcNow,
                 pressId, down ? OemControlEdge.Pressed : OemControlEdge.Released);

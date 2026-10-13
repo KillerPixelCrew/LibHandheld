@@ -644,6 +644,8 @@ public sealed class PluginTests
 
         Assert.True(host.OemControlSets.Last()
             .Single(control => control.ControlId == OemControlIds.ArmouryCrate).CompanionApplication);
+        Assert.Equal(OemControlDefaultActionHint.CompanionApplication, host.OemControlSets.Last()
+            .Single(control => control.ControlId == OemControlIds.ArmouryCrate).DefaultActionHint);
         Assert.Equal([OemControlIds.ArmouryCrate], host.OemEvents.Select(item => item.ControlId));
         Assert.Equal(CanonicalButtons.None, host.ControllerSamples.Last().Buttons);
     }

@@ -86,8 +86,12 @@ public sealed class ProtocolTests
 
         var controls = AllyModels.OemControls(xbox);
         Assert.True(controls.Single(control => control.ControlId == OemControlIds.ArmouryCrate).CompanionApplication);
+        Assert.Equal(OemControlDefaultActionHint.CompanionApplication,
+            controls.Single(control => control.ControlId == OemControlIds.ArmouryCrate).DefaultActionHint);
         Assert.All(controls.Where(control => control.ControlId != OemControlIds.ArmouryCrate),
             control => Assert.False(control.CompanionApplication));
+        Assert.All(controls.Where(control => control.ControlId != OemControlIds.ArmouryCrate),
+            control => Assert.Equal(OemControlDefaultActionHint.None, control.DefaultActionHint));
     }
 
     [Fact]

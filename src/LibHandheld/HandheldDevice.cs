@@ -142,7 +142,8 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
 
     ValueTask IDeviceSink.PublishOemEventAsync(OemControlEvent controlEvent, CancellationToken token)
     {
-        return _active && !_disposed
+        // Cleanup releases must reach the consumer after new input admission closes.
+        return !_disposed && (_active || controlEvent.Edge == OemControlEdge.Released)
             ? Observer?.OemEventAsync(controlEvent, token) ?? ValueTask.CompletedTask
             : ValueTask.CompletedTask;
     }
