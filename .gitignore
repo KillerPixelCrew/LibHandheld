@@ -5,3 +5,9 @@ artifacts/
 .references/
 .vs/
 .idea/
+
+# Internal planning and research stay local.
+/PLAN.md
+/TASKS.md
+/inventory/
+/_plan/

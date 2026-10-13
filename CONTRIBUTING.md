@@ -20,9 +20,9 @@ implementation. Keep model checks, packets and register addresses behind that bo
    Capture original temporary state before changing it where the protocol permits; preserve durable
    user settings. Detection must never open mutable transports.
 5. Add source fixtures for matching, packet encoding, input decoding and restoration. Compile and
-   format the library. Update implementation coverage with concrete paths and proof limits; a
-   profile declaration alone does not establish support. Follow the maintainer's manual-first test
-   policy.
+   format the library. Update the public device documentation with supported operations and proof
+   limits; a profile declaration alone does not establish support. Follow the maintainer's
+   manual-first test policy.
 
 Physical identity belongs to the exact built-in device. There is no CPU-only fallback; unmatched
 machines remain passive. Explicit selection is not an override of native identity or firmware

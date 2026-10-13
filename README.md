@@ -7,11 +7,25 @@ sources. The library provides native identification, power, fans, charging, ligh
 input, motion, haptics, OEM controls, glyphs and recovery without a WSGM SDK or device-package
 loader.
 
-The complete target remains every device supported by Handheld Companion (HC) or Handheld Daemon
-(HHD). The [inventory](inventory/README.md) contains 201 HC/HHD source records, not 201 unique
-physical devices. Current source coverage and concrete implementation paths are recorded in
-[implementation coverage](inventory/implementation-coverage.md). An inventory row or contribution
-scaffold is not support; compilation and hardware acceptance are recorded separately.
+Device information and protocol research were collected from public and open sources such as
+[HHD](https://github.com/hhd-dev/hhd),
+[HandheldCompanion](https://github.com/Valkirie/HandheldCompanion),
+[InputPlumber](https://github.com/ShadowBlip/InputPlumber) and
+[OpenGamepadUI](https://github.com/ShadowBlip/OpenGamepadUI). Source attribution and resource
+licenses remain beside the implementations. The library contains 112 exact definitions and 106 glyph
+profiles. **Only MSI Claw 8 A2VM and ROG Xbox Ally X are hardware-tested.**
+
+## Documentation
+
+Start with the [documentation index](docs/README.md):
+
+- [Getting started](docs/getting-started.md): build, reference, detect, acquire and stop.
+- [Devices and dependencies](docs/devices.md): identity, native providers and availability.
+- [Lifetime and recovery](docs/lifecycle.md): ownership, suspend/resume and restoration.
+- [Controls](docs/controls.md): semantic setters, values, observations and outcomes.
+- [Input, haptics and glyphs](docs/input.md): observer callbacks, units, OEM events and resources.
+- [Troubleshooting](docs/troubleshooting.md): diagnosis and explicit recovery.
+- [Complete API reference](docs/reference.md): public types, members and enum values.
 
 ## Use and ownership
 
@@ -35,10 +49,10 @@ Generic Windows controls remain in
 
 ## Evidence and contributions
 
-HC is the primary Windows source, HHD secondary and OpenGamepadUI tertiary. Conflicting observations
-and pinned versions remain visible in the inventory. Linux-only mechanisms require concrete Windows
-implementations. Original migrated family behavior, glyph bytes and notices are preserved; source
-migration and compilation do not constitute a new hardware pass.
+HandheldCompanion is the primary Windows reference, HHD secondary and OpenGamepadUI tertiary. Family
+provenance preserves source attribution and disagreements. Linux-only mechanisms require concrete
+Windows implementations. Original migrated family behavior, glyph bytes and notices are preserved;
+source migration and compilation do not constitute a new hardware pass.
 
 For a contribution, identify the exact model, board, controller interfaces and firmware version.
 Document protocol provenance and variant predicates, implement native services, and add parser or
@@ -48,10 +62,7 @@ protocols rather than create another abstraction layer.
 
 - [API](API.md): contracts, operation results and native lifetimes.
 - [Contributing](CONTRIBUTING.md): model profiles, protocol services and source requirements.
-- [Plan](PLAN.md): applied extraction and remaining full-device target.
-- [Inventory guide](inventory/README.md): snapshots, evidence and source counts.
-- [Combined records](inventory/devices.json) and [device table](inventory/devices.csv): research
-  target.
+- [Documentation](docs/README.md): public integration guides and API reference.
 - `src/LibHandheld/Families`: native implementations and preserved provenance.
 - `tests`: migrated Claw/Ally regression sources and fixtures.
 

@@ -5,6 +5,6 @@ implementations in WSGM at source commit `3b0c1e1c8268268a14c767c2efc07bdc893c3f
 protocols, recovery rules, physical input, motion and haptic behavior are preserved during
 extraction. The family provenance and authored glyph notices remain with each engine.
 
-The full device target and pinned reference facts are recorded in
-[the inventory](inventory/README.md). Reference support and compilation are separate from hardware
-observations on a particular model.
+Family protocol references and authored glyph attribution remain beside their implementations under
+`src/LibHandheld/Families`. [Supported devices](docs/devices.md) describes the public catalog.
+Reference support and compilation are separate from hardware observations on a particular model.
