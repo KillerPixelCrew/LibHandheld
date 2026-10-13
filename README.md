@@ -1,72 +1,129 @@
 # LibHandheld
 
-Windows-first .NET hardware library, directly consumed by WSGM. Native families cover MSI Claw, ASUS
-ROG Ally, Lenovo Legion Go, GPD, AYANEO, OneXPlayer/AOKZOE, Valve, Zotac and the documented
-remaining exact Windows targets. The original Claw and Ally engines were migrated from MIT WSGM
-sources. The library provides native identification, power, fans, charging, lighting, controller
-input, motion, haptics, OEM controls, glyphs and recovery without a WSGM SDK or device-package
-loader.
+**A .NET library for Windows handheld hardware.**
 
-Device information and protocol research were collected from public and open sources such as
-[HHD](https://github.com/hhd-dev/hhd),
-[HandheldCompanion](https://github.com/Valkirie/HandheldCompanion),
-[InputPlumber](https://github.com/ShadowBlip/InputPlumber) and
-[OpenGamepadUI](https://github.com/ShadowBlip/OpenGamepadUI). Source attribution and resource
-licenses remain beside the implementations. The library contains 112 exact definitions and 106 glyph
-profiles. **Only MSI Claw 8 A2VM and ROG Xbox Ally X are hardware-tested.**
+[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](src/LibHandheld/LibHandheld.csproj)
+[![Windows x64](https://img.shields.io/badge/Windows-x64-0078D4)](docs/devices.md)
+[![MIT license](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+Detect a handheld and control its power, fans, battery and lighting through one API. Read physical
+controller input and motion, send haptic feedback, and receive the device's OEM button events.
+LibHandheld handles the model-specific protocols; your application supplies its profiles, UI and
+controller routing.
+
+[Getting started](docs/getting-started.md) · [Documentation](docs/README.md) ·
+[API reference](docs/reference.md) · [Contributing](CONTRIBUTING.md)
+
+## Features
+
+| Area      | What the library provides                                                                       |
+| --------- | ----------------------------------------------------------------------------------------------- |
+| Detection | Exact model matching from Windows board, product, processor and USB identity                    |
+| Power     | Sustained, slow, fast and peak power limits; supported processor settings and performance modes |
+| Cooling   | Fan modes, duty, target RPM, firmware curves and measured RPM                                   |
+| Battery   | Supported charge limits, protection modes, bypass and native measurements                       |
+| Lighting  | Model-specific zones, colours, brightness, effects and secondary-display controls               |
+| Input     | Canonical controller reports, gyro/accelerometer data, touch and OEM button events              |
+| Haptics   | Physical rumble and supported native actuator feedback                                          |
+| Artwork   | Authored device glyphs and their attribution notices                                            |
+| Lifecycle | Acquisition, suspend/resume, physical-controller handoff and native state restoration           |
+
+Each model publishes its available controls, legal values and instances. Applications use that
+metadata rather than assuming every handheld has the same hardware or firmware features.
+
+## Device support
+
+The library contains **112 exact model definitions** across AYANEO, AYN, GPD, Legion Go, MSI Claw,
+ONEXPLAYER/AOKZOE, ROG Ally, Valve, Zotac and other supported models, with **106 glyph profiles**.
+
+**The only hardware-tested handhelds are the MSI Claw 8 A2VM and ROG Xbox Ally X.** Other
+definitions are implemented from source references and still need testing on the corresponding
+hardware.
+
+Use `HandheldDevice.Definitions` to inspect the catalog and `Detect` to match the current machine.
+Unknown identities return no match. See [devices and dependencies](docs/devices.md) for matching,
+native helpers and availability.
+
+## Getting started
+
+Requirements: **.NET 10**, **Windows 10 build 19041 or newer**, and an **x64 application**. Native
+helpers and permissions depend on the selected device.
+
+```powershell
+git clone https://github.com/KillerPixelCrew/LibHandheld.git
+cd LibHandheld
+dotnet build LibHandheld.slnx -c Release
+```
+
+Add a project reference to `src/LibHandheld/LibHandheld.csproj` in your application, then create one
+owner for the detected device:
+
+```csharp
+using LibHandheld;
+using LibHandheld.Contracts;
+
+var identity = HandheldDevice.ReadIdentity();
+var model = HandheldDevice.Detect(identity);
+if (model is null)
+{
+    Console.WriteLine("No supported handheld detected.");
+    return;
+}
+
+var stateDirectory = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "MyApplication", "Devices", model.FamilyId);
+
+await using var device = HandheldDevice.Create(model, identity, stateDirectory);
+try
+{
+    var result = await device.StartAsync(controllerManagementEnabled: false);
+    Console.WriteLine($"{model.Name}: {result.State}");
+
+    foreach (var control in device.Controls.Controls)
+    {
+        Console.WriteLine($"{control.Role}: {control.Descriptor.SupportsWrite}");
+    }
+}
+finally
+{
+    var result = await device.StopAsync(Deadline.After(TimeSpan.FromSeconds(5)));
+    Console.WriteLine($"Restoration: {result.Status}");
+}
+```
+
+After startup, use semantic methods such as `SetTdpAsync`, `SetFanModeAsync` and
+`SetChargeLimitAsync` with values from the published descriptors. Detection and construction do not
+acquire hardware. Call `StopAsync` for restoration before disposal, and inspect command outcomes
+before accepting or repeating a request.
+
+For physical input, assign an `IHandheldObserver` and enable controller management. The
+[getting-started guide](docs/getting-started.md) covers helper configuration and writes; the
+[input guide](docs/input.md) covers reports, haptics and glyphs.
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md):
+| Guide                                       | Read it for                                                 |
+| ------------------------------------------- | ----------------------------------------------------------- |
+| [Devices and dependencies](docs/devices.md) | Identity matching, permissions and native providers         |
+| [Controls](docs/controls.md)                | Power, cooling, charging, lighting and command outcomes     |
+| [Input, haptics and glyphs](docs/input.md)  | Observer callbacks, coordinates, output and artwork         |
+| [Lifetime and recovery](docs/lifecycle.md)  | Suspend/resume, handoff, cancellation and cleanup           |
+| [Troubleshooting](docs/troubleshooting.md)  | Missing controls, unavailable services and uncertain writes |
+| [API reference](docs/reference.md)          | Public types, methods, properties and enum values           |
 
-- [Getting started](docs/getting-started.md): build, reference, detect, acquire and stop.
-- [Devices and dependencies](docs/devices.md): identity, native providers and availability.
-- [Lifetime and recovery](docs/lifecycle.md): ownership, suspend/resume and restoration.
-- [Controls](docs/controls.md): semantic setters, values, observations and outcomes.
-- [Input, haptics and glyphs](docs/input.md): observer callbacks, units, OEM events and resources.
-- [Troubleshooting](docs/troubleshooting.md): diagnosis and explicit recovery.
-- [Complete API reference](docs/reference.md): public types, members and enum values.
+## Sources and license
 
-## Use and ownership
+Device information was collected from **public and open sources**, including
+[HHD](https://github.com/hhd-dev/hhd),
+[HandheldCompanion](https://github.com/Valkirie/HandheldCompanion),
+[InputPlumber](https://github.com/ShadowBlip/InputPlumber) and
+[OpenGamepadUI](https://github.com/ShadowBlip/OpenGamepadUI). Implementation attribution is retained
+in [PROVENANCE.md](PROVENANCE.md) and the family notices.
 
-The public [API](API.md) is `HandheldDevice` and typed `LibHandheld.Contracts`, with a borrowed
-`IHandheldObserver`. Detection matches supplied identity and does not open hardware. Start acquires
-native services; one device owner serializes operations while the caller owns state-directory
-selection and terminal restoration. Cancellation does not establish that a native operation stopped.
+LibHandheld is [MIT licensed](LICENSE). Embedded artwork and native modules retain their own
+licenses and notices. See [Contributing](CONTRIBUTING.md) to add a device or improve a protocol.
 
-Match the supplied identity with `Detect(identity)`, create the result with
-`Create(definition, identity, stateDirectory, diagnostics)`, then use common operations such as
-`SetTdpAsync`, fan, charging and lighting setters. A family registry and shared Windows services
-route those operations to the appropriate native implementation. Variants sharing a protocol
-normally require one model profile. See [adding a device](CONTRIBUTING.md).
-
-The project targets `net10.0-windows10.0.19041.0`, x64, and uses System.Management for Windows
-hardware access. Internal helpers and family engines remain private; the consuming application owns
-profiles, AutoTDP policy, virtual-controller routing, HidHide, Steam integration and UI. Vendor GPU
-mechanics belong to [LibGPUDriverInteract](https://github.com/KillerPixelCrew/LibGPUDriverInteract).
-Generic Windows controls remain in
-[WindowsDeviceControl](https://github.com/KillerPixelCrew/windows-device-control).
-
-## Evidence and contributions
-
-HandheldCompanion is the primary Windows reference, HHD secondary and OpenGamepadUI tertiary. Family
-provenance preserves source attribution and disagreements. Linux-only mechanisms require concrete
-Windows implementations. Original migrated family behavior, glyph bytes and notices are preserved;
-source migration and compilation do not constitute a new hardware pass.
-
-For a contribution, identify the exact model, board, controller interfaces and firmware version.
-Document protocol provenance and variant predicates, implement native services, and add parser or
-encoder fixtures. Record source support separately from attended hardware observations. Unknown
-input decoders remain explicitly unimplemented research. Shared helpers should serve concrete
-protocols rather than create another abstraction layer.
-
-- [API](API.md): contracts, operation results and native lifetimes.
-- [Contributing](CONTRIBUTING.md): model profiles, protocol services and source requirements.
-- [Documentation](docs/README.md): public integration guides and API reference.
-- `src/LibHandheld/Families`: native implementations and preserved provenance.
-- `tests`: migrated Claw/Ally regression sources and fixtures.
-
-WSGM tracks this repository as `external/libhandheld`. Commit and push library changes before
-recording its gitlink in WSGM. LibHandheld and LibGPUDriverInteract are public; automatic CI remains
-off until explicitly enabled. New automated tests and hardware acceptance must be reported from
-actual runs, separately from compilation and source evidence.
+Used by [WSGM](https://github.com/KillerPixelCrew/WSGM). For graphics driver controls, see
+[LibGPUDriverInteract](https://github.com/KillerPixelCrew/LibGPUDriverInteract); for generic Windows
+controls, see [WindowsDeviceControl](https://github.com/KillerPixelCrew/windows-device-control).
