@@ -1141,3 +1141,13 @@ Owns one exact handheld's native services and semantic controls.
 | `ValueTask<IReadOnlyDictionary<String, String>> GetDiagnosticsAsync(CancellationToken cancellationToken = null/default)`                                                                                                | Returns current native diagnostics.                                                                                                                                                                                                                  |
 | `ValueTask<DeviceStopResult> StopAsync(Deadline deadline, CancellationToken cancellationToken = null/default)`                                                                                                          | Restores captured originals and releases native ownership.                                                                                                                                                                                           |
 | `Stream OpenGlyphResource(String relativePath)`                                                                                                                                                                         | Opens original authored bytes for an allowlisted path. The caller validates content and disposes the stream. `relativePath`: One path in GlyphResources, compared ordinally. The original embedded bytes; no parsing, rewriting or execution occurs. |
+
+## Processor tuning reset
+
+Selected devices with processor controls expose the `processor.reset` action. Call it without a
+value after removing the consumer's saved processor preferences. The action restores supported
+automatic GPU clock modes, zero curve/undervolt offsets and readable captured originals. Its
+published state and result reason list settings requiring a Windows restart when no live restore
+protocol or original exists. No factory thermal values are guessed. A failed submitted write stops
+the reset with an indeterminate outcome and is never retried. Suspend/resume keeps track of settings
+still awaiting firmware reset for the lifetime of the device instance.

@@ -10,7 +10,8 @@ internal sealed class ProfiledProcessorService(
     ProfiledFeatureContext featureContext,
     CpuPowerKind kind,
     int minimumGpuClock = 100,
-    int maximumGpuClock = 3000) : ProfiledFeatureService("processor-settings")
+    int maximumGpuClock = 3000,
+    Func<AmdSmuTransport>? openAmd = null) : ProfiledFeatureService("processor-settings")
 {
     private readonly Dictionary<string, ProcessorSetting> _settings = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int Value, DateTimeOffset At)> _observed = new(StringComparer.Ordinal);
@@ -20,6 +21,7 @@ internal sealed class ProfiledProcessorService(
     private IntelPowerTransport? _intel;
     private CapabilityDescriptor? _automaticGpu;
     private bool _descriptorsChanged;
+    private CapabilityReason? _resetReason;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors;
     internal override bool DescriptorsChanged => _descriptorsChanged;
@@ -30,7 +32,7 @@ internal sealed class ProfiledProcessorService(
         var observed = _observed.GetValueOrDefault(descriptor.CapabilityId);
         return ProviderControls.State(descriptor.CapabilityId, State == DeviceServiceState.Owned,
             _observed.ContainsKey(descriptor.CapabilityId) ? CapabilityValue.Integer(observed.Value) : null,
-            observed.At, Reason);
+            observed.At, descriptor.CapabilityId == "processor.reset" ? _resetReason ?? Reason : Reason);
     }).ToArray();
 
     internal override void AcknowledgeDescriptors()
@@ -45,8 +47,6 @@ internal sealed class ProfiledProcessorService(
         _observed.Clear();
         _settings.Clear();
         _automaticGpu = null;
-        _automaticGpu = null;
-        _changedWithoutOriginal.Clear();
         var processor = featureContext.Identity.ProcessorName;
         var selectedKind = processor?.Contains("Intel", StringComparison.OrdinalIgnoreCase) == true
             ? CpuPowerKind.Intel
@@ -55,7 +55,7 @@ internal sealed class ProfiledProcessorService(
         {
             if (selectedKind == CpuPowerKind.Amd)
             {
-                _amd = AmdSmuTransport.Open(requirePowerCommands: false);
+                _amd = openAmd?.Invoke() ?? AmdSmuTransport.Open(requirePowerCommands: false);
                 DescribeAmd();
             }
             else
@@ -66,6 +66,16 @@ internal sealed class ProfiledProcessorService(
 
             _descriptors = _settings.Values.Select(setting => setting.Descriptor)
                 .Concat(_automaticGpu is { } automatic ? new[] { automatic } : Array.Empty<CapabilityDescriptor>())
+                .Concat(_settings.Count > 0 ? new[]
+                {
+                    new CapabilityDescriptor
+                    {
+                        CapabilityId = "processor.reset", Role = CapabilityRole.GenericAction,
+                        Display = CapabilityDescriptors.Label("Reset processor tuning"),
+                        ValueKind = CapabilityValueKind.None, SupportsAction = true,
+                        Persistence = CapabilityPersistence.Volatile
+                    }
+                } : Array.Empty<CapabilityDescriptor>())
                 .ToArray();
             _descriptorsChanged = true;
             foreach (var (id, setting) in _settings)
@@ -103,6 +113,11 @@ internal sealed class ProfiledProcessorService(
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                 "Processor settings access is unavailable.");
+        }
+
+        if (command.CapabilityId == "processor.reset" && command.RequestedValue is null)
+        {
+            return await ResetAsync(command, token).ConfigureAwait(false);
         }
 
         var automaticGpu = command.CapabilityId == _automaticGpu?.CapabilityId;
@@ -149,6 +164,9 @@ internal sealed class ProfiledProcessorService(
             if (automaticGpu)
             {
                 _observed.Remove(settingId);
+                _changedWithoutOriginal.Remove(settingId);
+                await featureContext.Journal.SetStatusAsync(settingId, DeviceRecoveryStatus.RestoredUnverified, token)
+                    .ConfigureAwait(false);
             }
             else
             {
@@ -163,6 +181,80 @@ internal sealed class ProfiledProcessorService(
                 _observed.Remove(settingId);
             }
 
+            return CommandResults.TransportFailure(command, dispatched, exception);
+        }
+    }
+
+    private async ValueTask<CapabilityCommandResult> ResetAsync(CapabilityCommand command, CancellationToken token)
+    {
+        var dispatched = false;
+        var restart = new List<string>();
+        string? writing = null;
+        try
+        {
+            foreach (var (id, setting) in _settings)
+            {
+                token.ThrowIfCancellationRequested();
+                var original = featureContext.Journal.PendingOriginalFor<ProcessorSettingOriginal>(id);
+                // Zero removes a curve/undervolt offset. Temperatures and fixed clocks have no
+                // universal default: restore the captured original or the documented automatic mode.
+                var neutralOffset = id.Contains("-curve-", StringComparison.Ordinal)
+                                    || id == "processor.gpu-curve"
+                                    || id.EndsWith("-undervolt", StringComparison.Ordinal);
+                var automaticClock = id == "processor.gpu-clock" && _automaticGpu is not null;
+                if (original is null && !_changedWithoutOriginal.Contains(id)
+                    && !neutralOffset && !automaticClock && setting.Read is not null)
+                {
+                    continue;
+                }
+
+                if (original is null && !neutralOffset && !automaticClock)
+                {
+                    restart.Add(setting.Descriptor.Display.CustomText ?? id);
+                    _observed.Remove(id);
+                    continue;
+                }
+
+                writing = id;
+                dispatched = true;
+                if (automaticClock && _amd is not null)
+                {
+                    _amd.RestoreGpuClockRange(minimumGpuClock, maximumGpuClock);
+                    _observed.Remove(id);
+                }
+                else
+                {
+                    var value = neutralOffset ? 0 : automaticClock ? 12750 : original!.Value;
+                    setting.Write(value);
+                    if (automaticClock)
+                    {
+                        _observed.Remove(id);
+                    }
+                    else
+                    {
+                        _observed[id] = (value, DateTimeOffset.UtcNow);
+                    }
+                }
+
+                await featureContext.Journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoredUnverified, token)
+                    .ConfigureAwait(false);
+                _changedWithoutOriginal.Remove(id);
+                writing = null;
+            }
+
+            _resetReason = restart.Count == 0 ? null : new CapabilityReason(CapabilityReasonCode.Unsupported,
+                $"Restart Windows to restore firmware defaults for: {string.Join(", ", restart)}.");
+            return CommandResults.Applied(command) with { Reason = _resetReason };
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            if (writing is not null)
+            {
+                _observed.Remove(writing);
+            }
+
+            _resetReason = new CapabilityReason(CapabilityReasonCode.TransportFaulted,
+                $"Processor reset did not complete: {exception.Message}. Restart Windows before tuning again.");
             return CommandResults.TransportFailure(command, dispatched, exception);
         }
     }

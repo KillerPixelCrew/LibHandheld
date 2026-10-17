@@ -1,10 +1,67 @@
 using LibHandheld.Internal.Transports;
 using LibHandheld.Internal.Devices;
+using LibHandheld.Testing;
 
 namespace LibHandheld.Tests.Transports;
 
 public sealed class ProcessorSettingsTests
 {
+    [Theory]
+    [InlineData(2u, false)]
+    [InlineData(23u, true)]
+    public async Task ResetRestoresAutomaticClocksWhereSupportedAndExplainsWhenFirmwareNeedsRestart(uint codeName,
+        bool needsRestart)
+    {
+        using var directory = new TemporaryDirectory();
+        using var module = new SettingsModule();
+        var service = new ProfiledProcessorService(
+            new ProfiledFeatureContext(directory.Root, "bios", new TestPluginHostAdapter(1))
+            {
+                Journal = TestRecovery.Open(directory.Root)
+            }, CpuPowerKind.Amd, minimumGpuClock: 100, maximumGpuClock: 2900,
+            openAmd: () => new AmdSmuTransport(module, codeName, firmwareVersion: 1));
+        await service.AcquireAsync(new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
+            new ProfiledCycleIdentity("bios")), CancellationToken.None);
+        var command = new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "processor.gpu-clock", Deadline = Deadline.Never,
+            RequestedValue = CapabilityValue.Integer(800)
+        };
+        Assert.Equal(CommandOutcome.Applied,
+            (await service.ExecuteAsync(command, "bios", CancellationToken.None)).Outcome);
+        if (needsRestart)
+        {
+            await service.ExecuteAsync(command with
+            {
+                CapabilityId = "processor.cpu-curve-all", RequestedValue = CapabilityValue.Integer(-24)
+            }, "bios", CancellationToken.None);
+        }
+
+        module.Calls.Clear();
+        var result = await service.ExecuteAsync(command with
+        {
+            CapabilityId = "processor.reset", RequestedValue = null
+        }, "bios", CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Null(service.States.Single(state => state.CapabilityId == "processor.gpu-clock").ObservedValue);
+        if (needsRestart)
+        {
+            Assert.Contains("Restart Windows", result.Reason?.Detail);
+            Assert.Equal(0, service.States.Single(state => state.CapabilityId == "processor.cpu-curve-all")
+                .ObservedValue!.IntegerValue);
+            Assert.Equal(new long[] { 0x4C, 0x4B, 0xB7 }, module.Calls.Select(call => call.Input[0]));
+            Assert.All(module.Calls, call => Assert.Equal(0, call.Input[1]));
+        }
+        else
+        {
+            Assert.Null(result.Reason);
+            Assert.Equal(new long[] { 0x47, 0x46 }, module.Calls.Select(call => call.Input[0]));
+            Assert.Equal(new long[] { 100, 2900 }, module.Calls.Select(call => call.Input[1]));
+        }
+
+        await service.DisposeAsync();
+    }
+
     [Theory]
     [InlineData("ayaneo.3-hx370", "AMD Ryzen AI 9 HX 370", 100, 2900)]
     [InlineData("ayaneo.3-8840u", "AMD Ryzen 7 8840U", 100, 2700)]
@@ -16,6 +73,31 @@ public sealed class ProcessorSettingsTests
         int maximum)
     {
         Assert.Equal((minimum, maximum), ProcessorClockLimits.For(id, processor));
+    }
+
+    [Fact]
+    public async Task ResetStopsAtTheFirstUncertainWriteWithoutRetryingOrWritingThermalDefaults()
+    {
+        using var directory = new TemporaryDirectory();
+        using var module = new SettingsModule();
+        var service = new ProfiledProcessorService(
+            new ProfiledFeatureContext(directory.Root, "bios", new TestPluginHostAdapter(1))
+            {
+                Journal = TestRecovery.Open(directory.Root)
+            }, CpuPowerKind.Amd, openAmd: () => new AmdSmuTransport(module, codeName: 23, firmwareVersion: 1));
+        await service.AcquireAsync(new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
+            new ProfiledCycleIdentity("bios")), CancellationToken.None);
+        module.Calls.Clear();
+        module.WrongEcho = true;
+        var result = await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "processor.reset", Deadline = Deadline.Never
+        }, "bios", CancellationToken.None);
+        Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
+        Assert.Single(module.Calls);
+        Assert.Contains("Restart Windows", service.States.Single(state => state.CapabilityId == "processor.reset")
+            .Reason?.Detail);
+        await service.DisposeAsync();
     }
 
     [Theory]
@@ -165,14 +247,14 @@ public sealed class ProcessorSettingsTests
     {
         private readonly Dictionary<long, long> _registers = [];
         internal List<(string Function, long[] Input)> Calls { get; } = [];
-        internal bool WrongEcho { get; init; }
+        internal bool WrongEcho { get; set; }
 
         public long[] Execute(string function, long[] input, int outputWords)
         {
             Calls.Add((function, [.. input]));
             if (function == "ioctl_send_smu_command")
             {
-                return [WrongEcho ? 0 : input[1], 0, 0, 0, 0, 0];
+                return [WrongEcho ? input[1] ^ 1 : input[1], 0, 0, 0, 0, 0];
             }
 
             if (function == "ioctl_write_smu_register")
