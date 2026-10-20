@@ -287,6 +287,9 @@ internal sealed class FakeMcuTransport : IClawMcuTransport
 
     public List<ClawControllerMode> ModeSwitches { get; } = [];
 
+    /// <summary>The nodes a mode switch settles into; the discovery nodes unless a test sets its own.</summary>
+    public IReadOnlyList<PhysicalDeviceIdentity> SwitchedNodes { get; init; } = FakeControllerSource.Nodes;
+
     /// <summary>When set, the MCU answers profile reads with this exception.</summary>
     public Exception? ReadFailure { get; set; }
 
@@ -359,7 +362,7 @@ internal sealed class FakeMcuTransport : IClawMcuTransport
                 ? ClawHardwareFacts.XInputProductId
                 : ClawHardwareFacts.DirectInputProductId,
             physicalLocation,
-            FakeControllerSource.Nodes));
+            SwitchedNodes));
     }
 
     public ValueTask DisposeAsync()

@@ -70,8 +70,10 @@ hardware; every fact is source evidence, and each per-model fact lives in one ro
   `0x0163`. An unreadable revision takes the reference unit's row. HC writes the RGB profile without
   reading it, so the plugin offers lighting whenever the MCU collection is present. `Open` and every
   mode change write `GetM12` for M1 and M2 (`0F 00 00 3C 21 01 <addr> 02 01 00`) and `SyncToROM`
-  before `SwitchMode`, with HC's 300/500/500/500 ms sleeps; the plugin does the same before it takes
-  the controller. HHD writes the same addresses with a longer payload.
+  before `SwitchMode`, with HC's 300/500/500/500 ms sleeps; the plugin does the same before its first
+  take of a run. HC's `Device_Inserted` repeats it on every wake; the plugin does not, because the
+  mapping survived a wake without the rewrite on MS-1T52 (2026-10-20) and the rewrite cost 2.4 s of the
+  pad restore. HHD writes the same addresses with a longer payload.
 - Controller: `DClawController` reads the DirectInput state (buttons 0-11 and 15-16, X/Y/Z/Rz
   sticks, Rx/Ry triggers, POV 0) for every Claw, and `ControllerManager` admits PIDs 0x1902 and
   0x1903. The plugin's fixed-offset decoder is that mapping laid out as measured on MS-1T52; the

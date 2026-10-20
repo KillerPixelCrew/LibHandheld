@@ -157,6 +157,49 @@ public sealed class ClawModelLifecycleTests
     }
 
     [Fact]
+    public async Task ControllerReacquire_LeavesThePaddleMappingInRom()
+    {
+        using TemporaryDirectory state = new();
+        FakeMcuTransport mcu = new();
+        var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+        var controller = await AcquireControllerAsync(new FakeControllerSource(),
+            new TestPluginHostAdapter(FixtureId), journal, ClawModels.Claw8A2Vm, mcu);
+        await controller.ReleaseControllerAsync(Deadline.After(TimeSpan.FromSeconds(10)), CancellationToken.None);
+
+        _ = await controller.AcquireAsync(
+            new DeviceCycleContext<ClawIdentityState>(Deadline.After(TimeSpan.FromSeconds(10)),
+                FakeIdentityReader.CreateState() with { Model = ClawModels.Claw8A2Vm }),
+            CancellationToken.None);
+
+        Assert.Equal(2, mcu.Writes.Count);
+        Assert.Equal(1, mcu.RomSyncs);
+        Assert.Equal([ClawControllerMode.DirectInput, ClawControllerMode.XInput, ClawControllerMode.DirectInput],
+            mcu.ModeSwitches);
+    }
+
+    [Fact]
+    public async Task ControllerAcquire_HidesTheXInputPadTheSwitchReplaced()
+    {
+        using TemporaryDirectory state = new();
+        PhysicalDeviceIdentity directInput = new()
+        {
+            InstancePath = @"HID\VID_0DB0&PID_1902&MI_00\8&FAKE&0&0000",
+            LocationPath = "PCIROOT(0)#USBROOT(0)#USB(2)",
+            RequiresHiding = true
+        };
+        FakeMcuTransport mcu = new() { SwitchedNodes = [directInput] };
+        TestPluginHostAdapter host = new(FixtureId);
+        var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+
+        _ = await AcquireControllerAsync(new FakeControllerSource(), host, journal, ClawModels.Claw8A2Vm, mcu);
+
+        // The firmware falls back to XInput in every sleep; its pad must already be hidden when it returns.
+        Assert.Equal(
+            [FakeControllerSource.Nodes[0].InstancePath, directInput.InstancePath],
+            Assert.Single(host.PhysicalDeviceSets).Select(device => device.InstancePath));
+    }
+
+    [Fact]
     public async Task ControllerRelease_ReturnsToXInputAsHcDoes()
     {
         using TemporaryDirectory state = new();

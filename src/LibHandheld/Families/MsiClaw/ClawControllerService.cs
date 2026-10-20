@@ -78,6 +78,7 @@ internal sealed class ControllerService(
     private byte _lastStrong;
     private byte _lastWeak;
     private ControllerTopology? _original;
+    private bool _paddlesWritten;
     private CanonicalButtons _rearButtons;
 
     public bool Enabled { get; set; }
@@ -222,6 +223,15 @@ internal sealed class ControllerService(
                 detail));
         }
 
+        // The XInput pad the switch replaced is hidden too, as HC hides the controller it finds before
+        // switching. The firmware falls back to XInput in every sleep, and that pad reappeared on the wake
+        // with nothing hiding it, so Steam saw an Xbox controller until the switch settled.
+        IReadOnlyList<PhysicalDeviceIdentity> hidden =
+        [
+            .. observed.PhysicalDevices
+                .Concat(CurrentTopology.PhysicalDevices)
+                .DistinctBy(device => device.InstancePath, StringComparer.OrdinalIgnoreCase)
+        ];
         try
         {
             await _source.StartAsync(
@@ -231,7 +241,7 @@ internal sealed class ControllerService(
                 cancellationToken).ConfigureAwait(false);
 
             await _host.PublishPhysicalDevicesAsync(
-                CurrentTopology.PhysicalDevices,
+                hidden,
                 model.BinaryRumble ? BinaryOutputCapabilities : OutputCapabilities,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -249,7 +259,7 @@ internal sealed class ControllerService(
         DeviceTrace.Write(
             DeviceTraceLevel.Info,
             "controller",
-            $"owned: published {CurrentTopology.PhysicalDevices.Count} physical identities for hiding, "
+            $"owned: published {hidden.Count} physical identities for hiding, "
             + "haptics=True.");
 
         // Haptics write nothing until the service is Owned, so this is the one place the last levels can
@@ -475,6 +485,13 @@ internal sealed class ControllerService(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
+        // The mapping is synced to ROM and survives sleep (Claw 8 AI+, 2026-10-20), so a wake does not
+        // write it again as HC's Device_Inserted does: that rewrite cost 2.4 s of every pad restore.
+        if (_paddlesWritten)
+        {
+            return;
+        }
+
         var layout = ClawModels.McuLayout(context.Identity.Snapshot.McuFirmwareVersion);
 
         // HC's sleeps add almost two seconds; the mode switch after them needs its own budget.
@@ -496,6 +513,7 @@ internal sealed class ControllerService(
             await _delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
             await _mcu.SyncToRomAsync(cancellationToken).ConfigureAwait(false);
             await _delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+            _paddlesWritten = true;
             DeviceTrace.Write(DeviceTraceLevel.Info, "controller",
                 $"paddle mapping written at 0x{layout.M1DirectInput:X4}/0x{layout.M2DirectInput:X4} and synced to ROM.");
         }
