@@ -13,9 +13,9 @@ internal static class SteamDeckModels
     internal static IReadOnlyList<HandheldDefinition> Definitions { get; } = Array.AsReadOnly<HandheldDefinition>(
     [
         new HandheldDefinition("steamdeck-lcd", FamilyId, "Steam Deck LCD", "steamdeck-lcd")
-            { HardwareAccess = DeviceHardwareAccess.InpOut, DeclaredRoles = DeckRoles },
+            { HardwareAccess = DeviceHardwareAccess.InpOut, NativeSteamController = true, DeclaredRoles = DeckRoles },
         new HandheldDefinition("steamdeck-oled", FamilyId, "Steam Deck OLED", "steamdeck-oled")
-            { HardwareAccess = DeviceHardwareAccess.InpOut, DeclaredRoles = DeckRoles },
+            { HardwareAccess = DeviceHardwareAccess.InpOut, NativeSteamController = true, DeclaredRoles = DeckRoles },
         new HandheldDefinition("steam-machine", FamilyId, "Steam Machine", "steam-machine")
         {
             HardwareAccess = DeviceHardwareAccess.PawnIo, HasController = false,

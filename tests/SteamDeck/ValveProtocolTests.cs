@@ -18,6 +18,14 @@ public sealed class ValveProtocolTests
         Assert.False(SteamDeckModels.Definitions.Single(model => model.Id == "steam-machine").HasController);
     }
 
+    [Fact]
+    public void OnlyTheDecksDeclareANativeSteamController()
+    {
+        Assert.Equal(["steamdeck-lcd", "steamdeck-oled"], SteamDeckModels.Definitions
+            .Where(model => model.NativeSteamController)
+            .Select(model => model.Id));
+    }
+
     [Theory]
     [InlineData(64)]
     [InlineData(65)]

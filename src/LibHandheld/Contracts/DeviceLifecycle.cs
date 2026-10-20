@@ -34,6 +34,12 @@ public sealed record HandheldDefinition(string Id, string FamilyId, string Name,
     /// <summary>Whether this implementation can acquire the model's physical controller.</summary>
     public bool HasController { get; init; } = true;
 
+    /// <summary>
+    ///     Whether the built-in pad is a Steam controller that Steam drives natively. A host whose target is
+    ///     the Steam Deck controller leaves it untouched: no virtual pad, no hiding, no controller ownership.
+    /// </summary>
+    public bool NativeSteamController { get; init; }
+
     /// <summary>Privileged Windows access used by the model's concrete native controls.</summary>
     public DeviceHardwareAccess HardwareAccess { get; init; }
 }
