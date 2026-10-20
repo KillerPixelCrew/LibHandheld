@@ -613,6 +613,8 @@ internal static class HidEndpointEnumerator
         var mode = productId == ClawHardwareFacts.XInputProductId
             ? ClawControllerMode.XInput
             : ClawControllerMode.DirectInput;
+        // XInput mode also exposes the pad through its XUSB node, which XInput itself opens; hiding only the
+        // HID collection left that path visible. The node set is the one the Ally and Legion Go hide.
         IReadOnlyList<PhysicalDeviceIdentity> physical =
         [
             .. endpoints
@@ -621,7 +623,13 @@ internal static class HidEndpointEnumerator
                     && HidDevices.SamePhysicalLocation(endpoint.PhysicalLocation, mcu.PhysicalLocation)
                     && (endpoint.InstancePath.Contains("&IG_", StringComparison.OrdinalIgnoreCase)
                         || endpoint is { UsagePage: 0x0001, Usage: 0x0005 }))
-                .Select(PhysicalIdentities.FromCollection)
+                .Select(PhysicalIdentities.FromCollection),
+            .. HidDevices.PresentNodes(ClawHardwareFacts.UsbVendorId, [productId])
+                .Where(node =>
+                    (node.ClassGuid == HidDevices.XnaCompositeClass || node.ClassGuid == HidDevices.XboxCompositeClass)
+                    && !string.IsNullOrWhiteSpace(node.PhysicalLocation)
+                    && HidDevices.SamePhysicalLocation(node.PhysicalLocation, mcu.PhysicalLocation))
+                .Select(PhysicalIdentities.FromNode)
         ];
         var observed = string.Join(", ", endpoints
             .Where(endpoint => HidDevices.SamePhysicalLocation(endpoint.PhysicalLocation, mcu.PhysicalLocation))

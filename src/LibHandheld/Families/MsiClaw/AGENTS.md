@@ -90,8 +90,9 @@ and lighting payloads; power and charge use zero-filled envelopes with the value
   it across sleep, so a wake does not rewrite it), stop source/output first, journal XInput as the release mode,
   switch, wait for re-enumeration, and identify the same physical device through `DEVPKEY_Device_LocationPaths`.
   Publish the XInput identities found before the switch with the settled DirectInput ones: the firmware returns to
-  XInput in every sleep, and that pad must already be hidden when it reappears. On release switch to XInput, as
-  HC's `Close` does, whatever mode the controller was found in.
+  XInput in every sleep, and that pad must already be hidden when it reappears. A topology's identities are the
+  gamepad HID collections plus the XUSB and Xbox composite nodes at the same location, the set every other family
+  hides. On release switch to XInput, as HC's `Close` does, whatever mode the controller was found in.
 - Power, fans, and controller mode are temporary. Capture the first original value in the shared `recovery.json` before
   mutation when it can be read, restore power and fans only on the same BIOS binding, and restore controller mode on
   any MCU revision. A restore is complete once its writes went through.
