@@ -8,8 +8,8 @@
     <Description>Windows handheld hardware, physical input and device controls.</Description>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="System.Management" Version="10.0.12"/>
-    <PackageReference Include="System.IO.Ports" Version="10.0.3"/>
+    <PackageReference Include="System.Management" Version="10.0.13"/>
+    <PackageReference Include="System.IO.Ports" Version="10.0.13"/>
     <InternalsVisibleTo Include="LibHandheld.Tests"/>
     <InternalsVisibleTo Include="WSGM.Tests"/>
     <None Include="../../LICENSE" Link="LibHandheld-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
