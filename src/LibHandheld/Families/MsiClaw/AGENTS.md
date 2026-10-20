@@ -91,8 +91,8 @@ and lighting payloads; power and charge use zero-filled envelopes with the value
   switch, wait for re-enumeration, and identify the same physical device through `DEVPKEY_Device_LocationPaths`.
   Publish the XInput identities found before the switch with the settled DirectInput ones: the firmware returns to
   XInput in every sleep, and that pad must already be hidden when it reappears. A topology's identities are the
-  gamepad HID collections plus the XUSB and Xbox composite nodes at the same location, the set every other family
-  hides. On release switch to XInput, as HC's `Close` does, whatever mode the controller was found in.
+  gamepad HID collections plus `HidDevices.KnownControllerNodes` for every Claw product ID at the pad's location,
+  the set every other family hides. On release switch to XInput, as HC's `Close` does, whatever mode the controller was found in.
 - Power, fans, and controller mode are temporary. Capture the first original value in the shared `recovery.json` before
   mutation when it can be read, restore power and fans only on the same BIOS binding, and restore controller mode on
   any MCU revision. A restore is complete once its writes went through.

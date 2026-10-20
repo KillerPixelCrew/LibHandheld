@@ -71,7 +71,8 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                 return null;
             }
 
-            found = new StandardControllerTopology((int)slot, nodes.Select(PhysicalIdentities.FromNode).ToArray());
+            found = new StandardControllerTopology((int)slot, HideSet(
+                nodes.Select(PhysicalIdentities.FromNode), caps.Vendor, location));
         }
 
         if (found is not null || _hid?.Discover() is not { } hid)
@@ -93,7 +94,21 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             return null;
         }
 
-        return new StandardControllerTopology(-1, [PhysicalIdentities.FromCollection(hid)], hid);
+        return new StandardControllerTopology(-1,
+            HideSet([PhysicalIdentities.FromCollection(hid)], hid.VendorId, hid.PhysicalLocation), hid);
+    }
+
+    /// <summary>The present identities plus the pad's nodes in every other mode Windows has seen it in.</summary>
+    /// <remarks>A pad that comes back under another of the profile's product IDs is then already hidden.</remarks>
+    private PhysicalDeviceIdentity[] HideSet(IEnumerable<PhysicalDeviceIdentity> present, ushort vendor,
+        string location)
+    {
+        ushort[] products = [.. profile.UsbIds.Where(id => id.Vendor == vendor).Select(id => id.Product)];
+        return
+        [
+            .. present.Concat(HidDevices.KnownControllerNodes(vendor, products, location))
+                .DistinctBy(device => device.InstancePath, StringComparer.OrdinalIgnoreCase)
+        ];
     }
 
     internal static bool SameBuiltInHub(string controller, string companion)

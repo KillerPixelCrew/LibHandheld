@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using LibHandheld.Contracts;
 using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Internal.Windows;
@@ -256,13 +257,63 @@ internal static partial class HidDevices
     /// <returns>The nodes, in enumeration order.</returns>
     public static IReadOnlyList<DeviceNode> PresentNodes(ushort vendorId, IReadOnlyCollection<ushort> productIds)
     {
+        return Nodes(vendorId, productIds, DigcfPresent | DigcfAllClasses);
+    }
+
+    /// <summary>Every device node Windows knows for the given products, present or not, of any class.</summary>
+    /// <param name="vendorId">The USB vendor ID.</param>
+    /// <param name="productIds">The accepted product IDs.</param>
+    /// <returns>The nodes, in enumeration order.</returns>
+    /// <remarks>
+    ///     A pad that changes mode re-enumerates under another product ID, and Windows keeps the nodes of every
+    ///     mode it has been in. Hiding those as well hides a mode before the pad comes back in it, which a list of
+    ///     present nodes cannot do. Use it for the hide set only, never to decide what is attached.
+    /// </remarks>
+    public static IReadOnlyList<DeviceNode> KnownNodes(ushort vendorId, IReadOnlyCollection<ushort> productIds)
+    {
+        return Nodes(vendorId, productIds, DigcfAllClasses);
+    }
+
+    /// <summary>
+    ///     The controller nodes to hide for one pad: its XUSB, Xbox composite and XInput-compatible HID nodes in
+    ///     every mode Windows has seen it in, at the pad's composite location.
+    /// </summary>
+    /// <param name="vendorId">The USB vendor ID.</param>
+    /// <param name="productIds">Every product ID the pad enumerates under, one per mode.</param>
+    /// <param name="location">The pad's composite location; nodes elsewhere belong to another device.</param>
+    /// <returns>The identities, present or not.</returns>
+    public static IReadOnlyList<PhysicalDeviceIdentity> KnownControllerNodes(ushort vendorId,
+        IReadOnlyCollection<ushort> productIds, string location)
+    {
+        if (string.IsNullOrWhiteSpace(location))
+        {
+            return [];
+        }
+
+        return
+        [
+            .. KnownNodes(vendorId, productIds)
+                .Where(node =>
+                    (node.ClassGuid == XnaCompositeClass || node.ClassGuid == XboxCompositeClass
+                                                         || (node.ClassGuid == HidClass &&
+                                                             node.InstancePath.Contains("&IG_",
+                                                                 StringComparison.OrdinalIgnoreCase)))
+                    && !string.IsNullOrWhiteSpace(node.PhysicalLocation)
+                    && SamePhysicalLocation(node.PhysicalLocation, location))
+                .Select(PhysicalIdentities.FromNode)
+        ];
+    }
+
+    private static IReadOnlyList<DeviceNode> Nodes(ushort vendorId, IReadOnlyCollection<ushort> productIds,
+        uint flags)
+    {
         ArgumentNullException.ThrowIfNull(productIds);
         var prefixes = productIds.Select(product => $"VID_{vendorId:X4}&PID_{product:X4}").ToArray();
         var buffer = new StringBuilder(1024);
         List<DeviceNode> nodes = [];
         foreach (var enumerator in new[] { "USB", "HID" })
         {
-            var set = SetupDiGetClassDevsAll(0, enumerator, 0, DigcfPresent | DigcfAllClasses);
+            var set = SetupDiGetClassDevsAll(0, enumerator, 0, flags);
             if (set == InvalidHandleValue)
             {
                 continue;

@@ -286,17 +286,10 @@ internal sealed partial class WindowsLegionHid : ILegionHid
         }
 
         // Only controller nodes from this composite device are eligible for hiding; never hide the command/IMU channel.
-        var nodes = forward ? HidDevices.PresentNodes(model.VendorId, model.ProductIds.ToArray()) : [];
-        var identities = nodes.Where(n => n.ClassGuid is var type &&
-                                          (type == HidDevices.XnaCompositeClass ||
-                                           type == HidDevices.XboxCompositeClass) &&
-                                          !string.IsNullOrWhiteSpace(n.PhysicalLocation) &&
-                                          HidDevices.SamePhysicalLocation(n.PhysicalLocation, source.PhysicalLocation))
-            .Concat(nodes.Where(n => n.ClassGuid == HidDevices.HidClass &&
-                                     n.InstancePath.Contains("&IG_", StringComparison.OrdinalIgnoreCase) &&
-                                     !string.IsNullOrWhiteSpace(n.PhysicalLocation) &&
-                                     HidDevices.SamePhysicalLocation(n.PhysicalLocation, source.PhysicalLocation)))
-            .Select(PhysicalIdentities.FromNode).ToArray();
+        // Every mode Windows has seen the pad in is hidden, so switching the native mode never shows the pad.
+        PhysicalDeviceIdentity[] identities = forward
+            ? [.. HidDevices.KnownControllerNodes(model.VendorId, model.ProductIds.ToArray(), source.PhysicalLocation)]
+            : [];
         if (gamepad is not null)
         {
             identities =
