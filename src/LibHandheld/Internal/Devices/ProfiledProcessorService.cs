@@ -1,5 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Transports;
 
@@ -22,6 +23,7 @@ internal sealed class ProfiledProcessorService(
     private CapabilityDescriptor? _automaticGpu;
     private bool _descriptorsChanged;
     private CapabilityReason? _resetReason;
+    private UnsupportedSettings? _unsupported;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors;
     internal override bool DescriptorsChanged => _descriptorsChanged;
@@ -64,20 +66,16 @@ internal sealed class ProfiledProcessorService(
                 DescribeIntel();
             }
 
-            _descriptors = _settings.Values.Select(setting => setting.Descriptor)
-                .Concat(_automaticGpu is { } automatic ? new[] { automatic } : Array.Empty<CapabilityDescriptor>())
-                .Concat(_settings.Count > 0 ? new[]
-                {
-                    new CapabilityDescriptor
-                    {
-                        CapabilityId = "processor.reset", Role = CapabilityRole.GenericAction,
-                        Display = CapabilityDescriptors.Label("Reset processor tuning"),
-                        ValueKind = CapabilityValueKind.None, SupportsAction = true,
-                        Persistence = CapabilityPersistence.Volatile
-                    }
-                } : Array.Empty<CapabilityDescriptor>())
-                .ToArray();
-            _descriptorsChanged = true;
+            // A setting this firmware refused before is never offered again, so it is hidden from the
+            // first frame rather than vanishing when the user touches it.
+            _unsupported = UnsupportedSettings.Load(featureContext.StateDirectory,
+                (_amd is not null ? $"amd:{_amd.CodeName}" : "intel") + "|" + featureContext.Firmware);
+            foreach (var id in _settings.Keys.Where(_unsupported.Contains).ToArray())
+            {
+                RemoveSetting(id);
+            }
+
+            BuildDescriptors();
             foreach (var (id, setting) in _settings)
             {
                 if (featureContext.Journal.EntryFor<ProcessorSettingOriginal>(id) is { } entry
@@ -97,6 +95,7 @@ internal sealed class ProfiledProcessorService(
             }
 
             Observe(null, token);
+            await SettleAsync(token).ConfigureAwait(false);
             return Set(DeviceServiceState.Owned);
         }
         catch
@@ -174,6 +173,14 @@ internal sealed class ProfiledProcessorService(
             }
             return CommandResults.Applied(command);
         }
+        catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
+        {
+            // The firmware does not take this setting at all and nothing was applied. It is withdrawn
+            // instead of being left to fail on every attempt.
+            await MarkUnsupportedAsync(settingId, exception, token).ConfigureAwait(false);
+            return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
+                $"This firmware does not support the setting: {exception.Message}");
+        }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             if (dispatched)
@@ -192,7 +199,7 @@ internal sealed class ProfiledProcessorService(
         string? writing = null;
         try
         {
-            foreach (var (id, setting) in _settings)
+            foreach (var (id, setting) in _settings.ToArray())
             {
                 token.ThrowIfCancellationRequested();
                 var original = featureContext.Journal.PendingOriginalFor<ProcessorSettingOriginal>(id);
@@ -217,23 +224,33 @@ internal sealed class ProfiledProcessorService(
 
                 writing = id;
                 dispatched = true;
-                if (automaticClock && _amd is not null)
+                try
                 {
-                    _amd.RestoreGpuClockRange(minimumGpuClock, maximumGpuClock);
-                    _observed.Remove(id);
-                }
-                else
-                {
-                    var value = neutralOffset ? 0 : automaticClock ? 12750 : original!.Value;
-                    setting.Write(value);
-                    if (automaticClock)
+                    if (automaticClock && _amd is not null)
                     {
+                        _amd.RestoreGpuClockRange(minimumGpuClock, maximumGpuClock);
                         _observed.Remove(id);
                     }
                     else
                     {
-                        _observed[id] = (value, DateTimeOffset.UtcNow);
+                        var value = neutralOffset ? 0 : automaticClock ? 12750 : original!.Value;
+                        setting.Write(value);
+                        if (automaticClock)
+                        {
+                            _observed.Remove(id);
+                        }
+                        else
+                        {
+                            _observed[id] = (value, DateTimeOffset.UtcNow);
+                        }
                     }
+                }
+                catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
+                {
+                    // Refused outright, so nothing changed and the reset goes on with the next setting.
+                    writing = null;
+                    await MarkUnsupportedAsync(id, exception, token).ConfigureAwait(false);
+                    continue;
                 }
 
                 await featureContext.Journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoredUnverified, token)
@@ -353,7 +370,7 @@ internal sealed class ProfiledProcessorService(
         {
             if (_amd.SupportsCurve(curve))
             {
-                Add(id, label, -24, 12, CapabilityUnit.None, value => _amd.WriteCurve(curve, value));
+                Add(id, label, -24, 12, CapabilityUnit.None, value => _amd.WriteCurve(curve, value), neutral: 0);
             }
         }
 
@@ -393,19 +410,97 @@ internal sealed class ProfiledProcessorService(
             {
                 intel.WriteUndervolt(IntelUndervoltRail.Core, value);
                 intel.WriteUndervolt(IntelUndervoltRail.Cache, value);
-            });
+            }, neutral: 0);
         Add("processor.gpu-undervolt", "GPU undervolt", -50, 50, CapabilityUnit.Millivolt,
-            value => intel.WriteUndervolt(IntelUndervoltRail.Gpu, value));
+            value => intel.WriteUndervolt(IntelUndervoltRail.Gpu, value), neutral: 0);
         Add("processor.system-agent-undervolt", "System Agent undervolt", -50, 50, CapabilityUnit.Millivolt,
-            value => intel.WriteUndervolt(IntelUndervoltRail.SystemAgent, value));
+            value => intel.WriteUndervolt(IntelUndervoltRail.SystemAgent, value), neutral: 0);
     }
 
     private void Add(string id, string label, int minimum, int maximum, CapabilityUnit unit,
-        Action<int> write, Func<int>? read = null, int step = 1)
+        Action<int> write, Func<int>? read = null, int step = 1, int? neutral = null)
     {
         var descriptor = CapabilityDescriptors.Integer(id, CapabilityRole.GenericRange,
             CapabilityDescriptors.Label(label), minimum, maximum, unit, read is not null, write: true, step: step);
-        _settings.Add(id, new ProcessorSetting(descriptor, write, read));
+        _settings.Add(id, new ProcessorSetting(descriptor, write, read, neutral));
+    }
+
+    private void BuildDescriptors()
+    {
+        _descriptors = _settings.Values.Select(setting => setting.Descriptor)
+            .Concat(_automaticGpu is { } automatic ? new[] { automatic } : Array.Empty<CapabilityDescriptor>())
+            .Concat(_settings.Count > 0 ? new[]
+            {
+                new CapabilityDescriptor
+                {
+                    CapabilityId = "processor.reset", Role = CapabilityRole.GenericAction,
+                    Display = CapabilityDescriptors.Label("Reset processor tuning"),
+                    ValueKind = CapabilityValueKind.None, SupportsAction = true,
+                    Persistence = CapabilityPersistence.Volatile
+                }
+            } : Array.Empty<CapabilityDescriptor>())
+            .ToArray();
+        _descriptorsChanged = true;
+    }
+
+    private void RemoveSetting(string id)
+    {
+        _settings.Remove(id);
+        _observed.Remove(id);
+        _changedWithoutOriginal.Remove(id);
+        if (id == "processor.gpu-clock")
+        {
+            // The automatic range goes through the same clock commands.
+            _automaticGpu = null;
+        }
+    }
+
+    /// <summary>
+    ///     Gives each write-only setting a known value as the service starts: its neutral value is written
+    ///     and published. Readable settings were observed already, and settings without a neutral value
+    ///     (fixed clocks, temperatures) stay unknown until a profile value is written.
+    /// </summary>
+    /// <remarks>A firmware that refuses the write outright marks the setting unsupported before anyone sees it.</remarks>
+    private async ValueTask SettleAsync(CancellationToken token)
+    {
+        foreach (var (id, setting) in _settings.ToArray())
+        {
+            token.ThrowIfCancellationRequested();
+            if (setting.Read is not null || setting.Neutral is not { } neutral || _observed.ContainsKey(id))
+            {
+                continue;
+            }
+
+            try
+            {
+                setting.Write(neutral);
+                _observed[id] = (neutral, DateTimeOffset.UtcNow);
+            }
+            catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
+            {
+                await MarkUnsupportedAsync(id, exception, token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // Not retried: the setting stays unknown, and hidden, until a value is written.
+                DeviceTrace.Write(DeviceTraceLevel.Warn, "processor",
+                    $"{id} could not be set to {neutral} at start and stays unknown: {exception.Message}");
+            }
+        }
+    }
+
+    private async ValueTask MarkUnsupportedAsync(string id, Exception refusal, CancellationToken token)
+    {
+        RemoveSetting(id);
+        _unsupported?.Add(id);
+        BuildDescriptors();
+        if (featureContext.Journal.EntryFor<ProcessorSettingOriginal>(id) is not null)
+        {
+            await featureContext.Journal.RetireAsync(id, "firmware refused the setting", token).ConfigureAwait(false);
+        }
+
+        DeviceTrace.Write(DeviceTraceLevel.Warn, "processor",
+            $"{id} is not supported by this firmware and is hidden until the BIOS changes: {refusal.Message}");
     }
 
     private void Observe(string? capabilityId, CancellationToken token)
@@ -437,7 +532,8 @@ internal sealed class ProfiledProcessorService(
         }
     }
 
-    private sealed record ProcessorSetting(CapabilityDescriptor Descriptor, Action<int> Write, Func<int>? Read);
+    private sealed record ProcessorSetting(CapabilityDescriptor Descriptor, Action<int> Write, Func<int>? Read,
+        int? Neutral);
 }
 
 internal sealed record ProcessorSettingOriginal

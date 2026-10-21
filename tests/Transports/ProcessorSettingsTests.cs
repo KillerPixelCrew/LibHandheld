@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Testing;
@@ -243,17 +244,177 @@ public sealed class ProcessorSettingsTests
         Assert.Throws<ArgumentOutOfRangeException>(() => IntelPowerTransport.EncodeUndervolt(offsetMillivolts: -51));
     }
 
+    [Theory]
+    [InlineData(87, 0xFEu, true)]
+    [InlineData(31, 0xFFu, true)]
+    [InlineData(1359, 0xFDu, false)]
+    [InlineData(170, 0xFCu, false)]
+    public void ModuleRefusalsAreDecodedAndOnlyUnknownOrFailedAreDefinite(int win32, uint status, bool definite)
+    {
+        using var module = new SettingsModule { Refused = { 0x4B }, RefusalCode = win32 };
+        using var smu = new AmdSmuTransport(module, codeName: 31, firmwareVersion: 1);
+        var refusal = Assert.Throws<SmuCommandException>(() => smu.WriteCurve(AmdCurveKind.PerCore, steps: 0));
+        Assert.Equal(status, refusal.Status);
+        Assert.Equal(definite, AmdSmuTransport.IsDefiniteRefusal(refusal));
+        Assert.Contains("0x4B", refusal.Message);
+        Assert.Single(module.Calls);
+    }
+
+    [Fact]
+    public void ModuleTimeoutStaysUncertainAndOtherFailuresKeepTheirCode()
+    {
+        using var timeout = new SettingsModule { Refused = { 0x4B }, RefusalCode = 121 };
+        using var smu = new AmdSmuTransport(timeout, codeName: 31, firmwareVersion: 1);
+        var unknown = Assert.Throws<TimeoutException>(() => smu.WriteCurve(AmdCurveKind.PerCore, steps: 0));
+        Assert.False(AmdSmuTransport.IsDefiniteRefusal(unknown));
+
+        using var other = new SettingsModule { Refused = { 0x4B }, RefusalCode = 5 };
+        using var second = new AmdSmuTransport(other, codeName: 31, firmwareVersion: 1);
+        var failure = Assert.Throws<Win32Exception>(() => second.WriteCurve(AmdCurveKind.PerCore, steps: 0));
+        Assert.Equal(5, failure.NativeErrorCode);
+        Assert.False(AmdSmuTransport.IsDefiniteRefusal(failure));
+    }
+
+    [Fact]
+    public async Task StartSettlesWriteOnlyOffsetsAtZeroAndLeavesClocksAndTemperaturesUnknown()
+    {
+        using var directory = new TemporaryDirectory();
+        using var module = new SettingsModule();
+        var service = Processor(directory, module, codeName: 31, firmware: "bios");
+        await Acquire(service);
+
+        Assert.Equal(new long[] { 0x4C, 0x4B }, module.Calls
+            .Where(call => call.Function == "ioctl_send_smu_command").Select(call => call.Input[0]));
+        Assert.All(module.Calls.Where(call => call.Function == "ioctl_send_smu_command"),
+            call => Assert.Equal(0, call.Input[1]));
+        Assert.Equal(0, Observed(service, "processor.cpu-curve-all"));
+        Assert.Equal(0, Observed(service, "processor.cpu-curve-core0"));
+        Assert.Null(Observed(service, "processor.gpu-clock"));
+        Assert.Null(Observed(service, "processor.tctl-limit"));
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RefusedSettingIsHiddenFromStartAndRememberedUntilTheFirmwareChanges()
+    {
+        using var directory = new TemporaryDirectory();
+        using (var refusing = new SettingsModule { Refused = { 0x4B } })
+        {
+            var first = Processor(directory, refusing, codeName: 31, firmware: "bios-1");
+            await Acquire(first);
+            Assert.DoesNotContain(first.Descriptors, d => d.CapabilityId == "processor.cpu-curve-core0");
+            Assert.Contains(first.Descriptors, d => d.CapabilityId == "processor.cpu-curve-all");
+            Assert.True(File.Exists(Path.Combine(directory.Root, UnsupportedSettings.FileName)));
+            await first.DisposeAsync();
+        }
+
+        using (var same = new SettingsModule())
+        {
+            var second = Processor(directory, same, codeName: 31, firmware: "bios-1");
+            await Acquire(second);
+            Assert.DoesNotContain(second.Descriptors, d => d.CapabilityId == "processor.cpu-curve-core0");
+            Assert.DoesNotContain(same.Calls,
+                call => call.Function == "ioctl_send_smu_command" && call.Input[0] == 0x4B);
+            await second.DisposeAsync();
+        }
+
+        using var updated = new SettingsModule();
+        var third = Processor(directory, updated, codeName: 31, firmware: "bios-2");
+        await Acquire(third);
+        Assert.Contains(third.Descriptors, d => d.CapabilityId == "processor.cpu-curve-core0");
+        Assert.Contains(updated.Calls, call => call.Function == "ioctl_send_smu_command" && call.Input[0] == 0x4B);
+        await third.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task DefinitelyRefusedUserWriteWithdrawsTheSettingInsteadOfStayingUncertain()
+    {
+        using var directory = new TemporaryDirectory();
+        using var module = new SettingsModule();
+        var service = Processor(directory, module, codeName: 31, firmware: "bios");
+        await Acquire(service);
+        service.AcknowledgeDescriptors();
+        module.Refused.Add(0x89);
+        module.RefusalCode = 31;
+
+        var result = await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "processor.gpu-clock", Deadline = Deadline.Never,
+            RequestedValue = CapabilityValue.Integer(1200)
+        }, "bios", CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        Assert.Equal(CapabilityReasonCode.Unsupported, result.Reason?.Code);
+        Assert.True(service.DescriptorsChanged);
+        Assert.DoesNotContain(service.Descriptors, d => d.CapabilityId == "processor.gpu-clock");
+        Assert.Single(module.Calls, call => call.Function == "ioctl_send_smu_command" && call.Input[0] == 0x89);
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ResetPassesOverADefinitelyRefusedSetting()
+    {
+        using var directory = new TemporaryDirectory();
+        using var module = new SettingsModule();
+        var service = Processor(directory, module, codeName: 31, firmware: "bios");
+        await Acquire(service);
+        module.Calls.Clear();
+        module.Refused.Add(0x4C);
+
+        var result = await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "processor.reset", Deadline = Deadline.Never
+        }, "bios", CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Contains(module.Calls, call => call.Function == "ioctl_send_smu_command" && call.Input[0] == 0x4B);
+        Assert.DoesNotContain(service.Descriptors, d => d.CapabilityId == "processor.cpu-curve-all");
+        await service.DisposeAsync();
+    }
+
+    private static ProfiledProcessorService Processor(TemporaryDirectory directory, SettingsModule module,
+        uint codeName, string firmware)
+    {
+        return new ProfiledProcessorService(
+            new ProfiledFeatureContext(directory.Root, firmware, new TestPluginHostAdapter(1))
+            {
+                Journal = TestRecovery.Open(directory.Root)
+            }, CpuPowerKind.Amd, minimumGpuClock: 100, maximumGpuClock: 2900,
+            openAmd: () => new AmdSmuTransport(module, codeName, firmwareVersion: 1));
+    }
+
+    private static async Task Acquire(ProfiledProcessorService service)
+    {
+        await service.AcquireAsync(new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
+            new ProfiledCycleIdentity("bios")), CancellationToken.None);
+    }
+
+    private static long? Observed(ProfiledProcessorService service, string id)
+    {
+        return service.States.Single(state => state.CapabilityId == id).ObservedValue?.IntegerValue;
+    }
+
     private sealed class SettingsModule : IPawnIoModule
     {
         private readonly Dictionary<long, long> _registers = [];
         internal List<(string Function, long[] Input)> Calls { get; } = [];
         internal bool WrongEcho { get; set; }
 
+        /// <summary>SMU commands this firmware answers with <see cref="RefusalCode" />.</summary>
+        internal HashSet<long> Refused { get; } = [];
+
+        internal int RefusalCode { get; set; } = 87;
+
         public long[] Execute(string function, long[] input, int outputWords)
         {
             Calls.Add((function, [.. input]));
             if (function == "ioctl_send_smu_command")
             {
+                if (Refused.Contains(input[0]))
+                {
+                    throw new Win32Exception(RefusalCode, $"PawnIO {function} failed.");
+                }
+
                 return [WrongEcho ? input[1] ^ 1 : input[1], 0, 0, 0, 0, 0];
             }
 

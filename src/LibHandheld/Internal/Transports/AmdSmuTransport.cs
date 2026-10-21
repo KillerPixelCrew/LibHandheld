@@ -1,15 +1,41 @@
+using System.ComponentModel;
 using System.Diagnostics;
 
 namespace LibHandheld.Internal.Transports;
 
 internal sealed class SmuCommandException(uint command, uint status)
-    : IOException($"AMD SMU command 0x{command:X} was rejected with status 0x{status:X}.")
+    : IOException($"AMD SMU command 0x{command:X} was refused: {Describe(status)} (status 0x{status:X}).")
 {
+    internal const uint RejectedBusy = 0xFC;
+    internal const uint RejectedPrerequisite = 0xFD;
+    internal const uint UnknownCommand = 0xFE;
+    internal const uint Failed = 0xFF;
+
     internal uint Status { get; } = status;
+
+    /// <summary>
+    ///     Whether the firmware answered that it will never take this command: it does not know it, or it
+    ///     ran it and refused. Nothing was applied either way. A busy or prerequisite refusal depends on the
+    ///     moment, and a timeout leaves the outcome unknown.
+    /// </summary>
+    internal bool Definite => Status is UnknownCommand or Failed;
+
+    private static string Describe(uint status)
+    {
+        return status switch
+        {
+            RejectedBusy => "busy",
+            RejectedPrerequisite => "prerequisite not met",
+            UnknownCommand => "unknown command",
+            Failed => "failed",
+            _ => "unexpected answer"
+        };
+    }
 }
 
 internal sealed partial class AmdSmuTransport : ICpuPowerTransport
 {
+    private const int ErrorSemTimeout = 121;
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(2);
     private readonly Lock _gate = new();
     private readonly IPawnIoModule _module;
@@ -170,7 +196,50 @@ internal sealed partial class AmdSmuTransport : ICpuPowerTransport
             input[i + 1] = arguments[i];
         }
 
-        return _module.Execute("ioctl_send_smu_command", input, 6).Select(value => checked((uint)value)).ToArray();
+        try
+        {
+            return _module.Execute("ioctl_send_smu_command", input, 6).Select(value => checked((uint)value))
+                .ToArray();
+        }
+        catch (Win32Exception exception) when (ModuleAnswer(exception.NativeErrorCode) is { } status)
+        {
+            throw new SmuCommandException(command, status);
+        }
+        catch (Win32Exception exception) when (exception.NativeErrorCode == ErrorSemTimeout)
+        {
+            throw new TimeoutException($"AMD SMU command 0x{command:X} timed out; its completion is unknown.",
+                exception);
+        }
+    }
+
+    /// <summary>The SMU answer behind a PawnIO <c>ioctl_send_smu_command</c> failure.</summary>
+    /// <param name="win32Error">The Win32 code the driver's NTSTATUS arrived as.</param>
+    /// <returns>The SMU status, or null when the failure is not an SMU answer.</returns>
+    /// <remarks>
+    ///     PawnIO's RyzenSMU module maps each answer to its own NTSTATUS (<c>smu_status_to_nt</c>):
+    ///     unknown command to STATUS_INVALID_INFO_CLASS (87), failed to STATUS_UNSUCCESSFUL (31),
+    ///     prerequisite to STATUS_INTERNAL_ERROR (1359) and busy to STATUS_DEVICE_BUSY (170). The module
+    ///     also answers 87 for a malformed request, which this transport never sends: the input is always
+    ///     seven words.
+    /// </remarks>
+    internal static uint? ModuleAnswer(int win32Error)
+    {
+        return win32Error switch
+        {
+            87 => SmuCommandException.UnknownCommand,
+            31 => SmuCommandException.Failed,
+            1359 => SmuCommandException.RejectedPrerequisite,
+            170 => SmuCommandException.RejectedBusy,
+            _ => null
+        };
+    }
+
+    /// <summary>Whether a failed command was definitely refused by the firmware, so nothing was applied.</summary>
+    /// <param name="exception">The failure.</param>
+    /// <returns>True for an unknown command or a failed answer.</returns>
+    internal static bool IsDefiniteRefusal(Exception exception)
+    {
+        return exception is SmuCommandException { Definite: true };
     }
 
     private uint[] SendCore(uint command, uint[] arguments)
