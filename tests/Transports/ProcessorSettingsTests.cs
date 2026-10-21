@@ -327,7 +327,7 @@ public sealed class ProcessorSettingsTests
     }
 
     [Fact]
-    public async Task DefinitelyRefusedUserWriteWithdrawsTheSettingInsteadOfStayingUncertain()
+    public async Task DefinitelyRefusedUserWriteStaysOnScreenAndIsLeftOutFromTheNextStart()
     {
         using var directory = new TemporaryDirectory();
         using var module = new SettingsModule();
@@ -345,10 +345,22 @@ public sealed class ProcessorSettingsTests
 
         Assert.Equal(CommandOutcome.Rejected, result.Outcome);
         Assert.Equal(CapabilityReasonCode.Unsupported, result.Reason?.Code);
-        Assert.True(service.DescriptorsChanged);
-        Assert.DoesNotContain(service.Descriptors, d => d.CapabilityId == "processor.gpu-clock");
+        Assert.False(service.DescriptorsChanged);
+        Assert.Contains(service.Descriptors, d => d.CapabilityId == "processor.gpu-clock");
         Assert.Single(module.Calls, call => call.Function == "ioctl_send_smu_command" && call.Input[0] == 0x89);
+
+        // A wake re-acquires the same instance: the control is still there and nothing is settled again.
+        module.Calls.Clear();
+        await Acquire(service);
+        Assert.Contains(service.Descriptors, d => d.CapabilityId == "processor.gpu-clock");
+        Assert.DoesNotContain(module.Calls, call => call.Function == "ioctl_send_smu_command");
         await service.DisposeAsync();
+
+        using var next = new SettingsModule();
+        var restarted = Processor(directory, next, codeName: 31, firmware: "bios");
+        await Acquire(restarted);
+        Assert.DoesNotContain(restarted.Descriptors, d => d.CapabilityId == "processor.gpu-clock");
+        await restarted.DisposeAsync();
     }
 
     [Fact]
@@ -368,7 +380,7 @@ public sealed class ProcessorSettingsTests
 
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Contains(module.Calls, call => call.Function == "ioctl_send_smu_command" && call.Input[0] == 0x4B);
-        Assert.DoesNotContain(service.Descriptors, d => d.CapabilityId == "processor.cpu-curve-all");
+        Assert.Contains(service.Descriptors, d => d.CapabilityId == "processor.cpu-curve-all");
         await service.DisposeAsync();
     }
 

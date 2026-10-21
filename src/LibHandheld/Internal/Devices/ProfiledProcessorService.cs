@@ -24,6 +24,7 @@ internal sealed class ProfiledProcessorService(
     private bool _descriptorsChanged;
     private CapabilityReason? _resetReason;
     private UnsupportedSettings? _unsupported;
+    private HashSet<string>? _withheld;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors;
     internal override bool DescriptorsChanged => _descriptorsChanged;
@@ -66,11 +67,14 @@ internal sealed class ProfiledProcessorService(
                 DescribeIntel();
             }
 
-            // A setting this firmware refused before is never offered again, so it is hidden from the
-            // first frame rather than vanishing when the user touches it.
-            _unsupported = UnsupportedSettings.Load(featureContext.StateDirectory,
+            // Visibility is decided by this instance's first start only. A setting this firmware refused
+            // before is left out from the first frame; a wake re-acquires and leaves out the same ones, so
+            // nothing appears or vanishes during the session.
+            var firstStart = _withheld is null;
+            _unsupported ??= UnsupportedSettings.Load(featureContext.StateDirectory,
                 (_amd is not null ? $"amd:{_amd.CodeName}" : "intel") + "|" + featureContext.Firmware);
-            foreach (var id in _settings.Keys.Where(_unsupported.Contains).ToArray())
+            _withheld ??= [.. _settings.Keys.Where(_unsupported.Contains)];
+            foreach (var id in _settings.Keys.Where(_withheld.Contains).ToArray())
             {
                 RemoveSetting(id);
             }
@@ -95,7 +99,11 @@ internal sealed class ProfiledProcessorService(
             }
 
             Observe(null, token);
-            await SettleAsync(token).ConfigureAwait(false);
+            if (firstStart)
+            {
+                await SettleAsync(token).ConfigureAwait(false);
+            }
+
             return Set(DeviceServiceState.Owned);
         }
         catch
@@ -175,9 +183,9 @@ internal sealed class ProfiledProcessorService(
         }
         catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
         {
-            // The firmware does not take this setting at all and nothing was applied. It is withdrawn
-            // instead of being left to fail on every attempt.
-            await MarkUnsupportedAsync(settingId, exception, token).ConfigureAwait(false);
+            // The firmware does not take this setting at all and nothing was applied. The control stays on
+            // screen for this session; the next start leaves it out.
+            await RecordRefusalAsync(settingId, exception, token).ConfigureAwait(false);
             return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
                 $"This firmware does not support the setting: {exception.Message}");
         }
@@ -249,7 +257,7 @@ internal sealed class ProfiledProcessorService(
                 {
                     // Refused outright, so nothing changed and the reset goes on with the next setting.
                     writing = null;
-                    await MarkUnsupportedAsync(id, exception, token).ConfigureAwait(false);
+                    await RecordRefusalAsync(id, exception, token).ConfigureAwait(false);
                     continue;
                 }
 
@@ -460,7 +468,10 @@ internal sealed class ProfiledProcessorService(
     ///     and published. Readable settings were observed already, and settings without a neutral value
     ///     (fixed clocks, temperatures) stay unknown until a profile value is written.
     /// </summary>
-    /// <remarks>A firmware that refuses the write outright marks the setting unsupported before anyone sees it.</remarks>
+    /// <remarks>
+    ///     Runs on the first start only. A firmware that refuses the write outright leaves the setting out
+    ///     before anyone sees it.
+    /// </remarks>
     private async ValueTask SettleAsync(CancellationToken token)
     {
         foreach (var (id, setting) in _settings.ToArray())
@@ -478,29 +489,33 @@ internal sealed class ProfiledProcessorService(
             }
             catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
             {
-                await MarkUnsupportedAsync(id, exception, token).ConfigureAwait(false);
+                _withheld!.Add(id);
+                RemoveSetting(id);
+                BuildDescriptors();
+                await RecordRefusalAsync(id, exception, token).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                // Not retried: the setting stays unknown, and hidden, until a value is written.
+                // Not retried: the setting stays unknown until a value is written.
                 DeviceTrace.Write(DeviceTraceLevel.Warn, "processor",
                     $"{id} could not be set to {neutral} at start and stays unknown: {exception.Message}");
             }
         }
     }
 
-    private async ValueTask MarkUnsupportedAsync(string id, Exception refusal, CancellationToken token)
+    /// <summary>Remembers a definite refusal so the next start leaves the setting out.</summary>
+    /// <remarks>Nothing was applied, so the setting's recovery entry has nothing to restore.</remarks>
+    private async ValueTask RecordRefusalAsync(string id, Exception refusal, CancellationToken token)
     {
-        RemoveSetting(id);
         _unsupported?.Add(id);
-        BuildDescriptors();
         if (featureContext.Journal.EntryFor<ProcessorSettingOriginal>(id) is not null)
         {
             await featureContext.Journal.RetireAsync(id, "firmware refused the setting", token).ConfigureAwait(false);
         }
 
         DeviceTrace.Write(DeviceTraceLevel.Warn, "processor",
-            $"{id} is not supported by this firmware and is hidden until the BIOS changes: {refusal.Message}");
+            $"{id} is not supported by this firmware and is left out from the next start until the BIOS "
+            + $"changes: {refusal.Message}");
     }
 
     private void Observe(string? capabilityId, CancellationToken token)

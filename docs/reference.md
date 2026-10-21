@@ -1150,13 +1150,15 @@ automatic GPU clock modes, zero curve/undervolt offsets and readable captured or
 published state and result reason list settings requiring a Windows restart when no live restore
 protocol or original exists. No factory thermal values are guessed. A failed submitted write stops
 the reset with an indeterminate outcome and is never retried. A setting the firmware refuses
-outright is withdrawn instead and the reset continues.
+outright is recorded instead and the reset continues.
 
-As the processor service starts it reads every readable setting and writes write-only curve offsets
-and undervolts at 0, publishing the written value, so a host can show every setting with a value
-from the first frame. Fixed clocks and temperature limits that cannot be read stay unknown until a
-value is written. An AMD SMU answer of "unknown command" or "failed" withdraws the setting's
-descriptor and records it in `unsupported-settings.json` in the state directory, bound to the
-processor codename and firmware, so the next start omits it before any write. Another firmware
-forgets the record. Suspend/resume keeps track of settings
-still awaiting firmware reset for the lifetime of the device instance.
+The descriptor set is decided on the service instance's first start and never changes during the
+session; a wake re-acquires and repeats the same set. On that first start the service reads every
+readable setting and writes write-only curve offsets and undervolts at 0, publishing the written
+value. Fixed clocks and temperature limits that cannot be read stay unknown until a value is
+written. An AMD SMU answer of "unknown command" or "failed" during that start leaves the setting
+out. The same answer to a later write is returned as `Rejected`/`Unsupported` and keeps the setting
+for the session. Either way it is recorded in `unsupported-settings.json` in the state directory,
+bound to the processor codename and firmware, so the next start omits it before any write. Another
+firmware forgets the record. Suspend/resume keeps track of settings still awaiting firmware reset
+for the lifetime of the device instance.
