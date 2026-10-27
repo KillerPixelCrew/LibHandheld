@@ -185,9 +185,6 @@ internal sealed record StandardControllerProfile(IReadOnlyList<ControllerUsbId> 
 
     internal HidControllerProfile? HidFallback { get; init; }
     internal IReadOnlyList<ControllerUsbId> CompanionUsbIds { get; init; } = [];
-    /// <summary>Exact auxiliary HID collection fragments also claimed as pads by controller clients.</summary>
-    /// <remarks>Only matching HID-class nodes on the selected controller's physical port are hidden.</remarks>
-    internal IReadOnlyList<string> AuxiliaryHidCollections { get; init; } = [];
 }
 
 internal sealed record HidControllerProfile(

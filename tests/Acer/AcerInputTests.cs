@@ -6,26 +6,6 @@ namespace LibHandheld.Tests.Acer;
 
 public sealed class AcerInputTests
 {
-    [Theory]
-    [InlineData("MI_01&COL01", true)]
-    [InlineData("MI_02&COL03", true)]
-    [InlineData("MI_02&COL04", true)]
-    [InlineData("MI_02&COL05", true)]
-    [InlineData("MI_01&COL02", false)]
-    [InlineData("MI_02&COL01", false)]
-    [InlineData("MI_02&COL02", false)]
-    [InlineData("MI_02&COL030", false)]
-    public void HidingIncludesOnlyMeasuredAuxiliaryPadLeaves(string collection, bool expected)
-    {
-        var profile = AcerModels.Atlas8.Controller!;
-        var node = new DeviceNode($"HID\\VID_0502&PID_F901&{collection}\\fixture", HidDevices.HidClass,
-            "PCIROOT(0)#USBROOT(0)#USB(4)");
-        Assert.Equal(expected, HidDevices.IsControllerNode(node, profile.AuxiliaryHidCollections));
-        Assert.False(HidDevices.IsControllerNode(node));
-        Assert.False(HidDevices.IsControllerNode(node with { ClassGuid = Guid.Empty },
-            profile.AuxiliaryHidCollections));
-    }
-
     private static DeviceIdentitySnapshot Identity => new()
     {
         SystemManufacturer = "Acer", SystemProduct = "Predator PA08-I51",

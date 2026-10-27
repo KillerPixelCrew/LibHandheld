@@ -353,17 +353,15 @@ firmware accepts the mode. Manual selection publishes its own saved pair rather 
 previous stock limits. Getter failure never blocks a mode write and leaves its numeric limits
 unknown. Two focused regressions cover mode changes and unavailable getters.
 
-## Auxiliary HID cloaking and SDL enumeration (2026-10-27)
+## Rejected auxiliary HID cloaking (2026-10-27)
 
-With only the physical XInput/HID nodes hidden, Steam listed four extra Xbox controllers in addition
-to WSGM's Steam Deck. Direct XInput calls from a non-allowlisted process returned 1167 on all four
-slots. Steam's own SDL3.dll reproduced five joystick identities and identified the extra paths as
-F901 MI_01/COL01 and MI_02/COL03, COL04, COL05. Disabling Raw Input, GameInput, WGI or XInput
-individually did not remove these HID entries. Hiding those exact four leaves reduced the same SDL
-inventory to one 28DE:1205 Steam Deck without disabling any backend/service.
+An isolated Steam SDL inventory identified four extra Xbox entries as F901 MI_01/COL01 and
+MI_02/COL03, COL04, COL05. Hiding those auxiliary leaves reduced enumeration from five pads to
+one Steam Deck, but the maintainer then lost both physical and RustDesk keyboard input. Turning
+cloaking off, removing the entries and stopping WSGM did not restore input; uninstalling HidHide
+did. That is a failed hardware trial, regardless of its initial controller-list result.
 
-The controller profile now includes those measured auxiliary HID collection fragments in its
-physical hide set, restricted to matching VID/PID nodes at the selected controller's physical
-location. It leaves the keyboard, mouse and separate RGB collection out. WSGM stays allowlisted for
-rear/QAM input and vendor access. The host journals/removes the added paths with the rest of its
-HidHide ownership, so stopping management or uninstall restores their visibility.
+The auxiliary-hide profile changes were withdrawn. Do not add these vendor/consumer/OEM HID
+collections to the kernel hide set. Keep HidHide scoped to the actual XInput controller nodes.
+Any suppression of SDL's auxiliary Xbox identities must happen inside the consuming application,
+without blocking Windows keyboard, mouse, consumer or OEM collections.

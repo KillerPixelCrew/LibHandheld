@@ -281,11 +281,9 @@ internal static partial class HidDevices
     /// <param name="vendorId">The USB vendor ID.</param>
     /// <param name="productIds">Every product ID the pad enumerates under, one per mode.</param>
     /// <param name="location">The pad's composite location; nodes elsewhere belong to another device.</param>
-    /// <param name="auxiliaryHidCollections">Exact additional HID collection fragments required by this controller profile.</param>
     /// <returns>The identities, present or not.</returns>
     public static IReadOnlyList<PhysicalDeviceIdentity> KnownControllerNodes(ushort vendorId,
-        IReadOnlyCollection<ushort> productIds, string location,
-        IReadOnlyList<string>? auxiliaryHidCollections = null)
+        IReadOnlyCollection<ushort> productIds, string location)
     {
         if (string.IsNullOrWhiteSpace(location))
         {
@@ -296,20 +294,14 @@ internal static partial class HidDevices
         [
             .. KnownNodes(vendorId, productIds)
                 .Where(node =>
-                    IsControllerNode(node, auxiliaryHidCollections)
+                    (node.ClassGuid == XnaCompositeClass || node.ClassGuid == XboxCompositeClass
+                                                         || (node.ClassGuid == HidClass &&
+                                                             node.InstancePath.Contains("&IG_",
+                                                                 StringComparison.OrdinalIgnoreCase)))
                     && !string.IsNullOrWhiteSpace(node.PhysicalLocation)
                     && SamePhysicalLocation(node.PhysicalLocation, location))
                 .Select(PhysicalIdentities.FromNode)
         ];
-    }
-
-    internal static bool IsControllerNode(DeviceNode node, IReadOnlyList<string>? auxiliaryHidCollections = null)
-    {
-        return node.ClassGuid == XnaCompositeClass || node.ClassGuid == XboxCompositeClass
-               || node.ClassGuid == HidClass
-               && (node.InstancePath.Contains("&IG_", StringComparison.OrdinalIgnoreCase)
-                   || auxiliaryHidCollections?.Any(fragment =>
-                       node.InstancePath.Contains(fragment, StringComparison.OrdinalIgnoreCase)) == true);
     }
 
     private static IReadOnlyList<DeviceNode> Nodes(ushort vendorId, IReadOnlyCollection<ushort> productIds,
