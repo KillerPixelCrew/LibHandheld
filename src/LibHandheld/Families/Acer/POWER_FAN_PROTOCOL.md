@@ -61,14 +61,19 @@ offset 26. The desktop capability fields trace through `14000dee0` and callbacks
 
 | Profile 3 selector | Desktop meaning |
 | ------------------ | --------------- |
-| 4                  | PL1 minimum     |
+| 1                  | PL1 minimum     |
 | 2                  | PL1 maximum     |
-| 1                  | PL2 maximum     |
+| 4                  | PL2 maximum     |
 
 Power modes are Turbo 0, Balance 1, Quiet 2 and Manual 3. The managed boundary uses integer watts;
 HardwareService `14000e9f0` assigns the two input integers directly to profile PL1 and PL2 and
 `14001adb0` narrows them to uint16 fields, without a visible unit multiplier. Validate before
 encoding; do not reproduce truncation of arbitrary input.
+
+The selector labels above correct the initial offline interpretation. On the V1.03 unit, selectors
+1/2/4 returned 10/40/65. Reinspection of the same HardwareService binary traces the first limit
+callback through vtable 140039890 to 14001C940 (selector 1), the second through 1400398C8 to
+14001C8F0 (selector 2), and the third through 140039900 to 14001C8A0 (selector 4).
 
 Manual dispatch reads profile 3, changes its PL1/PL2 fields, writes it, then selects mode 3. Preset
 dispatch only selects the requested mode. The vendor still attempts later steps if earlier steps
@@ -192,3 +197,17 @@ change another application's profiles or services as part of acquisition.
 Attended acceptance still needs the unit's exact EC collection and firmware, returned limits, fan
 identities/bounds, RPM response, mode and power effects, restoration after stop/suspend and
 vendor-software coexistence. No build or fixture can replace those observations.
+
+## Implementation and on-device follow-up
+
+The native implementation and dated results are in [PROVENANCE.md](PROVENANCE.md). Power uses the
+firmware's declared PL1 bounds and PL2 maximum, with the shared paired-limit constraint. It does not
+invent a preset wattage table. The wire data version is diagnostic information, not a substitute for
+the captured machine's firmware identity.
+
+The inspected V1.03 ACPI SSDT ACRPRDCT GGSI method reads system fan RPM at health indices 4 and 8;
+the Agent's 140035850 and 1400358C0 getters use those indices unchanged. The EC feature transport
+returns their uint16 values at payload offset 7. These observations establish the Atlas SYS/SYS2
+readings, not a generic interpretation of every health index. Fan behavior readback remains unknown
+on this unit even when WMI commands are accepted. Auto fallback is safe cooling policy, not proof of
+exact original restoration.

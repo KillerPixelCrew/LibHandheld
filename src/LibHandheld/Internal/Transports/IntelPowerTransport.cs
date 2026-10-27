@@ -169,8 +169,14 @@ internal sealed partial class IntelPowerTransport : ICpuPowerTransport
 
         if (process.ExitCode != 0)
         {
+            var detail = error.GetAwaiter().GetResult().Trim();
+            if (detail.Length == 0)
+            {
+                detail = output.GetAwaiter().GetResult().Trim();
+            }
+
             throw new IOException(
-                $"Intel KX failed with exit {process.ExitCode}: {error.GetAwaiter().GetResult().Trim()}");
+                $"Intel KX failed with exit {process.ExitCode}: {detail}");
         }
 
         return output.GetAwaiter().GetResult();

@@ -20,11 +20,20 @@ internal static class AcerModels
         Manufacturers = ["Acer"],
         Products = ["Predator PA08-I51"],
         Cpu = CpuPowerKind.Intel,
-        // The first contribution supplies physical input. No OEM power bounds have been established.
         UseStandardServices = false,
+        NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
+            CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,
+            CapabilityRole.ChargeProtectionMode, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
+            CapabilityRole.LightingEffectSpeed, CapabilityRole.LightingZoneColor, CapabilityRole.Telemetry],
+        ServiceFactories = [context => new AcerPowerService(context), context => new AcerFanService(context),
+            context => new AcerBatteryService(context), context => new AcerLightingService(context)],
         MinimumWatts = 0,
         MaximumWatts = 0,
         Controller = new StandardControllerProfile([new ControllerUsbId(0x0502, 0xF901)]),
+        // The standard Windows sensor frame is landscape X right, Y up, Z out of the screen.
+        // Canonical handheld input uses X right, Y out of the screen, Z down.
+        Motion = new StandardMotionProfile(new MotionAxisMap(0, 2, 1, 1, 1, -1),
+            new MotionAxisMap(0, 2, 1, 1, 1, -1)),
         CreateOemSource = () => new AcerButtonSource(),
         OemControls = AcerButtonSource.Controls
     };

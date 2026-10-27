@@ -16,14 +16,17 @@ matches that snapshot. A friendly model name or CPU vendor cannot override the n
 
 The native families cover Acer, AYANEO, GPD, Legion Go, MSI Claw, ONEXPLAYER/AOKZOE, ROG Ally,
 Valve, Zotac and additional exact models under Generic. Generic is a source grouping, not a CPU
-fallback. The catalog has 113 definitions and 107 glyph profiles. Only Claw 8 A2VM and Xbox Ally X
-are hardware-tested.
+fallback. The catalog has 113 definitions and 107 glyph profiles. Claw 8 A2VM and Xbox Ally X have
+attended hardware evidence. Atlas 8 also has the autonomous on-device results described below.
 
-Acer Predator Atlas 8 PA08-I51 initially supplies exact system/board detection, standard XInput
-controller/rumble and raw Guide, QAM, M1 and M2 input based on published captures. It is not yet
-hardware-tested. Fan, charging, lighting and motion are not declared in this initial contribution;
-see the [Acer provenance](../src/LibHandheld/Families/Acer/PROVENANCE.md) for firmware and proof
-limits.
+Acer Predator Atlas 8 PA08-I51 supplies exact system/board detection, XInput/controller rumble,
+Guide/QAM/M1/M2 input, native EC power and performance modes, two firmware-discovered system fans
+with RPM, optimized charging, Windows motion and volatile controller lighting. Power, charge and
+brightness write/readback/restoration passed on BIOS V1.03, controller release 0100. Fan original
+behavior remains unknown; its Auto fallback is reported unverified. Optional KX tuning is blocked by
+Windows security on this unit and is independent of EC power. HardwareVerified remains false; see
+[Acer provenance](../src/LibHandheld/Families/Acer/PROVENANCE.md) for exact boundaries and the
+remaining physical acceptance.
 
 DeclaredRoles lists possible model services, including optional accessories. Live descriptors and
 availability determine usable controls and instances; do not expose every declared role

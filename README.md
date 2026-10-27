@@ -37,9 +37,10 @@ The library contains **113 exact model definitions** across Acer, AYANEO, AYN, G
 Claw, ONEXPLAYER/AOKZOE, ROG Ally, Valve, Zotac and other supported models, with **107 glyph
 profiles**.
 
-**The only hardware-tested handhelds are the MSI Claw 8 A2VM and ROG Xbox Ally X.** Other
-definitions are implemented from source references and still need testing on the corresponding
-hardware.
+The MSI Claw 8 A2VM and ROG Xbox Ally X have attended hardware evidence. The Acer Predator Atlas 8
+also has autonomous on-device power, charging, lighting and lifecycle validation, with remaining
+physical acceptance recorded in its [provenance](src/LibHandheld/Families/Acer/PROVENANCE.md). Other
+definitions still need testing on the corresponding hardware.
 
 Use `HandheldDevice.Definitions` to inspect the catalog and `Detect` to match the current machine.
 Unknown identities return no match. See [devices and dependencies](docs/devices.md) for matching,

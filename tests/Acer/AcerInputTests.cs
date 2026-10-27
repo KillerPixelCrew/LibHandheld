@@ -22,8 +22,9 @@ public sealed class AcerInputTests
         Assert.True(definition.HasController);
         Assert.True(definition.HardwareAccess.HasFlag(DeviceHardwareAccess.IntelKx));
         Assert.Contains(CapabilityRole.ControllerSource, definition.DeclaredRoles);
-        Assert.DoesNotContain(CapabilityRole.MotionSource, definition.DeclaredRoles);
-        Assert.DoesNotContain(CapabilityRole.PowerSustainedLimit, definition.DeclaredRoles);
+        Assert.Contains(CapabilityRole.MotionSource, definition.DeclaredRoles);
+        Assert.Contains(CapabilityRole.PowerSustainedLimit, definition.DeclaredRoles);
+        Assert.Contains(CapabilityRole.FanMode, definition.DeclaredRoles);
     }
 
     [Fact]
@@ -46,6 +47,8 @@ public sealed class AcerInputTests
         Assert.False(AcerInputProtocol.IsVendorCollection(vendor with { UsagePage = 0xFFA0 }));
         Assert.False(AcerInputProtocol.IsVendorCollection(vendor with { InputLength = 64 }));
         Assert.False(AcerInputProtocol.IsVendorCollection(vendor with { ReleaseNumber = 5 }));
+        Assert.True(AcerInputProtocol.IsVendorCollection(vendor with { ReleaseNumber = 0x0100, InputLength = 15 }));
+        Assert.False(AcerInputProtocol.IsVendorCollection(vendor with { ReleaseNumber = 0x0100, InputLength = 16 }));
         Assert.False(AcerInputProtocol.IsVendorCollection(vendor with { PhysicalLocation = "" }));
         Assert.False(AcerInputProtocol.IsQamCollection(qam with { UsagePage = 1, Usage = 6 }));
         Assert.False(AcerInputProtocol.IsQamCollection(qam with { DevicePath = "hid#mi_01" }));

@@ -49,6 +49,10 @@ internal static unsafe partial class NativeHid
     [return: MarshalAs(UnmanagedType.U1)]
     public static partial bool HidD_GetInputReport(SafeFileHandle device, [In] [Out] byte[] buffer, int length);
 
+    [LibraryImport("hid.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static partial bool HidD_FlushQueue(SafeFileHandle device);
+
     [LibraryImport("hid.dll")]
     [return: MarshalAs(UnmanagedType.U1)]
     public static partial bool HidD_GetManufacturerString(SafeFileHandle device, [Out] byte[] buffer, uint length);

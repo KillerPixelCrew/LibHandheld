@@ -10,7 +10,9 @@ internal static class AcerInputProtocol
     internal static bool IsVendorCollection(HidCollection collection)
     {
         return IsAtlasCollection(collection, "mi_01") && collection.UsagePage == 0xFFF1
-               && collection.Usage == 0xF5 && collection.InputLength == 16;
+               && collection.Usage == 0xF5
+               && (collection.ReleaseNumber == 4 && collection.InputLength == 16
+                   || collection.ReleaseNumber == 0x0100 && collection.InputLength == 15);
     }
 
     internal static bool IsQamCollection(HidCollection collection)
@@ -22,7 +24,7 @@ internal static class AcerInputProtocol
     private static bool IsAtlasCollection(HidCollection collection, string usbInterface)
     {
         return collection.VendorId == 0x0502 && collection.ProductId == 0xF901
-               && collection.ReleaseNumber == 4
+               && collection.ReleaseNumber is 4 or 0x0100
                && collection.DevicePath.Contains(usbInterface, StringComparison.OrdinalIgnoreCase)
                && !string.IsNullOrWhiteSpace(collection.PhysicalLocation);
     }
@@ -30,7 +32,7 @@ internal static class AcerInputProtocol
     internal static bool TryDecodeRear(ReadOnlySpan<byte> report, out CanonicalButtons buttons)
     {
         buttons = CanonicalButtons.None;
-        if (report.Length != 16 || report[0] != 0x9A)
+        if (report.Length is not (15 or 16) || report[0] != 0x9A)
         {
             return false;
         }
@@ -43,7 +45,7 @@ internal static class AcerInputProtocol
     internal static bool IsGuidePress(ReadOnlySpan<byte> report)
     {
         // This event has no release report. Other 9E events must not become Guide presses.
-        return report.Length == 16 && report[0] == 0x9E
+        return report.Length is 15 or 16 && report[0] == 0x9E
                && BinaryPrimitives.ReadUInt16LittleEndian(report[1..]) == 0
                && BinaryPrimitives.ReadUInt16LittleEndian(report[3..]) == 5;
     }
