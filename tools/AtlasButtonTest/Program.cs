@@ -50,10 +50,11 @@ internal static class Program
         Console.OutputEncoding = Encoding.UTF8;
         if (args.Contains("--help"))
         {
-            Console.WriteLine("AtlasButtonTest [--out <directory>] [--rear-test | --front-hold-test] [--self-check]");
+            Console.WriteLine("AtlasButtonTest [--out <directory>] [--rear-test | --front-hold-test | --front-tap-test] [--self-check]");
             Console.WriteLine("Interactive read-only Atlas 8 button capture. Enter starts/ends each step; S skips; Q saves and exits.");
             Console.WriteLine("--rear-test temporarily acquires the native rear-button mode, tests three rear actions, then restores it.");
             Console.WriteLine("--front-hold-test attributes the two OEM holds and volume up/down to Raw Input devices (four steps).");
+            Console.WriteLine("--front-tap-test checks the two front OEM taps and volume after disabling the OEM keyboard (four steps).");
             return 0;
         }
 
@@ -64,9 +65,10 @@ internal static class Program
 
         var outputIndex = Array.IndexOf(args, "--out");
         var rearTest = args.Contains("--rear-test");
-        var frontHoldTest = args.Contains("--front-hold-test");
+        var frontTapTest = args.Contains("--front-tap-test");
+        var frontHoldTest = args.Contains("--front-hold-test") || frontTapTest;
         if (rearTest && frontHoldTest
-            || args.Any(arg => arg is not ("--out" or "--rear-test" or "--front-hold-test") && (outputIndex < 0 || arg != args.ElementAtOrDefault(outputIndex + 1)))
+            || args.Any(arg => arg is not ("--out" or "--rear-test" or "--front-hold-test" or "--front-tap-test") && (outputIndex < 0 || arg != args.ElementAtOrDefault(outputIndex + 1)))
             || outputIndex >= 0 && outputIndex + 1 >= args.Length)
         {
             Console.Error.WriteLine("Usage: AtlasButtonTest [--out <directory>] [--rear-test]");
@@ -214,7 +216,13 @@ internal static class Program
                     Console.WriteLine("Capturing device-attributed keyboard/volume reports and shortcut keys. Nothing is blocked.");
                 }
                 var deadline = DateTime.UtcNow.AddMinutes(30);
-                var steps = frontHoldTest ? new[]
+                var steps = frontTapTest ? new[]
+                {
+                    "Front LEFT Guide / Task extra: THREE QUICK taps, leaving one second between taps",
+                    "Front RIGHT Predator / QAM extra: THREE QUICK taps, leaving one second between taps",
+                    "Built-in VOLUME UP button: press once and release",
+                    "Built-in VOLUME DOWN button: press once and release"
+                } : frontHoldTest ? new[]
                 {
                     "Front LEFT Guide / Task extra: hold THREE seconds, release, wait TWO seconds",
                     "Front RIGHT Predator / QAM extra: hold THREE seconds, release, wait TWO seconds",
@@ -246,6 +254,18 @@ internal static class Program
                     foreach (var entry in step.Events.Where(item => item.Kind == "oem").Take(24))
                     {
                         Console.WriteLine($"  {entry.Control} {(entry.Down ? "DOWN" : "UP")}");
+                    }
+
+                    if (frontTapTest)
+                    {
+                        var guide = step.Events.Count(item => item.Kind == "oem" && item.Control == "guide" && item.Down);
+                        var qamPresses = step.Events.Count(item => item.Kind == "oem" && item.Control == "qam" && item.Down);
+                        var consumer = step.Events.Count(item => item.Kind == "device-consumer");
+                        Console.WriteLine($"  DETECTED: Guide taps={guide}, QAM taps={qamPresses}, volume/consumer reports={consumer}");
+                        if (index < 2 && (index == 0 ? guide : qamPresses) == 0)
+                        {
+                            Console.WriteLine("  NO EXPECTED OEM TAP DETECTED. This step needs investigation.");
+                        }
                     }
 
                     if (!step.Events.Any())

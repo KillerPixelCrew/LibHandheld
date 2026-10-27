@@ -109,10 +109,34 @@ controller, the QAM vendor collection or the I2C volume collection.
 
 The maintainer authorized disabling that exact keyboard collection. Normal disable was refused
 as a required system device; PnPUtil `/disable-device /force` accepted it but required a restart.
-Live disable, preservation of other controls after reboot, automatic WSGM keyboard suppression,
-and runtime F22/long-press routing remain unverified or unimplemented. The runtime contribution
+After the requested restart, Windows reported problem code 22 (disabled) for that exact keyboard
+leaf. The maintainer confirmed that holding the left OEM button no longer opened Task View or
+sent Win+Tab. The other controller HID collections, XInput interface and I2C volume collection
+still enumerated healthy.
+
+The maintainer then completed the post-reboot front-tap/volume capture. Three quick front-left
+presses each delivered the Guide HID notification and its bounded synthetic release. Three quick
+front-right presses each delivered `3781FF` / `370000` and matching QAM edges. No injected Win+G
+was observed during those steps. Both volume buttons were exercised three times and delivered
+their respective `33E900` / `33EA00` consumer reports followed by neutral `330000`, plus the
+corresponding Windows volume-key edges. There were no reader faults or dropped events. These
+observations verify that short front OEM input and volume input survive the exact keyboard disable;
+they do not establish new acceptance for unexercised controls or live WSGM/Steam routing.
+Disabling this keyboard also removes its F22 hold signal; do not claim native right-long support
+while that lane is disabled. This device differs from the Claw's shared firmware PS/2 keyboard:
+its volume buttons have an independently attributed I2C source, so disabling i8042prt or kbdhid
+globally, the composite USB parent, or the I2C device is unnecessary and outside this action.
+
+The nine recorded Acer service startup settings remained Disabled and the services Stopped after
+reboot. Handheld.Widget nevertheless reappeared in the user session, so service/task changes alone
+do not prove every OEM application stays absent across sign-in. FSE startup was disabled through
+HKCU GamingConfiguration / StartupToGamingHome = 0 and verified again after restart; Explorer
+remained the configured shell. The original service/task/FSE states and the exact keyboard-enable
+command were saved locally before the changes.
+
+Automatic WSGM keyboard suppression and runtime F22/long-press routing remain unimplemented. The runtime contribution
 in this increment owns rear-button mode; it does not yet automate the OEM software comparison
-or the pending keyboard disable. Recovery scripts and private captures remain local artifacts.
+or the keyboard disable. Recovery scripts and private captures remain local artifacts.
 
 Recovery uses captured model/firmware identity; lighting also binds the controller release. Unknown
 observations remain unknown, writable controls do not require current-value readback, and uncertain

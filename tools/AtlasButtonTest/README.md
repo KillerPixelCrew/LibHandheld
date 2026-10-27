@@ -47,3 +47,8 @@ device number plus the enumerator/hardware-ID prefix. The instance/serial and in
 omitted. Repeated keys remain visible. This observes input; it does not suppress it or identify
 which user-mode process injected a global keyboard event. OEM services should remain in the same
 known state throughout one comparison run.
+
+`--front-tap-test` checks short Guide/QAM presses and volume after the keyboard collection is
+disabled. It has four steps and displays Guide/QAM tap counts and consumer-report counts after
+each step. Use quick taps with a second between them; holding the button follows a different
+firmware path. It is read-only and does not re-enable the keyboard or restart Acer software.
