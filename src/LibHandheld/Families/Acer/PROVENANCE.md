@@ -59,8 +59,48 @@ Implemented controls and evidence:
 | Fans     | Health mask 02CD discovers SYS and SYS2. AcerGamingFunction WMI supplies Auto, Max and fixed-speed commands. EC health indices 4 and 8 supply the two RPM readings; index 1 supplies CPU temperature (53 degrees C in the final lifecycle trial). A bounded Max trial increased readings from 2829/2807 to 3281/3237 RPM. Release sent Auto. Behavior getters returned zero, so original behavior was unknown and restoration was reported unverified.                                                                                                                                      |
 | Battery  | BatteryControl.GetBatteryHealthControlStatus and SetBatteryHealthControl, battery 1, function mask 1. Optimized charging toggled from disabled to enabled, read back enabled, then restored disabled with a clear journal. Calibration and smart-charge schedules are not invoked. No arbitrary percentage ceiling or bypass is claimed.                                                                                                                                                                                                                                                    |
 | Motion   | Windows exposes both gyrometer and accelerometer through WinRT and the legacy Sensor API. Fresh samples reached canonical controller frames. The standard landscape Windows frame maps to application (X, Z, -Y); physical positive-axis trials remain outstanding.                                                                                                                                                                                                                                                                                                                         |
-| Lighting | Controller FFA0:0001, 64-byte reports. Output ID 0F requests profile 0; input ID 10 returns RAM profile 1. Only the 883-byte lighting section at offset 586 is addressable. Brightness, speed, solid/breathing effects and a shared nine-LED color use RAM command 21. Brightness 50 -> 45, both effects, color 123456 and speed 10 read back correctly; release restored every lighting byte. The dedicated command input queue is flushed before snapshots to discard stale replies. No mapping or ROM command is sent. Lighting acquisition currently admits measured release 0100 only. |
+| Lighting | Controller FFA0:0001, 64-byte reports. Output ID 0F requests profile 0; input ID 10 returns RAM profile 1. Only the 883-byte lighting section at offset 586 is addressable. Brightness, speed, solid/breathing effects and ring colors use RAM command 21. The eight visible segments are mapped below; the ninth wire slot is retained. Brightness 50 -> 45, both effects, color 123456 and speed 10 read back correctly; release restored every lighting byte. The dedicated command input queue is flushed before snapshots to discard stale replies. No mapping or ROM command is sent. Lighting acquisition currently admits measured release 0100 only. |
 | Lifetime | Physical controller and motion samples, four OEM descriptors, controller disable/re-enable, library suspend/resume and clean stop were observed. A bounded 10% rumble command was followed by an explicit zero; no human perception is claimed.                                                                                                                                                                                                                                                                                                                                             |
+
+## Attended RGB slot mapping, 2026-10-27
+
+The maintainer observed a retained-profile RAM preview with one static keyframe at 60% brightness.
+Its nine RGB slots were red, green, blue, yellow, cyan, magenta, orange, violet and white, in order.
+The original lighting section was journaled before dispatch; readback matched the preview bytes.
+The preview has a ten-minute limit and restores the original lighting section afterward.
+
+With the screen facing the user, the maintainer identified the left stick ring using the palette,
+then confirmed each of the eight segments individually with white while all other slots were dark:
+
+| Physical position | One-based RGB slot | Zero-based RGB index | Observed color |
+| --- | --- | --- | --- |
+| Top left | 7 | 6 | Orange, FF8000 |
+| Top right | 6 | 5 | Magenta, FF00FF |
+| Bottom left | 8 | 7 | Violet, 8000FF |
+| Bottom right | 5 | 4 | Cyan, 00FFFF |
+
+The right ring was then mapped one white slot at a time:
+
+| Physical position | One-based RGB slot | Zero-based RGB index |
+| --- | --- | --- |
+| Top left | 2 | 1 |
+| Top right | 1 | 0 |
+| Bottom left | 3 | 2 |
+| Bottom right | 4 | 3 |
+
+Only slot 9 was set to white in the final step. The maintainer reported no visible light and no
+additional RGB hardware. This slot remains unassigned; no visible output does not establish its
+firmware meaning. Runtime color/effect edits preserve its RGB bytes in the retained keyframes.
+The tests restored the complete original lighting section with verified readback and a healthy
+recovery journal. No ROM, controller mappings or calibration were changed.
+
+The runtime exposes a shared "All ring segments" color and eight individual `lighting.color`
+instances: `left.top-left`, `left.top-right`, `left.bottom-left`, `left.bottom-right`, and the
+corresponding `right.*` names. Each individual command changes only its measured RGB triplet in
+the active frame. Shared color affects the eight visible slots and retains the ninth. Colors,
+brightness, speed and effect selection use the same native backend on both WSGM surfaces.
+Effects and brightness remain shared across the rings; independent per-ring timing was not
+established. The physical mapping is verified for this controller release, not every firmware.
 
 ## Attended button follow-up, 2026-10-27
 

@@ -16,21 +16,58 @@ public sealed class AcerLightingTests
     }
 
     [Fact]
-    public void ColorChangesAllNineLedsAndKeepsInactiveAnimationsAndFlags()
+    public void SharedColorChangesEightVisibleSegmentsAndRetainsTheUnassignedSlot()
     {
         var retained = Lighting();
         retained[1] = 4;
         var changed = AcerLightingService.Edit(retained, Command("lighting.color", CapabilityValue.Color(0x123456)));
         Assert.Equal(1, changed[1]);
-        for (var index = 0; index < 9; index++)
+        for (var index = 0; index < 8; index++)
         {
             Assert.Equal(new byte[] { 0x12, 0x34, 0x56 }, changed.AsSpan(5 + index * 3, 3).ToArray());
         }
 
-        Assert.Equal(retained.AsSpan(32).ToArray(), changed.AsSpan(32).ToArray());
+        Assert.Equal(retained.AsSpan(29).ToArray(), changed.AsSpan(29).ToArray());
         Assert.Equal(retained[2], changed[2]);
         Assert.Equal(retained[3], changed[3]);
         Assert.Equal(retained[4], changed[4]);
+    }
+
+    [Theory]
+    [InlineData("left.top-left", 6)]
+    [InlineData("left.top-right", 5)]
+    [InlineData("left.bottom-left", 7)]
+    [InlineData("left.bottom-right", 4)]
+    [InlineData("right.top-left", 1)]
+    [InlineData("right.top-right", 0)]
+    [InlineData("right.bottom-left", 2)]
+    [InlineData("right.bottom-right", 3)]
+    public void SpatialColorChangesOnlyItsMeasuredSlot(string zone, int index)
+    {
+        var retained = Lighting();
+        var command = Command("lighting.color", CapabilityValue.Color(0x123456)) with { InstanceId = zone };
+        var changed = AcerLightingService.Edit(retained, command);
+        var expected = (byte[])retained.Clone();
+        new byte[] { 0x12, 0x34, 0x56 }.CopyTo(expected, 5 + index * 3);
+        Assert.Equal(expected, changed);
+    }
+
+    [Fact]
+    public void UnassignedSlotCannotBecomeAUserZone()
+    {
+        Assert.Throws<ArgumentException>(() => AcerLightingService.Edit(Lighting(),
+            Command("lighting.color", CapabilityValue.Color(0x123456)) with { InstanceId = "slot-9" }));
+    }
+
+    [Fact]
+    public void BreathingRetainsTheUnassignedSlotInBothFrames()
+    {
+        var retained = Lighting();
+        var changed = AcerLightingService.Edit(retained, Command("lighting.effect", CapabilityValue.Choice("breathing")));
+        var expected = (byte[])retained.Clone();
+        expected[1] = 2;
+        expected.AsSpan(32, 24).Clear();
+        Assert.Equal(expected, changed);
     }
 
     [Fact]

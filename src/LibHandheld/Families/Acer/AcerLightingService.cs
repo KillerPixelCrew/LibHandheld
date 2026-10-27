@@ -9,6 +9,19 @@ namespace LibHandheld.Families.Acer;
 /// <summary>Retains the controller's lighting bytes and previews changes in RAM, never in ROM.</summary>
 internal sealed class AcerLightingService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-lighting")
 {
+    // Confirmed one at a time in white on controller release 0100, screen facing the user.
+    // The ninth wire slot produced no visible light and is retained without exposing a zone.
+    private static readonly (string Id, string Name, int Index)[] Zones =
+    [
+        ("left.top-left", "Left ring: top left", 6),
+        ("left.top-right", "Left ring: top right", 5),
+        ("left.bottom-left", "Left ring: bottom left", 7),
+        ("left.bottom-right", "Left ring: bottom right", 4),
+        ("right.top-left", "Right ring: top left", 1),
+        ("right.top-right", "Right ring: top right", 0),
+        ("right.bottom-left", "Right ring: bottom left", 2),
+        ("right.bottom-right", "Right ring: bottom right", 3)
+    ];
     private static readonly IReadOnlyList<CapabilityDescriptor> Controls =
     [
         ProviderControls.Integer(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness,
@@ -28,9 +41,15 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         new()
         {
             CapabilityId = "lighting.color", InstanceId = "main", Role = CapabilityRole.LightingZoneColor,
-            Display = CapabilityDescriptors.Label("Lighting color"), ValueKind = CapabilityValueKind.Color,
+            Display = CapabilityDescriptors.Label("All ring segments"), ValueKind = CapabilityValueKind.Color,
             SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
-        }
+        },
+        .. Zones.Select(zone => new CapabilityDescriptor
+        {
+            CapabilityId = "lighting.color", InstanceId = zone.Id, Role = CapabilityRole.LightingZoneColor,
+            Display = CapabilityDescriptors.Label(zone.Name), ValueKind = CapabilityValueKind.Color,
+            SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
+        })
     ];
     private readonly ObservedValues _observed = new();
     private AcerControllerTransport? _controller;
@@ -88,7 +107,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         Store(CapabilityIds.LightingSpeed, CapabilityValue.Integer(20 - lighting[offset + 2]), written);
         var effect = lighting[offset] switch { 1 => "solid", 2 => "breathing", _ => null };
         Store(CapabilityIds.LightingEffect, effect is null ? null : CapabilityValue.Choice(effect), written);
-        var colors = lighting.AsSpan(offset + 4, 27);
+        var colors = lighting.AsSpan(offset + 4, 24);
         var uniform = true;
         for (var index = 3; index < colors.Length; index += 3)
         {
@@ -97,6 +116,12 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
 
         Store("lighting.color", uniform ? CapabilityValue.Color((colors[0] << 16) | (colors[1] << 8) | colors[2]) : null,
             written, instance: "main");
+        foreach (var zone in Zones)
+        {
+            var rgb = colors.Slice(zone.Index * 3, 3);
+            Store("lighting.color", CapabilityValue.Color((rgb[0] << 16) | (rgb[1] << 8) | rgb[2]),
+                written, instance: zone.Id);
+        }
     }
 
     private void Store(string id, CapabilityValue? value, bool written, string? instance = null)
@@ -132,20 +157,26 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
                 // A second black frame is the vendor's breathing sequence. Other animations are retained.
                 if (lighting[offset] == 2)
                 {
-                    lighting.AsSpan(offset + 4 + 27, 27).Clear();
+                    lighting.AsSpan(offset + 4 + 27, 24).Clear();
                 }
                 break;
             case "lighting.color":
                 var color = command.RequestedValue!.ColorValue!.Value;
+                var shared = command.InstanceId is null or "main";
+                var zoneIndex = Array.FindIndex(Zones, zone => zone.Id == command.InstanceId);
+                if (!shared && zoneIndex < 0)
+                {
+                    throw new ArgumentException("Unknown Atlas lighting zone.");
+                }
                 if (lighting[offset] > 2)
                 {
                     lighting[offset] = 1;
                 }
-                for (var index = 0; index < 9; index++)
+                foreach (var zone in shared ? Zones : [Zones[zoneIndex]])
                 {
-                    lighting[offset + 4 + index * 3] = (byte)((color >> 16) & 0xFF);
-                    lighting[offset + 5 + index * 3] = (byte)((color >> 8) & 0xFF);
-                    lighting[offset + 6 + index * 3] = (byte)(color & 0xFF);
+                    lighting[offset + 4 + zone.Index * 3] = (byte)((color >> 16) & 0xFF);
+                    lighting[offset + 5 + zone.Index * 3] = (byte)((color >> 8) & 0xFF);
+                    lighting[offset + 6 + zone.Index * 3] = (byte)(color & 0xFF);
                 }
                 break;
             default:
