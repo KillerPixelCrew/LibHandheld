@@ -89,7 +89,21 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
             {
                 descriptors.Add(ProviderControls.Integer(CapabilityIds.PowerSustained,
                     CapabilityRole.PowerSustainedLimit, DisplayKey.SustainedPowerLimit, minimum, maximum,
-                    CapabilityUnit.Watt, write: true) with { PairedPowerLimitId = CapabilityIds.PowerBoost });
+                    CapabilityUnit.Watt, write: true) with
+                {
+                    PairedPowerLimitId = CapabilityIds.PowerBoost,
+                    PowerPresets =
+                    [
+                        StockPreset("quiet", "Quiet", DevicePowerMode.BetterBattery),
+                        StockPreset("balanced", "Balanced", DevicePowerMode.Balanced),
+                        StockPreset("turbo", "Turbo", DevicePowerMode.BestPerformance),
+                        new DevicePowerPreset("full-power", "Full Power", maximum, boostMaximum,
+                            DevicePowerMode.BestPerformance)
+                        {
+                            ScenarioOnAc = "manual", ScenarioOnDc = "manual"
+                        }
+                    ]
+                });
                 descriptors.Add(ProviderControls.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
                     DisplayKey.BoostPowerLimit, minimum, boostMaximum, CapabilityUnit.Watt, write: true));
             }
@@ -110,6 +124,14 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         ReadCurrent(token);
         return Set(DeviceServiceState.Owned);
     }
+
+    // Stock scenarios include firmware fan/power policy. Their limits are deliberately unspecified:
+    // writing manual PL1/PL2 after selecting one would silently switch the device back to Manual.
+    private static DevicePowerPreset StockPreset(string id, string name, DevicePowerMode windowsMode) =>
+        new(id, name, 0, 0, windowsMode)
+        {
+            FirmwareManaged = true, ScenarioOnAc = id, ScenarioOnDc = id
+        };
 
     /// <summary>Queries Manual/profile 3 limit selector 1=PL1 min, 2=PL1 max, 4=PL2 max, in whole watts.</summary>
     /// <remarks>The 26-byte request puts its selector at offset 25; the reply echoes it and returns uint16 at 26.</remarks>

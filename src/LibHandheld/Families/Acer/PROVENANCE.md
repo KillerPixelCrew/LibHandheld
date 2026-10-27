@@ -301,3 +301,25 @@ HardwareVerified remains false. Runtime front-long handling, View/Menu attributi
 travel, precise motion scale calibration, held-button disconnect, actual Windows sleep/wake and
 visible Steam acceptance were not established by autonomous software trials. Library suspend/resume
 is not an OS sleep test. Builds, fixtures and Overlay replays do not replace those observations.
+
+## Follow-up: presets and signed processor access (2026-10-27)
+
+The sustained-limit descriptor now publishes Quiet, Balanced and Turbo as firmware-managed presets.
+Their zero watt fields are unspecified placeholders, never commands. Hosts must select the declared
+AC/DC scenario and Windows mode without subsequently writing PL1/PL2. Full Power selects Manual with
+the firmware-advertised sustained/boost maxima (40/65 W on this unit) and Windows Best performance.
+The host retains Custom and per-game/AC/DC assignment policy.
+
+Windows blocked KX's HwRwDrv.x64; a later read attempt returned certificate-revocation
+error 2148204812. Atlas no longer requires IntelKx: optional voltage settings use the existing
+pinned, signed PawnIO IntelMSR module's allowlisted MSR 0x150 mailbox. Neutral 0 mV commands were
+accepted on Core, Cache, GPU and System Agent on this device. This proves command acceptance, not a
+measured voltage change or acceptance of nonzero offsets. GPU-clock MMIO writes remain unavailable
+because the signed MCHBAR module has no write export. Other device families retain their existing
+backend. Mailbox commands dispatch once, check busy/completion status, and never retry uncertain
+writes. Module source: https://github.com/namazso/PawnIO.Modules/blob/main/IntelMSR.p
+
+Rear paddle descriptors carry no extra Guide/QAM forwarding marker. Physical RearPaddle1/2 states
+still arrive through canonical controller input. This resolves the WSGM host rejecting the entire
+OEM descriptor set when a rear enum occupied the Guide/QAM-only forwarding field. Front long-press
+keyboard events remain suppressed by the separately disabled keyboard leaf described above.

@@ -12,7 +12,8 @@ internal sealed class ProfiledProcessorService(
     CpuPowerKind kind,
     int minimumGpuClock = 100,
     int maximumGpuClock = 3000,
-    Func<AmdSmuTransport>? openAmd = null) : ProfiledFeatureService("processor-settings")
+    Func<AmdSmuTransport>? openAmd = null,
+    bool usePawnIoIntel = false) : ProfiledFeatureService("processor-settings")
 {
     private readonly Dictionary<string, ProcessorSetting> _settings = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int Value, DateTimeOffset At)> _observed = new(StringComparer.Ordinal);
@@ -20,6 +21,7 @@ internal sealed class ProfiledProcessorService(
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private AmdSmuTransport? _amd;
     private IntelPowerTransport? _intel;
+    private IntelMsrSettings? _intelMsr;
     private CapabilityDescriptor? _automaticGpu;
     private bool _descriptorsChanged;
     private CapabilityReason? _resetReason;
@@ -63,7 +65,14 @@ internal sealed class ProfiledProcessorService(
             }
             else
             {
-                _intel = IntelPowerTransport.Open(featureContext.Resources.IntelKxPath);
+                if (usePawnIoIntel)
+                {
+                    _intelMsr = IntelMsrSettings.Open();
+                }
+                else
+                {
+                    _intel = IntelPowerTransport.Open(featureContext.Resources.IntelKxPath);
+                }
                 DescribeIntel();
             }
 
@@ -347,8 +356,10 @@ internal sealed class ProfiledProcessorService(
     {
         _amd?.Dispose();
         _intel?.Dispose();
+        _intelMsr?.Dispose();
         _amd = null;
         _intel = null;
+        _intelMsr = null;
         return ValueTask.CompletedTask;
     }
 
@@ -399,8 +410,12 @@ internal sealed class ProfiledProcessorService(
 
     private void DescribeIntel()
     {
-        var intel = _intel ?? throw new InvalidOperationException("The Intel processor transport is not owned.");
-        if (minimumGpuClock > 0 && maximumGpuClock >= minimumGpuClock)
+        var intel = _intel;
+        if (intel is null && _intelMsr is null)
+        {
+            throw new InvalidOperationException("The Intel processor transport is not owned.");
+        }
+        if (intel is not null && minimumGpuClock > 0 && maximumGpuClock >= minimumGpuClock)
         {
             Add("processor.gpu-clock", "GPU clock", minimumGpuClock, maximumGpuClock, CapabilityUnit.Megahertz,
                 intel.WriteGpuClock, intel.ReadGpuClock, step: 50);
@@ -416,13 +431,25 @@ internal sealed class ProfiledProcessorService(
         Add("processor.cpu-undervolt", "CPU core/cache undervolt", -50, 50, CapabilityUnit.Millivolt,
             value =>
             {
-                intel.WriteUndervolt(IntelUndervoltRail.Core, value);
-                intel.WriteUndervolt(IntelUndervoltRail.Cache, value);
+                WriteIntelOffset(IntelUndervoltRail.Core, value);
+                WriteIntelOffset(IntelUndervoltRail.Cache, value);
             }, neutral: 0);
         Add("processor.gpu-undervolt", "GPU undervolt", -50, 50, CapabilityUnit.Millivolt,
-            value => intel.WriteUndervolt(IntelUndervoltRail.Gpu, value), neutral: 0);
+            value => WriteIntelOffset(IntelUndervoltRail.Gpu, value), neutral: 0);
         Add("processor.system-agent-undervolt", "System Agent undervolt", -50, 50, CapabilityUnit.Millivolt,
-            value => intel.WriteUndervolt(IntelUndervoltRail.SystemAgent, value), neutral: 0);
+            value => WriteIntelOffset(IntelUndervoltRail.SystemAgent, value), neutral: 0);
+    }
+
+    private void WriteIntelOffset(IntelUndervoltRail rail, int value)
+    {
+        if (_intelMsr is { } pawnIo)
+        {
+            pawnIo.WriteUndervolt(rail, value);
+        }
+        else
+        {
+            _intel!.WriteUndervolt(rail, value);
+        }
     }
 
     private void Add(string id, string label, int minimum, int maximum, CapabilityUnit unit,

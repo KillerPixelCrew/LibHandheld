@@ -26,8 +26,10 @@ internal sealed class AcerButtonSource : IProfiledOemSource
         {
             ("guide", "Guide / Task", CanonicalButtons.Guide, OemControlPlacement.Front),
             ("qam", "Predator / Quick Access", CanonicalButtons.QuickAccess, OemControlPlacement.Front),
-            ("m1", "M1", CanonicalButtons.RearPaddle1, OemControlPlacement.Rear),
-            ("m2", "M2", CanonicalButtons.RearPaddle2, OemControlPlacement.Rear)
+            // ControllerButton describes only the extra Guide/QAM forwarding channel. Rear bits
+            // are already carried by AcerButtonState through the canonical controller sample.
+            ("m1", "M1", CanonicalButtons.None, OemControlPlacement.Rear),
+            ("m2", "M2", CanonicalButtons.None, OemControlPlacement.Rear)
         }.Select(control => new OemControlDescriptor
         {
             ControlId = control.Item1,

@@ -122,7 +122,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             if (_profile.UseStandardServices || !string.IsNullOrWhiteSpace(context.Identity.ProcessorName))
             {
                 var processor = new ProfiledProcessorService(featureContext, _profile.Cpu,
-                    processorClocks.Minimum, processorClocks.Maximum);
+                    processorClocks.Minimum, processorClocks.Maximum, usePawnIoIntel: _profile.UsePawnIoIntelSettings);
                 _nativeServices.Add(processor);
                 _services.Add(processor);
             }

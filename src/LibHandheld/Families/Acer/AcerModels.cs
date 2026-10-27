@@ -21,7 +21,7 @@ internal static class AcerModels
         Definition = new HandheldDefinition("acer-predator-atlas-8-pa08-i51", FamilyId,
             "Acer Predator Atlas 8 (PA08-I51)", "acer-predator-atlas-8")
         {
-            HardwareAccess = DeviceHardwareAccess.IntelKx
+            HardwareAccess = DeviceHardwareAccess.PawnIo
         },
         SourceFamilyId = "PredatorAtlas8",
         IdentitySource = ProfileIdentitySource.System,
@@ -29,6 +29,9 @@ internal static class AcerModels
         Products = ["Predator PA08-I51"],
         Cpu = CpuPowerKind.Intel,
         UseStandardServices = false,
+        // HwRwDrv used by KX is blocked on the measured Windows build. Native EC controls do not
+        // need it; optional OC-mailbox settings use the signed, constrained IntelMSR module.
+        UsePawnIoIntelSettings = true,
         NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
             CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,
             CapabilityRole.ChargeProtectionMode, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
