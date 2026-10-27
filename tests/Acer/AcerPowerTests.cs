@@ -100,6 +100,7 @@ public sealed class AcerPowerTests
     {
         var fans = AcerFanService.Discover(0x02CD);
         Assert.Equal(new[] { "sys", "sys2" }, fans.Select(item => item.Id));
+        Assert.Equal(new[] { "Left", "Right" }, fans.Select(item => item.Name));
         Assert.Equal(0x000C0002UL, fans[0].PackBehavior(behavior: 3));
         Assert.Equal(0x00300004UL, fans[1].PackBehavior(behavior: 3));
         Assert.Equal(0x3202UL, fans[0].PackSpeed(speed: 50));

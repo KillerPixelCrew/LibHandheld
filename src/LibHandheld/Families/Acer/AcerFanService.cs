@@ -147,7 +147,10 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         var gpus = ((healthMask >> 5) & 1) + ((healthMask >> 8) & 1);
         for (var index = 0; index < systems; index++)
         {
-            fans.Add(new AcerFan(index == 0 ? "sys" : "sys2", index == 0 ? "System" : "System 2",
+            var name = healthMask == 0x02CD
+                ? index == 0 ? "Left" : "Right"
+                : index == 0 ? "System" : "System 2";
+            fans.Add(new AcerFan(index == 0 ? "sys" : "sys2", name,
                 index + 1, 2 + 2 * index, index + 2, index == 0 ? (byte)4 : (byte)8));
         }
 

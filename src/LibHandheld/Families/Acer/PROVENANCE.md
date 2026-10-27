@@ -102,6 +102,38 @@ brightness, speed and effect selection use the same native backend on both WSGM 
 Effects and brightness remain shared across the rings; independent per-ring timing was not
 established. The physical mapping is verified for this controller release, not every firmware.
 
+## Attended fan control, 2026-10-27
+
+With Acer OEM software disabled, the maintainer confirmed each physical fan separately, screen
+facing the user. The EC health mask was 02CD. Native `sys` is the LEFT fan, health/RPM index 4;
+`sys2` is the RIGHT fan, health/RPM index 8. The runtime now labels these Left and Right for that
+measured topology; other health masks retain generic labels.
+
+| Trial | Observed response | Maintainer confirmation |
+| --- | --- | --- |
+| Left Full Speed, right Auto | Left rose from about 2844 to 5500 RPM; right stayed about 2800 RPM | Left fan accelerated and worked |
+| Right Full Speed, left Auto | Right rose past 4100 and settled around 5500 RPM; left slowed to its Auto speed | Right fan accelerated and worked |
+| Left fixed 50%, right Auto | Left settled around 4100 RPM; right around 2750 RPM | Left was quieter than Full Speed |
+| Right fixed 50%, left Auto | Right remained around 2750 RPM, close to its Auto baseline | Command accepted; no separate audible attribution claimed at this setting |
+| Right fixed 75%, left Auto | Right rose to about 4240 RPM; left stayed about 2775 RPM | Right accelerated and worked |
+
+Duty percentages are firmware control values, not a linear promise about RPM. Readings during a
+mode transition briefly fell below their settled values before ramping; first snapshots are not
+steady-state measurements. CPU temperature during the trial was approximately 39..45 degrees C.
+No zero-duty/stop, exhaustive percentage sweep, fan curve or thermal-load acceptance is claimed.
+
+Commands use `root\\WMI` / `AcerGamingFunction`, without running Acer services. The trial was
+elevated; the non-elevated post-reboot token received Access Denied even when querying this class.
+`SetGamingFanBehavior` selects one fan with its selection mask and behavior field; `SetGamingFanSpeed`
+uses `(percent << 8) | selector`. The measured selectors are 2 for left and 3 for right. Auto=1,
+Full Speed=2, Custom=3. Native commands publish accepted values and do not require a getter to write.
+
+At the end, the journal restored the originals and release returned Idle with a healthy, empty
+journal. Independent elevated getters then confirmed Auto for both: left `gmOutput=0x400`, right
+`gmOutput=0x1000`, status 0 and decoded behavior 1. This later verified restore differs from the
+initial trial's unreadable original behavior. The unknown-original Auto fallback remains necessary
+and must still report unverified cleanup when an original/getter is unavailable.
+
 ## Attended button follow-up, 2026-10-27
 
 The maintainer completed the 27-step CLI capture on the same BIOS V1.03 / controller 0100 unit.
