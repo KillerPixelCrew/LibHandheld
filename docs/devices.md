@@ -14,10 +14,16 @@ ReadIdentity captures read-only Windows board/product, BIOS, processor and USB m
 EC/MCU facts remain unknown; detection does not probe feature reports or privileged drivers. Detect
 matches that snapshot. A friendly model name or CPU vendor cannot override the native identity.
 
-The native families cover AYANEO, GPD, Legion Go, MSI Claw, ONEXPLAYER/AOKZOE, ROG Ally, Valve,
-Zotac and additional exact models under Generic. Generic is a source grouping, not a CPU fallback.
-The catalog has 112 definitions and 106 glyph profiles. Only Claw 8 A2VM and Xbox Ally X are
-hardware-tested.
+The native families cover Acer, AYANEO, GPD, Legion Go, MSI Claw, ONEXPLAYER/AOKZOE, ROG Ally,
+Valve, Zotac and additional exact models under Generic. Generic is a source grouping, not a CPU
+fallback. The catalog has 113 definitions and 107 glyph profiles. Only Claw 8 A2VM and Xbox Ally X
+are hardware-tested.
+
+Acer Predator Atlas 8 PA08-I51 initially supplies exact system/board detection, standard XInput
+controller/rumble and raw Guide, QAM, M1 and M2 input based on published captures. It is not yet
+hardware-tested. Fan, charging, lighting and motion are not declared in this initial contribution;
+see the [Acer provenance](../src/LibHandheld/Families/Acer/PROVENANCE.md) for firmware and proof
+limits.
 
 DeclaredRoles lists possible model services, including optional accessories. Live descriptors and
 availability determine usable controls and instances; do not expose every declared role

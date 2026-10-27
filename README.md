@@ -33,8 +33,9 @@ metadata rather than assuming every handheld has the same hardware or firmware f
 
 ## Device support
 
-The library contains **112 exact model definitions** across AYANEO, AYN, GPD, Legion Go, MSI Claw,
-ONEXPLAYER/AOKZOE, ROG Ally, Valve, Zotac and other supported models, with **106 glyph profiles**.
+The library contains **113 exact model definitions** across Acer, AYANEO, AYN, GPD, Legion Go, MSI
+Claw, ONEXPLAYER/AOKZOE, ROG Ally, Valve, Zotac and other supported models, with **107 glyph
+profiles**.
 
 **The only hardware-tested handhelds are the MSI Claw 8 A2VM and ROG Xbox Ally X.** Other
 definitions are implemented from source references and still need testing on the corresponding

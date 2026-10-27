@@ -1,4 +1,5 @@
 using LibHandheld.Contracts;
+using LibHandheld.Families.Acer;
 using LibHandheld.Families.Ayaneo;
 using LibHandheld.Families.Generic;
 using LibHandheld.Families.Gpd;
@@ -90,6 +91,7 @@ internal static class DeviceFamilies
             identity => ZotacModels.Match(identity)?.Definition.Id, ZotacModels.CreateEngine),
         new DeviceFamily(SteamDeckModels.FamilyId, SteamDeckModels.Definitions,
             SteamDeckModels.Match, SteamDeckModels.CreateEngine),
+        new DeviceFamily(AcerModels.FamilyId, AcerModels.Definitions, AcerModels.Match, AcerModels.CreateEngine),
         new DeviceFamily(GenericModels.FamilyId, GenericModels.GetDefinitions(),
             identity => GenericModels.Match(identity)?.Definition.Id, GenericModels.CreateEngine)
     ]).Select(family => family with
