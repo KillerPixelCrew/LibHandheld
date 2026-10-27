@@ -4,9 +4,16 @@ using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Acer;
 
-/// <summary>Input shapes captured on PA08-I51, USB 0502:F901, device release 0004.</summary>
+/// <summary>Decodes the Atlas's OEM HID reports independently of the ordinary XInput gamepad.</summary>
+/// <remarks>
+///     The measured variants are USB 0502:F901 release 0004 with 16-byte vendor input and release
+///     0100 with 15-byte input. Report lengths include the report ID. These selectors deliberately
+///     reject other releases and ambiguous collections; a shared VID/PID is not a protocol guarantee.
+///     The separate keyboard's Win+Tab/F22 holds and I2C volume input are outside this parser.
+/// </remarks>
 internal static class AcerInputProtocol
 {
+    /// <summary>Matches MI_01's FFF1:00F5 rear-key and Guide notification collection.</summary>
     internal static bool IsVendorCollection(HidCollection collection)
     {
         return IsAtlasCollection(collection, "mi_01") && collection.UsagePage == 0xFFF1
@@ -15,6 +22,7 @@ internal static class AcerInputProtocol
                    || collection.ReleaseNumber == 0x0100 && collection.InputLength == 15);
     }
 
+    /// <summary>Matches MI_02's 0088:0001 three-byte front-right/QAM collection.</summary>
     internal static bool IsQamCollection(HidCollection collection)
     {
         return IsAtlasCollection(collection, "mi_02") && collection.UsagePage == 0x88
@@ -29,6 +37,11 @@ internal static class AcerInputProtocol
                && !string.IsNullOrWhiteSpace(collection.PhysicalLocation);
     }
 
+    /// <summary>Reads the complete rear-button state from report 9A; unrelated reports are not releases.</summary>
+    /// <param name="report">One complete 15- or 16-byte report, including ID 9A.</param>
+    /// <param name="buttons">M1/right from byte 1 bit 1, M2/left from bit 2; both may be held.</param>
+    /// <returns>True for a recognized rear state, including byte 1 zero as an explicit release.</returns>
+    /// <remarks>Native rear reports require controller rear-key mode Combination (1), owned by AcerControllerModeService.</remarks>
     internal static bool TryDecodeRear(ReadOnlySpan<byte> report, out CanonicalButtons buttons)
     {
         buttons = CanonicalButtons.None;
@@ -42,6 +55,8 @@ internal static class AcerInputProtocol
         return true;
     }
 
+    /// <summary>Recognizes only 9E/0000/0005, the release-less front-left short-press notification.</summary>
+    /// <remarks>The two words after report ID 9E are little endian. A timer supplies the synthetic release.</remarks>
     internal static bool IsGuidePress(ReadOnlySpan<byte> report)
     {
         // This event has no release report. Other 9E events must not become Guide presses.
@@ -50,6 +65,10 @@ internal static class AcerInputProtocol
                && BinaryPrimitives.ReadUInt16LittleEndian(report[3..]) == 5;
     }
 
+    /// <summary>Decodes 37 81 FF as front-right down and 37 00 00 as release.</summary>
+    /// <param name="report">Exactly three bytes, including report ID 37.</param>
+    /// <param name="pressed">True for the little-endian FF81 payload, false for zero.</param>
+    /// <returns>False for other report IDs, lengths or payloads; they do not change held state.</returns>
     internal static bool TryDecodeQam(ReadOnlySpan<byte> report, out bool pressed)
     {
         pressed = false;

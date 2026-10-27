@@ -5,10 +5,19 @@ using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Acer;
 
-/// <summary>The controller's volatile lighting profile lane. Firmware mappings and ROM are never written.</summary>
+/// <summary>The Atlas controller's dedicated command lane for reversible mode and volatile lighting changes.</summary>
+/// <remarks>
+///     Measured USB 0502:F901 release 0100, FFA0:0001, uses 64-byte input/output reports. The outer
+///     header is 0F 00 00 3C for requests and 10 00 00 3C for replies. Profile offsets are big endian,
+///     unlike the separate EC transport. Only lighting RAM and immediate gamepad/rear-key modes are
+///     writable here: key mappings, sensor configuration, calibration and command 22 ROM save are excluded.
+///     The owning service serializes this handle's operations; flushing it never flushes an OEM reader.
+/// </remarks>
 internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControllerModeTransport
 {
+    /// <summary>Byte offset of the lighting section in the complete vendor profile.</summary>
     internal const int LightingOffset = 586;
+    /// <summary>Complete retained section: selected-animation byte, four 220-byte animations and trailing bytes.</summary>
     internal const int LightingLength = 883;
     private readonly FileStream _stream;
 
@@ -20,6 +29,8 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
 
     internal ushort Release { get; }
 
+    /// <summary>Discards stale command replies, sends query 26 and reads the gamepad/rear-key bytes from reply 27.</summary>
+    /// <remarks>Reply bytes 5 and 6 are the two owned modes; other returned mode/status bytes are not rewritten.</remarks>
     public async ValueTask<AcerControllerMode> ReadModeAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -36,6 +47,12 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
             : throw new IOException("Unsupported Atlas controller mode reply.");
     }
 
+    /// <summary>Writes immediate command 24 with gamepad and rear-key modes, followed by the vendor's 20 ms pacing.</summary>
+    /// <remarks>
+    ///     The callback runs immediately before the stream write. There is no acknowledgement/retry in
+    ///     this method; recovery reads the mode separately. Cancellation can reject before dispatch but
+    ///     must not be interpreted as proof that a submitted mode change did not happen.
+    /// </remarks>
     public async ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token, Action dispatched)
     {
         var packet = ModePacket(mode);
@@ -46,6 +63,7 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         await Task.Delay(millisecondsDelay: 20, CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>Builds query 26 when null, or mode command 24 with payload bytes at offsets 5/6.</summary>
     internal static byte[] ModePacket(AcerControllerMode? mode = null)
     {
         if (mode is { } value && (value.Gamepad > 6 || value.RearKeys > 2))
@@ -66,6 +84,7 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         return packet;
     }
 
+    /// <summary>Opens only the measured XInput-mode command collection; DInput's F90A topology is not substituted.</summary>
     internal static AcerControllerTransport? Open()
     {
         var collection = HidDevices.Unique(HidDevices.Enumerate(0x0502, [0xF901]),
@@ -74,6 +93,12 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         return collection is null ? null : new AcerControllerTransport(collection);
     }
 
+    /// <summary>Reads all 883 retained lighting bytes in correlated chunks of at most 55 data bytes.</summary>
+    /// <remarks>
+    ///     Request 04 selects profile 0, while reply 05 identifies returned RAM profile 1. Offset and
+    ///     count must match the outstanding request. Unrelated command replies are ignored until the
+    ///     one-second chunk deadline; partial sections are never returned as usable originals.
+    /// </remarks>
     internal async ValueTask<byte[]> ReadLightingAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -117,6 +142,12 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         return lighting;
     }
 
+    /// <summary>Writes command 21/profile 1 RAM chunks within the retained lighting section only.</summary>
+    /// <param name="lighting">The complete edited or original section, preserving every unrelated byte.</param>
+    /// <param name="token">Checked before each chunk; a cancellation after a prior chunk can leave a partial edit.</param>
+    /// <param name="dispatched">Marks each submitted chunk so the service can discard uncertain cached observations.</param>
+    /// <param name="previous">Known previous bytes for trimming the changed range; null forces full-section recovery.</param>
+    /// <remarks>No per-chunk acknowledgement or automatic retry is performed, and command 22 ROM save is never sent.</remarks>
     internal async ValueTask WriteLightingAsync(byte[] lighting, CancellationToken token, Action? dispatched = null,
         byte[]? previous = null)
     {
@@ -152,6 +183,8 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         }
     }
 
+    /// <summary>Builds the nine-byte profile header and refuses addresses outside the lighting section.</summary>
+    /// <remarks>Bytes 4/5 are command/profile, 6/7 the big-endian absolute offset, 8 the payload count; data starts at 9.</remarks>
     internal static byte[] Packet(byte command, int offset, int count)
     {
         if (command is not (4 or 0x21) || count is < 1 or > 55
@@ -176,8 +209,12 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
     }
 }
 
+/// <summary>The two immediate mode fields owned by the controller lifecycle.</summary>
+/// <param name="Gamepad">Offline 0, XInput 1, DInput 2, Special 3, Desktop 4, BIOS 5 or Testing 6.</param>
+/// <param name="RearKeys">Macro 0, Combination/native reporting 1, or Disabled 2.</param>
 internal sealed record AcerControllerMode(byte Gamepad, byte RearKeys);
 
+/// <summary>Mode-only transport seam used by the lifecycle and hardware-free protocol fixtures.</summary>
 internal interface IAcerControllerModeTransport : IAsyncDisposable
 {
     ValueTask<AcerControllerMode> ReadModeAsync(CancellationToken token);

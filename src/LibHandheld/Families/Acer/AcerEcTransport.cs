@@ -7,6 +7,14 @@ using Microsoft.Win32.SafeHandles;
 namespace LibHandheld.Families.Acer;
 
 /// <summary>Predator EC feature transactions, serialized with Acer's own hardware service.</summary>
+/// <remarks>
+///     This is the 1025:174B I2C HID FF05:0001 feature collection, not raw EC port/register access and
+///     not the USB gamepad. Windows report byte 0 is ID A0; all offsets used by services refer to the
+///     payload after that byte. Payload words are little endian: request A000, command at offset 2,
+///     successful reply E000 with the same command. SetFeature alone is not firmware acknowledgement.
+///     Each synchronous exchange holds both the per-handle lock and Acer's named mutex across
+///     SetFeature, 20 ms pacing and GetFeature, keeping the thread-affine mutex on one thread.
+/// </remarks>
 internal sealed class AcerEcTransport : IAcerEcTransport
 {
     private readonly HidCollection _collection;
@@ -20,6 +28,8 @@ internal sealed class AcerEcTransport : IAcerEcTransport
         _handle = HidDevices.Open(collection, overlapped: false);
     }
 
+    /// <summary>Opens one unambiguous EC collection selected by HID attributes, including non-USB paths.</summary>
+    /// <returns>An owned synchronous feature handle, or null if the measured endpoint is absent or ambiguous.</returns>
     internal static AcerEcTransport? Open()
     {
         // I2C HID paths use HID#1025174B, without USB VID_/PID_ components.
@@ -29,6 +39,16 @@ internal sealed class AcerEcTransport : IAcerEcTransport
         return collection is null ? null : new AcerEcTransport(collection);
     }
 
+    /// <summary>Performs one request/reply exchange without retrying a possibly completed command.</summary>
+    /// <param name="payload">A000-prefixed request excluding report ID, bounded by the descriptor and 64 bytes.</param>
+    /// <param name="token">Checked before mutex acquisition and immediately before dispatch.</param>
+    /// <param name="dispatched">Called just before SetFeature so callers distinguish rejection from uncertain effects.</param>
+    /// <returns>The full descriptor-sized reply payload, with the report ID removed and framing validated.</returns>
+    /// <remarks>
+    ///     After dispatch, cancellation cannot abandon the acknowledgement half. A missing or mismatched
+    ///     reply throws with effect unknown; callers must not resend automatically. Timeout before owning
+    ///     the mutex has no hardware effect. The mutex is released even after native or framing failures.
+    /// </remarks>
     public byte[] Exchange(ReadOnlySpan<byte> payload, CancellationToken token, Action? dispatched = null)
     {
         if (payload.Length < 4 || payload.Length > Math.Min(64, _collection.FeatureLength - 1)
@@ -91,6 +111,7 @@ internal sealed class AcerEcTransport : IAcerEcTransport
         }
     }
 
+    /// <summary>Releases native resources only; each service owns restoration before disposal.</summary>
     public void Dispose()
     {
         _handle.Dispose();
@@ -101,5 +122,6 @@ internal sealed class AcerEcTransport : IAcerEcTransport
 /// <summary>The closed EC exchange used by Atlas controls and protocol fixtures.</summary>
 internal interface IAcerEcTransport : IDisposable
 {
+    /// <summary>Exchanges one EC payload; the dispatch callback marks the uncertain-write boundary.</summary>
     byte[] Exchange(ReadOnlySpan<byte> payload, CancellationToken token, Action? dispatched = null);
 }

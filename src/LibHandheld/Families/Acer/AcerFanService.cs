@@ -11,6 +11,13 @@ using LibHandheld.Internal.Windows;
 namespace LibHandheld.Families.Acer;
 
 /// <summary>Firmware-discovered fan groups using Acer's WMI commands, without direct EC register access.</summary>
+/// <remarks>
+///     Controls use root\WMI AcerGamingFunction; discovery, measured RPM and CPU temperature use the
+///     separate EC HID health command 0008. Thus fan duty is a firmware 0..100 command, not measured
+///     RPM or a calibrated PWM percentage. Auto and Max are distinct behaviors, not duty 0/100 aliases.
+///     Each discovered fan retains its own original behavior/speed before mutation. Unreadable originals
+///     never block control, but recovery falls back to firmware Auto and reports ReleasedUnverified.
+/// </remarks>
 internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-fans")
 {
     private readonly ObservedValues _observed = new();
@@ -29,6 +36,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
             Reason) with { InstanceId = item.InstanceId }).ToArray();
     public override bool Suspendable => true;
 
+    /// <summary>Opens WMI/EC, decides topology once, reconciles each fan's original and samples observations.</summary>
+    /// <remarks>Resume reuses the initially selected topology; telemetry/readback failures do not redefine controls.</remarks>
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
@@ -103,6 +112,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>Reads health operation 2: selected item at offset 5, uint16 measurement at offset 7.</summary>
+    /// <remarks>SYS/SYS2 indices 4/8 are RPM; health index 1 is CPU degrees Celsius, accepted only up to 150.</remarks>
     private void ObserveRpm(CancellationToken token)
     {
         foreach (var fan in _fans.Where(fan => fan.RpmIndex is not null))
@@ -135,6 +146,13 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         }
     }
 
+    /// <summary>Translates the health-support mask to fan command selectors without assuming a fixed fan count.</summary>
+    /// <param name="healthMask">Command 0008/operation 1 reply uint16 at payload offset 5.</param>
+    /// <returns>CPU from bit 1; System count from bits 3/7; GPU count from bits 5/8.</returns>
+    /// <remarks>
+    ///     Only the physically tested 02CD mask labels SYS/SYS2 Left/Right. Other supported masks keep
+    ///     generic group names; a desktop UI's two rows are not evidence of two physical fans.
+    /// </remarks>
     internal static IReadOnlyList<AcerFan> Discover(ushort healthMask)
     {
         List<AcerFan> fans = [];
@@ -163,6 +181,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         return fans;
     }
 
+    /// <summary>Invokes a fan getter with uint32 gmInput and retains the complete uint64 gmOutput.</summary>
     private ulong Read(string method, uint input)
     {
         using var arguments = _wmi!.GetMethodParameters(method);
@@ -173,6 +192,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
             : throw new IOException($"Acer {method} returned no value.");
     }
 
+    /// <summary>Invokes a packed uint64 setter, accepts a zero low status byte and applies 30 ms vendor pacing.</summary>
+    /// <remarks>Cancellation is checked before invocation; missing/nonzero status after dispatch is effect unknown.</remarks>
     private void Write(string method, ulong input, CancellationToken token, Action? dispatched = null)
     {
         using var arguments = _wmi!.GetMethodParameters(method);
@@ -191,6 +212,12 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         Thread.Sleep(millisecondsTimeout: 30);
     }
 
+    /// <summary>Decodes getter layouts into recoverable raw behavior and optional manual speed.</summary>
+    /// <remarks>
+    ///     Both getters reserve the low byte for status. Behavior is at bit 8 plus the fan's two-bit
+    ///     shift, whereas setter behavior starts at bit 16. Zero is unknown, not Auto; only 1/2/3 are
+    ///     valid. Speed is bits 8..15 and is retained only for Manual behavior 3 and values at most 100.
+    /// </remarks>
     private AcerFanOriginal Capture(AcerFan fan)
     {
         int? behavior = null;
@@ -230,6 +257,12 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         }
     }
 
+    /// <summary>Journals one fan, writes its behavior, then writes duty only when a duty command requests it.</summary>
+    /// <remarks>
+    ///     Modes map automatic/full-speed/custom to firmware 1/2/3. A duty write first selects behavior
+    ///     3. The writes are not a firmware transaction: failure after either dispatch discards both
+    ///     cached values and reports partial/uncertain effects without repeating either write.
+    /// </remarks>
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
     {
@@ -284,6 +317,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         }
     }
 
+    /// <summary>Restores known behavior/manual duty, or safely returns cooling to firmware Auto when either is unknown.</summary>
+    /// <remarks>The Auto fallback is deliberately unverified; a successful setter cannot manufacture the missing original.</remarks>
     private async ValueTask RestoreAsync(AcerFan fan, AcerFanOriginal original, CancellationToken token)
     {
         // Unknown prior behavior returns cooling to firmware control. It is never an exact restore.
@@ -311,6 +346,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
             CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>Reconciles every fan before disposing both native providers; incomplete originals remain recoverable.</summary>
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
@@ -331,6 +367,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         }
     }
 
+    /// <summary>Releases WMI and HID resources only; does not independently reset fan behavior.</summary>
     internal override ValueTask DisposeAsync()
     {
         _wmi?.Dispose();
@@ -351,20 +388,30 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
     }
 }
 
+/// <summary>A discovered fan's independent behavior-mask, packed-mode and fixed-speed addressing.</summary>
+/// <param name="Id">Stable capability/recovery instance, such as sys or sys2.</param>
+/// <param name="Name">Physical name only where tested, otherwise the firmware group label.</param>
+/// <param name="SelectionBit">Bit in the setter/getter selection mask.</param>
+/// <param name="BehaviorShift">The fan's two-bit position, added to setter bit 16 or getter bit 8.</param>
+/// <param name="SpeedSelector">One-based selector in the low byte of fixed-speed requests.</param>
+/// <param name="RpmIndex">Optional EC health measurement index; absence does not remove fan control.</param>
 internal sealed record AcerFan(string Id, string Name, int SelectionBit, int BehaviorShift, int SpeedSelector,
     byte? RpmIndex = null)
 {
+    /// <summary>Packs a raw 1/2/3 behavior into its setter lane while selecting only this fan.</summary>
     internal ulong PackBehavior(int behavior)
     {
         return (checked((ulong)behavior) << (16 + BehaviorShift)) | (1UL << SelectionBit);
     }
 
+    /// <summary>Packs the 0..100 speed command above the low-byte fan selector.</summary>
     internal ulong PackSpeed(int speed)
     {
         return ((ulong)checked((uint)speed) << 8) | checked((uint)SpeedSelector);
     }
 }
 
+/// <summary>Raw recoverable fan state; null values mean unreadable originals and require the Auto fallback.</summary>
 internal sealed record AcerFanOriginal
 {
     public int? Behavior { get; init; }

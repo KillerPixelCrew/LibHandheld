@@ -10,6 +10,12 @@ using LibHandheld.Internal.Windows;
 namespace LibHandheld.Families.Acer;
 
 /// <summary>Acer's battery health switch, without invoking calibration or the Care Center service.</summary>
+/// <remarks>
+///     The root\WMI BatteryControl provider exposes one optimized-charging boolean for battery 1,
+///     function bit 0. This is the OEM protection mode, not an arbitrary percentage ceiling, charging
+///     bypass or a calibration cycle. It persists in the device, so the service journals a readable
+///     original before changing it and restores that original on normal release.
+/// </remarks>
 internal sealed class AcerBatteryService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-battery")
 {
     internal const string ProtectionId = "battery.charge-protection";
@@ -36,6 +42,8 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             _observed.Value(ProtectionId), _observed.Time(ProtectionId), Reason)] : [];
     public override bool Suspendable => true;
 
+    /// <summary>Opens BatteryControl, reconciles saved state, and decides firmware support once per service lifetime.</summary>
+    /// <remarks>An observation failure leaves value unknown and does not itself hide or prohibit the switch.</remarks>
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
@@ -69,6 +77,11 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             _supported ? null : Missing("Firmware does not declare battery health control."));
     }
 
+    /// <summary>Queries battery 1/function 1 and decodes the provider's two-byte status plus five function bytes.</summary>
+    /// <remarks>
+    ///     Both uReturn bytes must be zero. uFunctionList bit 0 declares support; uFunctionStatus[0]
+    ///     gives 0/1 disabled/enabled. A supported but non-boolean value remains unknown rather than false.
+    /// </remarks>
     private (bool Supported, bool? Enabled) Read()
     {
         using var input = _wmi!.GetMethodParameters("GetBatteryHealthControlStatus");
@@ -87,6 +100,8 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         return (supported, supported && functions[0] <= 1 ? functions[0] == 1 : null);
     }
 
+    /// <summary>Sets function-mask bit 0 for battery 1; zero uint16 uReturn is firmware acknowledgement.</summary>
+    /// <remarks>Reserved fields are zero as in the vendor call. No calibration or smart-charge function bits are sent.</remarks>
     private void Write(bool enabled, CancellationToken token, Action? dispatched = null)
     {
         using var input = _wmi!.GetMethodParameters("SetBatteryHealthControl");
@@ -103,6 +118,11 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         }
     }
 
+    /// <summary>Retains the first available original, dispatches one boolean write, and publishes the accepted value.</summary>
+    /// <remarks>
+    ///     Readback is not a write gate. If the original is unavailable, control still works but exact
+    ///     restoration cannot be claimed. A failure after dispatch forgets the value and is not retried.
+    /// </remarks>
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
     {
@@ -140,6 +160,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         }
     }
 
+    /// <summary>Writes the retained protection bit once and records matched, mismatched or unavailable readback.</summary>
     private async ValueTask RestoreAsync(AcerBatteryOriginal original, CancellationToken token)
     {
         Write(original.Enabled, token);
@@ -160,6 +181,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>Restores a captured original before closing WMI; unknown originals remain ReleasedUnverified.</summary>
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
@@ -180,6 +202,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         }
     }
 
+    /// <summary>Disposes the provider only; ReleaseAsync owns restoration of this device-persistent setting.</summary>
     internal override ValueTask DisposeAsync()
     {
         _wmi?.Dispose();
@@ -188,6 +211,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
     }
 }
 
+/// <summary>The firmware-bound optimized-charging bit captured before the first change.</summary>
 internal sealed record AcerBatteryOriginal
 {
     public bool Enabled { get; init; }

@@ -8,6 +8,13 @@ using LibHandheld.Internal.Services;
 namespace LibHandheld.Families.Acer;
 
 /// <summary>Atlas power profiles through the firmware's EC HID protocol.</summary>
+/// <remarks>
+///     EC command 0001 selects Turbo/Balance/Quiet/Manual (0/1/2/3); command 0002 reads or writes
+///     profile 3 and its limits. PL1/PL2 are unsigned little-endian integer watts at payload offsets
+///     6/10. The other fields in the 25-byte profile snapshot are opaque and must survive edits.
+///     Bounds come from firmware selectors 1/2/4, not the CPU specification or experimentally accepted
+///     values. The manual profile and active mode have separate firmware-bound recovery records.
+/// </remarks>
 internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAcerEcTransport?>? open = null)
     : ProfiledFeatureService("acer-power")
 {
@@ -17,6 +24,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
     private readonly ObservedValues _observed = new();
     private IAcerEcTransport? _ec;
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
+    // Retained payload bytes 0..24, including the command/profile header. Never create a zero-filled
+    // replacement: offsets 8, 12..24 include settings whose meanings are not established.
     private byte[]? _profile;
     private int? _mode;
     private bool _unknownOriginalChanged;
@@ -28,6 +37,12 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
             _observed.Value(item.CapabilityId), _observed.Time(item.CapabilityId), Reason)).ToArray();
     public override bool Suspendable => true;
 
+    /// <summary>Opens EC access, fixes advertised visibility on first acquisition, then reconciles prior originals.</summary>
+    /// <remarks>
+    ///     An unavailable current-value getter leaves observation unknown and does not gate mode writes.
+    ///     Power-limit descriptors require valid advertised bounds; later resume does not add/remove them.
+    ///     Recovery restores profile bytes before the original operating mode, then refreshes observations.
+    /// </remarks>
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
@@ -96,6 +111,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         return Set(DeviceServiceState.Owned);
     }
 
+    /// <summary>Queries Manual/profile 3 limit selector 1=PL1 min, 2=PL1 max, 4=PL2 max, in whole watts.</summary>
+    /// <remarks>The 26-byte request puts its selector at offset 25; the reply echoes it and returns uint16 at 26.</remarks>
     private int ReadLimit(byte selector, CancellationToken token)
     {
         var request = new byte[26];
@@ -113,6 +130,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         return BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(26));
     }
 
+    /// <summary>Best-effort observation of active mode and retention of Manual/profile 3 bytes.</summary>
+    /// <remarks>Stored manual limits are published as active only in Manual mode; presets have no invented wattage table.</remarks>
     private void ReadCurrent(CancellationToken token)
     {
         try
@@ -149,6 +168,13 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         }
     }
 
+    /// <summary>Selects a preset, or edits a retained PL1/PL2 pair and then activates Manual mode.</summary>
+    /// <remarks>
+    ///     DevicePowerPair enforces descriptor bounds and PL2 at least PL1. A manual edit first journals
+    ///     the profile and original mode; a preset changes only mode. Successful acknowledgements publish
+    ///     requested values without mandatory readback. Once any write is dispatched, a later failure
+    ///     clears cached observations and reports uncertain/partial effects instead of retrying the sequence.
+    /// </remarks>
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command,
         string firmware, CancellationToken token)
     {
@@ -232,6 +258,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         }
     }
 
+    /// <summary>Retains the first readable original mode; an unreadable original does not prohibit a mode write.</summary>
+    /// <remarks>Unknown-original changes remain ReleasedUnverified because no restoration value can be invented.</remarks>
     private async ValueTask CaptureModeAsync(CancellationToken token)
     {
         await context.Journal.BeginAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
@@ -246,6 +274,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         }
     }
 
+    /// <summary>Converts the retained profile's header to command 0002/write/profile 3, preserving all data fields.</summary>
     private void WriteProfile(byte[] retained, CancellationToken token, Action? dispatched = null)
     {
         var request = (byte[])retained.Clone();
@@ -258,11 +287,14 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         _ec!.Exchange(request, token, dispatched);
     }
 
+    /// <summary>Sends command 0001, operation 1, with the firmware mode byte at payload offset 5.</summary>
     private void SelectMode(int mode, CancellationToken token, Action? dispatched = null)
     {
         _ec!.Exchange([0, 0xA0, 1, 0, 1, checked((byte)mode)], token, dispatched);
     }
 
+    /// <summary>Restores the complete retained Manual profile and classifies independent readback separately.</summary>
+    /// <remarks>Comparison excludes the reply header and includes profile selector plus all 19 data bytes.</remarks>
     private async ValueTask RestoreProfileAsync(AcerProfileOriginal original, CancellationToken token)
     {
         if (original.Profile.Length != 25 || original.Profile[5] != 3)
@@ -289,6 +321,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
             CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>Restores a known firmware mode once; missing observation is unverified, mismatch is failed.</summary>
     private async ValueTask RestoreModeAsync(AcerModeOriginal original, CancellationToken token)
     {
         if (original.Mode is < 0 or > 3)
@@ -314,6 +347,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
             CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>Reconciles both originals before closing EC access, preserving incomplete recovery in the journal.</summary>
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
@@ -337,6 +371,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         }
     }
 
+    /// <summary>Closes transport and forgets caches only; restoration belongs to ReleaseAsync, not disposal.</summary>
     internal override ValueTask DisposeAsync()
     {
         _ec?.Dispose();
@@ -352,11 +387,13 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
     }
 }
 
+/// <summary>Firmware-bound original Manual profile payload; all 25 bytes are retained for exact recovery.</summary>
 internal sealed record AcerProfileOriginal
 {
     public byte[] Profile { get; init; } = [];
 }
 
+/// <summary>Firmware-bound original active power mode, separate from the stored Manual profile.</summary>
 internal sealed record AcerModeOriginal
 {
     public int Mode { get; init; }

@@ -7,6 +7,13 @@ using LibHandheld.Internal.Services;
 namespace LibHandheld.Families.Acer;
 
 /// <summary>Retains the controller's lighting bytes and previews changes in RAM, never in ROM.</summary>
+/// <remarks>
+///     Only the current animation in the retained 883-byte lighting section is edited. A selected
+///     animation occupies 220 bytes: effect, nine-slot count, inverse speed, brightness, then eight
+///     RGB keyframes of 27 bytes (nine slots each). Eight slots are physically mapped; slot 8 and
+///     unrelated keyframes/animations/trailing bytes are preserved. Recovery binds both BIOS and
+///     controller release so a snapshot from another wire layout is not replayed.
+/// </remarks>
 internal sealed class AcerLightingService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-lighting")
 {
     // Confirmed one at a time in white on controller release 0100, screen facing the user.
@@ -64,6 +71,8 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
             Reason) with { InstanceId = item.InstanceId }).ToArray();
     public override bool Suspendable => true;
 
+    /// <summary>Opens the exact measured command lane, reconciles prior lighting, and retains a complete fresh section.</summary>
+    /// <remarks>Unlike a simple scalar readback, retaining unrelated profile bytes is necessary to construct a safe edit.</remarks>
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
@@ -83,6 +92,12 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         return Set(DeviceServiceState.Owned);
     }
 
+    /// <summary>Validates the selected animation and returns its offset inside the lighting section.</summary>
+    /// <remarks>
+    ///     Byte 0 selects one of four animations. Its header starts at 1 + index*220: effect 1..8,
+    ///     slot count exactly 9, inverse speed 0..20 and brightness 0..100. Unknown but well-shaped
+    ///     effects are retained; only solid 1 and breathing 2 have authored runtime controls.
+    /// </remarks>
     internal static int AnimationOffset(byte[] lighting)
     {
         if (lighting.Length != AcerControllerTransport.LightingLength || lighting[0] > 3)
@@ -100,6 +115,11 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         return offset;
     }
 
+    /// <summary>Projects the current animation's header and first keyframe into shared and spatial controls.</summary>
+    /// <remarks>
+    ///     UI speed is 20 minus the wire byte. Colors are RGB triplets; All ring segments is known
+    ///     only when the eight visible slots agree, regardless of the preserved ninth slot.
+    /// </remarks>
     private void Observe(byte[] lighting, bool written)
     {
         var offset = AnimationOffset(lighting);
@@ -136,6 +156,13 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         }
     }
 
+    /// <summary>Clones retained bytes and changes only the requested supported header field or visible RGB slots.</summary>
+    /// <remarks>
+    ///     Solid/breathing use effect 1/2. Breathing clears only the eight visible colors in its second
+    ///     keyframe to reproduce the vendor's fade-to-black sequence. A color edit on another effect
+    ///     selects solid; all other animation data remains retained. This pure encoder performs no I/O
+    ///     and does not generate a replacement profile or write the unassigned ninth RGB slot.
+    /// </remarks>
     internal static byte[] Edit(byte[] retained, CapabilityCommand command)
     {
         var offset = AnimationOffset(retained);
@@ -187,6 +214,12 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         return lighting;
     }
 
+    /// <summary>Journals the complete original section, writes the changed RAM range once, and publishes edited values.</summary>
+    /// <remarks>
+    ///     A post-dispatch failure may have applied some chunks. It invalidates the entire cached
+    ///     section and observation set; only a subsequent explicit command obtains fresh bytes before
+    ///     another edit. No automatic resend, ROM save or arbitrary firmware animation synthesis occurs.
+    /// </remarks>
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
     {
@@ -221,6 +254,8 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         }
     }
 
+    /// <summary>Restores retained lighting RAM, then compares the entire section for journal verification.</summary>
+    /// <remarks>Known current bytes permit a trimmed write; uncertain current bytes require the full original section.</remarks>
     private async ValueTask RestoreAsync(AcerLightingOriginal original, CancellationToken token)
     {
         _ = AnimationOffset(original.Lighting);
@@ -244,6 +279,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
             CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>Restores a BIOS/controller-bound original before closing the command handle.</summary>
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
@@ -264,6 +300,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         }
     }
 
+    /// <summary>Releases the handle and cached section only; recovery writes belong to ReleaseAsync.</summary>
     internal override async ValueTask DisposeAsync()
     {
         if (_controller is not null)
@@ -276,6 +313,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
     }
 }
 
+/// <summary>Complete retained lighting RAM used for recovery, including bytes with no exposed runtime control.</summary>
 internal sealed record AcerLightingOriginal
 {
     public byte[] Lighting { get; init; } = [];

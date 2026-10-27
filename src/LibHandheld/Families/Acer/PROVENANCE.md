@@ -264,10 +264,15 @@ every five minutes, including replacement versions of those package identities. 
 completed successfully; it is not an application/runtime feature. The operational reference above
 lists every target, proof limit and restoration step.
 
-Automatic WSGM keyboard suppression and runtime F22/long-press routing remain unimplemented. The
-runtime contribution in this increment owns rear-button mode; it does not yet automate the OEM
-software comparison or the keyboard disable. Recovery scripts and private captures remain local
-artifacts.
+The subsequent WSGM `OtherManagers` integration adds exact-Atlas Full-mode takeover of those ten
+services, three tasks, two MSIX families and the dedicated controller keyboard. It records changes
+before dispatch, propagates restart requirements to setup, rechecks accepted policy at startup and
+every five minutes, and restores recorded changes on uninstall. This is host application policy;
+LibHandheld continues to own rear-button mode and physical device protocols. The implementation is
+awaiting installation and live runtime acceptance; the historical local guard is not that proof.
+Runtime F22/long-press routing remains unsupported while the keyboard source is disabled. Recovery
+scripts and private captures remain local artifacts. The operational reference above distinguishes
+the two ownership/recovery paths.
 
 Recovery uses captured model/firmware identity; lighting also binds the controller release. Unknown
 observations remain unknown, writable controls do not require current-value readback, and uncertain

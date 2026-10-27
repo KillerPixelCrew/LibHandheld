@@ -118,8 +118,8 @@ The task runs the admin-protected script
 `C:\ProgramData\WSGM\AtlasOemControl\Keep-Acer-OemDisabled.ps1`; its source is tracked in WSGM as
 `eng/atlas-oem-disabled-state.ps1`. `last-check.json` records health and any changes. The first
 elevated run completed successfully with no changes needed. This is an explicitly authorized local
-maintenance task, not an implemented WSGM configuration/UI feature or part of LibHandheld's device
-lifecycle.
+maintenance task, separate from WSGM's subsequent manager-takeover integration and from
+LibHandheld's device lifecycle.
 
 ## Exact keyboard disable and reboot result
 
@@ -146,7 +146,7 @@ Before the requested reboot, FSE startup was set to HKCU
 machine Winlogon shell `explorer.exe` and no per-user shell override. The value remained 0 after
 reboot. FSE is a separate Windows startup preference, not Acer software.
 
-## Recovery and future WSGM management
+## Recovery and WSGM management
 
 Record original service start/running states, task enabled states, package status bits, keyboard
 problem/status and FSE value existence/type before mutation. Preserve the first snapshot. The local
@@ -163,11 +163,26 @@ The keyboard is a separate opt-in change: use `pnputil /enable-device <exact id>
 reboot requirement. The local `artifacts/Enable-Acer-OemKeyboard.cmd` contains the measured
 instance. Restoring software does not implicitly re-enable this keyboard or FSE.
 
-Future WSGM OEM management must own these snapshots and bounded disable/restore operations, track
-package identity across versions, report reboot-required outcomes honestly, and avoid claiming that
-stopped services exclude Game Bar activation. It must keep software policy in WSGM and native
-controller mode/input protocols in LibHandheld. These application-management changes are not yet
-implemented in WSGM's UI/runtime.
+WSGM's subsequent `OtherManagers` integration extends its existing Full-mode/setup takeover and
+Settings > System takeover action to this exact LibHandheld definition. Its catalog includes the ten
+services and three tasks above, the two exact MSIX package families, and the dedicated
+`HID\VID_0502&PID_F901&MI_02&COL01` keyboard identity. It discovers the current keyboard instance
+instead of copying this machine's suffix, uses the targeted PnPUtil force-disable operation, and
+propagates restart-required outcomes into setup. It never disables a composite parent or a shared
+keyboard service.
+
+Package activation is blocked with the Disabled bit; each changed package version and device is
+recorded before mutation alongside the existing service/task records. Uninstall restores recorded
+changes. Accepted takeover is reconciled at session startup and every five minutes; a non-elevated
+session reports changes it cannot apply rather than prompting during startup. Existing processes are
+asked to close, without being killed; a remaining packaged helper can require a Windows restart. The
+host owns application policy and these install-lifecycle recovery records; LibHandheld continues to
+own only physical input/controller mode and device protocols.
+
+This host implementation is awaiting the new setup's installation and live WSGM/Steam acceptance.
+The earlier local guard and private snapshots remain separate administrative evidence; they are not
+proof of the new runtime's disable/restore lifecycle. Disabling the keyboard still removes F22, so
+the implementation does not add native front-right long-press routing.
 
 ## Remaining acceptance
 
