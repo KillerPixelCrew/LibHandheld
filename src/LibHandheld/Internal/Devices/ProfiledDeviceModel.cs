@@ -186,6 +186,9 @@ internal sealed record StandardControllerProfile(IReadOnlyList<ControllerUsbId> 
     internal HidControllerProfile? HidFallback { get; init; }
     internal Func<LibHandheld.Internal.Windows.HidCollection,
         LibHandheld.Internal.Windows.IHidControllerRumble>? OpenHidRumble { get; init; }
+    /// <summary>Measured companion identities required by the selected HID topology; the host owns hiding.</summary>
+    internal Func<LibHandheld.Internal.Windows.HidCollection, IReadOnlyList<PhysicalDeviceIdentity>>?
+        HidCompanions { get; init; }
     internal IReadOnlyList<ControllerUsbId> CompanionUsbIds { get; init; } = [];
 }
 

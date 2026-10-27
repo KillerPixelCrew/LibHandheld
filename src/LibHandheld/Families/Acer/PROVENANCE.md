@@ -395,3 +395,26 @@ the 17-button descriptor and the OEM PS/camera/FL1/FR1 naming for face/OEM mappi
 button mappings still require attended acceptance; the empty remote-only capture is not evidence
 that buttons are absent. No Steam executable, SDL setting or Windows keyboard filter is changed by
 this route.
+
+## Confirmed DInput companion hide set (2026-10-27)
+
+After switching to F90A, two additional non-gamepad identities remained. Following the maintainer's
+explicit request to hide those two, each was tested separately: the command collection FFF0:0040 at
+MI_00/COL02 and the consumer collection000C:0001 at MI_01/COL03. The fresh SDL inventory became
+exactly one Steam Deck. The maintainer confirmed keyboard input still worked, and confirmed the
+Steam list after Steam restarted. This supersedes the earlier blanket prohibition for these two
+measured DInput collections only; the failed F901 auxiliary set remains forbidden.
+
+The library selects these exact release0100 report shapes on the selected gamepad's physical port.
+The keyboard MI_01/COL01 and mouse MI_01/COL02 do not match. WSGM's existing ownership ledger adds
+and restores the two entries. No Steam filtering or global backend override is involved.
+
+## Atlas stock power ordering (2026-10-28)
+
+The desktop application's enum calls 0 Turbo and 1 Balance, but the PA08-I51 V1.03 EC stock table
+contains 35/65 W at index 0, 40/65 W at index 1, and 30/65 W at index 2. The maintainer observed the
+resulting inverted Turbo/Balanced readouts. Atlas now names the measured power tiers Balanced 0,
+Turbo 1 and Quiet 2. All three retain 65 W boost because that is what their firmware profiles
+contain; no invented boost value or manual-limit write is added to a stock selection. Native service
+tracing confirmed that the OEM path selects a complete profile and only writes numeric fields for
+Manual 3. Originals continue to be stored as raw mode numbers, preserving exact restoration.

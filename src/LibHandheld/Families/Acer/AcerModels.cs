@@ -56,6 +56,7 @@ internal static class AcerModels
                 CanonicalButtons.None, CanonicalButtons.None
             ]),
             OpenHidRumble = collection => new AcerDInputRumble(collection),
+            HidCompanions = AcerInputProtocol.DInputCompanions,
             // Attended Device Lab calibration; see PROVENANCE.md for the report and trial limits.
             // XInput low/high reach the left/right grips without swapping. The host applies the 2%
             // floor and 5 ms minimum only to bounded haptic events; continuous rumble is unchanged.

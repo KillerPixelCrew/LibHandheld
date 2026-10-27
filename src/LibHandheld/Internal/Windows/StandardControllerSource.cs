@@ -99,7 +99,8 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
         }
 
         return new StandardControllerTopology(-1,
-            HideSet([PhysicalIdentities.FromCollection(hid)], hid.VendorId, hid.PhysicalLocation), hid,
+            HideSet(new[] { PhysicalIdentities.FromCollection(hid) }
+                .Concat(profile.HidCompanions?.Invoke(hid) ?? []), hid.VendorId, hid.PhysicalLocation), hid,
             profile.OpenHidRumble is not null);
     }
 

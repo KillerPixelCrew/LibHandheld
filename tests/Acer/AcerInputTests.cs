@@ -6,6 +6,29 @@ namespace LibHandheld.Tests.Acer;
 
 public sealed class AcerInputTests
 {
+    [Fact]
+    public void DInputCompanionsAreExactAndExcludeKeyboardMouseAndXInputMode()
+    {
+        var vendor = Collection("mi_00", 0xFFF0, 0x40, 64) with
+        {
+            ProductId = 0xF90A, ReleaseNumber = 0x0100, OutputLength = 64,
+            InstancePath = @"HID\VID_0502&PID_F90A&MI_00&COL02\fixture"
+        };
+        var consumer = vendor with
+        {
+            UsagePage = 0xC, Usage = 1, InputLength = 5, OutputLength = 0,
+            InstancePath = @"HID\VID_0502&PID_F90A&MI_01&COL03\fixture"
+        };
+        Assert.True(AcerInputProtocol.IsDInputCompanion(vendor));
+        Assert.True(AcerInputProtocol.IsDInputCompanion(consumer));
+        Assert.False(AcerInputProtocol.IsDInputCompanion(consumer with { UsagePage = 1, Usage = 6 }));
+        Assert.False(AcerInputProtocol.IsDInputCompanion(consumer with { UsagePage = 1, Usage = 2 }));
+        Assert.False(AcerInputProtocol.IsDInputCompanion(vendor with { ProductId = 0xF901 }));
+        Assert.False(AcerInputProtocol.IsDInputCompanion(vendor with { ReleaseNumber = 0x0101 }));
+        Assert.False(AcerInputProtocol.IsDInputCompanion(consumer with { InstancePath = consumer.InstancePath.Replace("COL03", "COL030") }));
+        Assert.False(AcerInputProtocol.IsDInputCompanion(consumer with { PhysicalLocation = "" }));
+    }
+
     private static DeviceIdentitySnapshot Identity => new()
     {
         SystemManufacturer = "Acer", SystemProduct = "Predator PA08-I51",

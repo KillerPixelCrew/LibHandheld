@@ -13,6 +13,32 @@ namespace LibHandheld.Families.Acer;
 /// </remarks>
 internal static class AcerInputProtocol
 {
+    /// <summary>The two measured F90A companions which clients incorrectly expose as extra pads.</summary>
+    /// <remarks>Correlated to the selected gamepad port. Keyboard and mouse collections never match.
+    /// This set was separately verified with working remote keyboard input in DInput mode.</remarks>
+    internal static IReadOnlyList<PhysicalDeviceIdentity> DInputCompanions(HidCollection gamepad)
+    {
+        if (gamepad is not { VendorId: 0x0502, ProductId: 0xF90A, UsagePage: 1, Usage: 5 }
+            || string.IsNullOrWhiteSpace(gamepad.PhysicalLocation))
+        {
+            return [];
+        }
+        return HidDevices.Enumerate(0x0502, [0xF90A])
+            .Where(item => IsDInputCompanion(item)
+                           && HidDevices.SamePhysicalLocation(item.PhysicalLocation, gamepad.PhysicalLocation))
+            .Select(PhysicalIdentities.FromCollection).ToArray();
+    }
+
+    internal static bool IsDInputCompanion(HidCollection item)
+    {
+        return item is { VendorId: 0x0502, ProductId: 0xF90A, ReleaseNumber: 0x0100 }
+               && !string.IsNullOrWhiteSpace(item.PhysicalLocation)
+               && (item is { UsagePage: 0xFFF0, Usage: 0x40, InputLength: 64, OutputLength: 64 }
+                   && item.InstancePath.Contains("&MI_00&COL02\\", StringComparison.OrdinalIgnoreCase)
+                   || item is { UsagePage: 0x000C, Usage: 1, InputLength: 5, OutputLength: 0 }
+                   && item.InstancePath.Contains("&MI_01&COL03\\", StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>Matches MI_01's FFF1:00F5 rear-key and Guide notification collection.</summary>
     internal static bool IsVendorCollection(HidCollection collection)
     {

@@ -9,7 +9,9 @@ namespace LibHandheld.Families.Acer;
 
 /// <summary>Atlas power profiles through the firmware's EC HID protocol.</summary>
 /// <remarks>
-///     EC command 0001 selects Turbo/Balance/Quiet/Manual (0/1/2/3); command 0002 reads or writes
+///     On the measured PA08-I51 firmware, EC profile 0 is Balanced (35 W), 1 Turbo (40 W),
+///     2 Quiet (30 W), and 3 Manual. The desktop application's enum labels are not this EC ordering.
+///     EC command 0001 selects the profile; command 0002 reads or writes
 ///     profile 3 and its limits. PL1/PL2 are unsigned little-endian integer watts at payload offsets
 ///     6/10. The other fields in the 25-byte profile snapshot are opaque and must survive edits.
 ///     Bounds come from firmware selectors 1/2/4, not the CPU specification or experimentally accepted
@@ -236,7 +238,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
             {
                 selected = command.RequestedValue?.ChoiceValue switch
                 {
-                    "turbo" => 0, "balanced" => 1, "quiet" => 2, "manual" => 3,
+                    "turbo" => 1, "balanced" => 0, "quiet" => 2, "manual" => 3,
                     _ => throw new ArgumentException("Unknown Acer operating mode.")
                 };
                 // A stock mode changes its limits without a PL1/PL2 write. Capture the selected
@@ -439,7 +441,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
 
     private static string ModeName(int mode)
     {
-        return mode switch { 0 => "turbo", 1 => "balanced", 2 => "quiet", 3 => "manual", _ => "unknown" };
+        return mode switch { 0 => "balanced", 1 => "turbo", 2 => "quiet", 3 => "manual", _ => "unknown" };
     }
 }
 

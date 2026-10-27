@@ -7,6 +7,31 @@ namespace LibHandheld.Tests.Acer;
 
 public sealed class AcerPowerTests
 {
+    [Theory]
+    [InlineData("balanced", 0, 35)]
+    [InlineData("turbo", 1, 40)]
+    [InlineData("quiet", 2, 30)]
+    public async Task StockNamesSelectTheMeasuredFirmwarePowerOrder(string name, int mode, int watts)
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc();
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var result = await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "power.scenario",
+            RequestedValue = CapabilityValue.Choice(name), Deadline = Deadline.Never
+        }, context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(mode, ec.Mode);
+        Assert.Equal(name, service.States.Single(state => state.CapabilityId == "power.scenario").ObservedValue?.ChoiceValue);
+        Assert.Equal(watts, service.States.Single(state => state.CapabilityId == "power.primary-limit").ObservedValue?.IntegerValue);
+        Assert.Equal(65, service.States.Single(state => state.CapabilityId == "power.boost-limit").ObservedValue?.IntegerValue);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
     [Fact]
     public async Task ModeSelectionImmediatelyPublishesItsLimitsAndKeepsSavedManualBytes()
     {
