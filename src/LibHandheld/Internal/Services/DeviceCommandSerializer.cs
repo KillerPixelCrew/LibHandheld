@@ -272,9 +272,10 @@ internal sealed class DeviceCommandSerializer : IDisposable
                         lastFullRefresh = Stopwatch.GetTimestamp();
                         await _refresh(null, cancellationToken).ConfigureAwait(false);
                     }
-                    else if (_refreshTelemetry is not null)
+                    if (_refreshTelemetry is not null)
                     {
-                        // This hook may only read telemetry. Owner maintenance stays on its ten-second cadence.
+                        // Maintenance does not necessarily sample sensors. Keep measurements fresh on
+                        // that turn too; skipping it doubles the telemetry gap and trips host fan safety.
                         await _refreshTelemetry(cancellationToken).ConfigureAwait(false);
                     }
 

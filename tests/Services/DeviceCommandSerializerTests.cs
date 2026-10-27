@@ -6,6 +6,43 @@ namespace LibHandheld.Tests.Services;
 public sealed class DeviceCommandSerializerTests
 {
     [Fact]
+    public async Task MaintenanceTurnSamplesTelemetryBeforePublishing()
+    {
+        var calls = new ConcurrentQueue<string>();
+        var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var serializer = new DeviceCommandSerializer("fixture",
+            () => new CapabilityDescriptorSet { Descriptors = [] },
+            (_, _) =>
+            {
+                calls.Enqueue("maintenance");
+                return ValueTask.CompletedTask;
+            },
+            _ =>
+            {
+                calls.Enqueue("publish");
+                published.TrySetResult();
+                return ValueTask.CompletedTask;
+            },
+            _ =>
+            {
+                calls.Enqueue("telemetry");
+                return ValueTask.CompletedTask;
+            });
+        serializer.StartObservation();
+        serializer.RequestObservation();
+        try
+        {
+            await published.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            serializer.StopObservation();
+            await serializer.RunAsync(() => ValueTask.CompletedTask, CancellationToken.None);
+        }
+        Assert.Equal(new[] { "maintenance", "telemetry", "publish" }, calls);
+    }
+
+    [Fact]
     public async Task LiveTelemetryRunsInsideFreshnessWindowWithoutAcceleratingSettingsObservation()
     {
         var started = Stopwatch.GetTimestamp();

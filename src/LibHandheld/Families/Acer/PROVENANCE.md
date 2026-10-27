@@ -333,3 +333,13 @@ stock wattage table. Mode 3 was active during the inventory. The old service que
 withheld numeric power in every stock mode, which explains the first-launch unknown TDP. ReadCurrent
 now keeps Manual bytes for edits while publishing limits read from the active stock profile. Missing
 getters still do not gate writes.
+
+## Live fan scheduling correction (2026-10-27)
+
+The 1779 runtime exposed a brief stale-temperature warning every ten seconds despite valid CPU
+samples and working fan writes. The common serializer's full maintenance branch skipped its
+read-only telemetry hook, creating a four-second sensor gap against the host's three-second fan
+window. Every observation turn now invokes the telemetry hook after any maintenance and before
+publication. Maintenance remains on its ten-second schedule; temperature freshness limits and
+firmware-auto fallback are unchanged. A focused regression forces a maintenance turn and asserts
+maintenance/telemetry/publication order. Runtime acceptance must span multiple maintenance turns.
