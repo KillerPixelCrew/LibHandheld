@@ -142,6 +142,44 @@ journal. Independent elevated getters then confirmed Auto for both: left `gmOutp
 initial trial's unreadable original behavior. The unknown-original Auto fallback remains necessary
 and must still report unverified cleanup when an original/getter is unavailable.
 
+## Attended rumble calibration, 2026-10-27
+
+The maintainer completed Device Lab 0.1.2's existing rumble workflow on this same machine, with
+source revision `dd6143daf330`. Report `Device Lab report 2026-10-27 1924.wsgmlab` has SHA-256
+`98425C3614E5EB3778913C5A91A3DF41A0A2B6092506F22A36820D5756F151D0`. Its rumble stage is Completed;
+identity was not completed, so this is continuity with the local Atlas investigation, not a fresh
+board/BIOS identity attestation. The Windows.Gaming.Input route description independently names
+controller `0502:F901`.
+
+XInput slot 0 was felt. Channel 0 was identified at the left grip, channel 1 at the right grip; no
+channel swap is needed. The live sliders marked the lowest felt level at 2 percent for each side.
+Both sides were felt at the shortest offered pulse, 5 ms, at full strength and at the marked
+2-percent strength. The first left full-strength 5 ms trial was marked not felt, followed by a
+separate felt 5 ms trial. Left minimum-strength 5 ms was felt after two replays, right after one
+replay. These are attended perceptual observations, not proof of hardware response below 5 ms or
+guaranteed detection on every attempt. Longer pulses through 500 ms were also felt on both sides.
+
+Windows.Gaming.Input's standard route was marked not felt in the route comparison, so this report
+supports keeping the existing XInput output path. It does not establish a DInput output protocol.
+The report contains 393 successful writes, no write errors, no zero failures and no remaining
+vibrating routes. The live slider session reported no stop failure, and each route's final stage-end
+zero succeeded. Target removal, disconnect and OS sleep/wake output cleanup remain separate
+lifecycle acceptance.
+
+The Atlas controller profile now publishes `MinimumStartIntensity = 0.02` and `MinimumPulse = 5 ms`
+through the existing standard controller service. Both low/high channels remain native; trigger and
+native-pulse channels remain unsupported. WSGM's existing output router applies the floor and
+minimum pulse to bounded events only, preserving continuous rumble amplitudes. The shared default
+60-frame/s pacing was not measured by this trial and is unchanged. Other standard controller
+profiles retain their prior zero floor/pulse defaults. This calibration has not yet been exercised
+through a deployed WSGM/Steam session.
+
+Local offline inspection used Device Lab's `report` reader and the bounded JSON evidence entries
+`rumble-calibration.json`, `rumble-manual.json`, `rumble-routes.json` and `rumble-writes.json`. The
+37 Acer tests passed with Release compilation and no warnings. Full WSGM application compilation
+stopped at the unchanged native backdrop target because `pwsh` was unavailable (exit 9009); it is
+not an application build pass.
+
 ## Attended button follow-up, 2026-10-27
 
 The maintainer completed the 27-step CLI capture on the same BIOS V1.03 / controller 0100 unit. The
@@ -255,7 +293,6 @@ rotation integrals and unresolved accelerometer magnitude asymmetry; axis accept
 calibration.
 
 HardwareVerified remains false. Runtime front-long handling, View/Menu attribution, full left-stick
-travel, precise motion scale calibration, perceptual haptics, held-button disconnect, actual Windows
-sleep/wake and visible Steam acceptance were not established by autonomous software trials. Library
-suspend/resume is not an OS sleep test. Builds, fixtures and Overlay replays do not replace those
-observations.
+travel, precise motion scale calibration, held-button disconnect, actual Windows sleep/wake and
+visible Steam acceptance were not established by autonomous software trials. Library suspend/resume
+is not an OS sleep test. Builds, fixtures and Overlay replays do not replace those observations.

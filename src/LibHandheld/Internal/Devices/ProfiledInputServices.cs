@@ -179,11 +179,8 @@ internal sealed partial class ProfiledControllerService(
         }
 
         _supportsRumble = topology.SupportsRumble;
-        await sink.PublishPhysicalDevicesAsync(topology.Devices, new HapticCapabilities
-        {
-            LowFrequency = topology.SupportsRumble ? OutputChannelSupport.Native : OutputChannelSupport.Unsupported,
-            HighFrequency = topology.SupportsRumble ? OutputChannelSupport.Native : OutputChannelSupport.Unsupported
-        }, token).ConfigureAwait(false);
+        await sink.PublishPhysicalDevicesAsync(topology.Devices,
+            topology.SupportsRumble ? source.Haptics : new HapticCapabilities(), token).ConfigureAwait(false);
         _connected = true;
         _ownershipAt = DateTimeOffset.UtcNow;
         try

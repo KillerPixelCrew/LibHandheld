@@ -16,6 +16,8 @@ internal sealed record StandardControllerTopology(
 /// <summary>Physical XInput ownership, with the matching USB topology required before a slot is claimed.</summary>
 internal sealed class StandardControllerSource(StandardControllerProfile profile) : IAsyncDisposable
 {
+    internal HapticCapabilities Haptics => profile.Haptics;
+
     private readonly Lock _gate = new();
 
     private readonly StandardControllerHidSource? _hid = profile.HidFallback is { } map

@@ -176,6 +176,12 @@ internal sealed record EcFanProfile(
 
 internal sealed record StandardControllerProfile(IReadOnlyList<ControllerUsbId> UsbIds)
 {
+    internal HapticCapabilities Haptics { get; init; } = new()
+    {
+        LowFrequency = OutputChannelSupport.Native,
+        HighFrequency = OutputChannelSupport.Native
+    };
+
     internal HidControllerProfile? HidFallback { get; init; }
     internal IReadOnlyList<ControllerUsbId> CompanionUsbIds { get; init; } = [];
 }

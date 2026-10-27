@@ -30,7 +30,17 @@ internal static class AcerModels
             context => new AcerBatteryService(context), context => new AcerLightingService(context)],
         MinimumWatts = 0,
         MaximumWatts = 0,
-        Controller = new StandardControllerProfile([new ControllerUsbId(0x0502, 0xF901)]),
+        Controller = new StandardControllerProfile([new ControllerUsbId(0x0502, 0xF901)])
+        {
+            // Attended Device Lab calibration; see PROVENANCE.md for the report and trial limits.
+            Haptics = new HapticCapabilities
+            {
+                LowFrequency = OutputChannelSupport.Native,
+                HighFrequency = OutputChannelSupport.Native,
+                MinimumStartIntensity = 0.02f,
+                MinimumPulse = TimeSpan.FromMilliseconds(5)
+            }
+        },
         // The standard Windows sensor frame is landscape X right, Y up, Z out of the screen.
         // Canonical handheld input uses X right, Y out of the screen, Z down.
         Motion = new StandardMotionProfile(new MotionAxisMap(0, 2, 1, 1, 1, -1),
