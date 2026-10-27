@@ -34,9 +34,11 @@ by the shared processor service and declare its IntelKx dependency. No model-spe
 fan, charging, lighting or motion capability is declared in this initial input contribution.
 
 Predator Sense 1.0.1563.0 was supplied separately by the maintainer for offline protocol research.
-Its proprietary binaries and decompiled source are not included in the library. Protocol findings
-are research inputs; motion units/orientation, native controls and restoration need their own
-reviewed implementation and measured acceptance.
+The follow-up [power and fan protocol research](POWER_FAN_PROTOCOL.md) records the separate EC HID
+power path, WMI fan commands, field layouts and remaining recovery/acceptance work. Its proprietary
+binaries and decompiled source are not included in the library. Protocol findings are research
+inputs; motion units/orientation, native controls and restoration need their own reviewed
+implementation and measured acceptance.
 
 HardwareVerified remains false. Published reports are source fixtures, not a Windows hardware pass.
 Confirm identity/collection shapes, physical pad and rumble, Guide/QAM/M1/M2, held-button
