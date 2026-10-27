@@ -1,5 +1,9 @@
 # Acer Predator Atlas 8
 
+[OEM input and software control](OEM_INPUT_AND_DISABLE.md) is the complete operational reference:
+physical source/report mapping, rear-mode acquisition/restoration, software disable targets,
+post-reboot evidence, persistent package activation blocking and recovery.
+
 ## Initial physical input contribution
 
 Source: [InputPlumber issue 759](https://github.com/ShadowBlip/InputPlumber/issues/759), reviewed
@@ -133,6 +137,14 @@ do not prove every OEM application stays absent across sign-in. FSE startup was 
 HKCU GamingConfiguration / StartupToGamingHome = 0 and verified again after restart; Explorer
 remained the configured shell. The original service/task/FSE states and the exact keyboard-enable
 command were saved locally before the changes.
+
+The follow-up disabled the remaining UEIP service/tasks and both exact Predator Sense MSIX packages
+using the elevated PackageManager Disabled flag. Explicit desktop/widget activation attempts then
+returned 80073D5A with PID 0, both packages reported Disabled/NotAvailable, and no Acer software
+process remained. An opt-in local maintenance task rechecks the closed target set at sign-in and
+every five minutes, including replacement versions of those package identities. Its first run
+completed successfully; it is not an application/runtime feature. The operational reference above
+lists every target, proof limit and restoration step.
 
 Automatic WSGM keyboard suppression and runtime F22/long-press routing remain unimplemented. The runtime contribution
 in this increment owns rear-button mode; it does not yet automate the OEM software comparison
