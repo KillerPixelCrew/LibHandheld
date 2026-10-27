@@ -7,6 +7,9 @@ post-reboot evidence, persistent package activation blocking and recovery.
 [Power-limit tests and runtime bounds](POWER_LIMIT_TESTS.md) distinguishes advertised limits,
 accepted profile values and measured load power, including the unresolved sustained ceiling.
 
+[Motion tests and controller modes](MOTION_TESTS.md) records Windows cadence/resolution evidence,
+DInput and controller-off topology, and the limits of the tested raw gyro paths.
+
 ## Initial physical input contribution
 
 Source: [InputPlumber issue 759](https://github.com/ShadowBlip/InputPlumber/issues/759), reviewed
