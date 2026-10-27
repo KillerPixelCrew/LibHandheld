@@ -7,6 +7,29 @@ namespace LibHandheld.Tests.Acer;
 
 public sealed class AcerPowerTests
 {
+    [Theory]
+    [InlineData(0, 35)]
+    [InlineData(1, 40)]
+    [InlineData(2, 30)]
+    public async Task StockStartupReadsActiveLimitsWithoutOverwritingRetainedManualProfile(int mode, int watts)
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc { Mode = mode };
+        var original = (byte[])ec.Profile.Clone();
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal(watts, service.States.Single(state => state.CapabilityId == "power.primary-limit")
+            .ObservedValue?.IntegerValue);
+        Assert.Equal(65, service.States.Single(state => state.CapabilityId == "power.boost-limit")
+            .ObservedValue?.IntegerValue);
+        Assert.Equal(original, ec.Profile);
+        Assert.Empty(ec.Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Empty(ec.Writes);
+    }
+
     [Fact]
     public async Task ManualPowerPreservesOtherFieldsAndRestoresTheProfileBeforeTheMode()
     {
@@ -178,7 +201,7 @@ public sealed class AcerPowerTests
     {
         // The live PA08-I51 profile, including fields not interpreted by LibHandheld.
         public byte[] Profile { get; private set; } = Convert.FromHexString("00E00200FF0319001E002D00FFFFFFFFFFFFFFFFFFFFFFFFFF");
-        public int Mode { get; private set; }
+        public int Mode { get; set; }
         public bool FailProfileReply { get; set; }
         public bool IgnoreProfileWrite { get; set; }
         public bool FailModeRead { get; init; }
@@ -205,6 +228,15 @@ public sealed class AcerPowerTests
             else if (payload[2] == 2 && payload[4] == 2)
             {
                 Profile.CopyTo(reply, index: 0);
+                reply[5] = payload[5];
+                if (payload[5] < 3)
+                {
+                    BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(6), payload[5] switch
+                    {
+                        0 => 35, 1 => 40, _ => 30
+                    });
+                    BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(10), 65);
+                }
             }
             else if (payload[2] == 1 && payload[4] == 2)
             {

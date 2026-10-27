@@ -323,3 +323,13 @@ Rear paddle descriptors carry no extra Guide/QAM forwarding marker. Physical Rea
 still arrive through canonical controller input. This resolves the WSGM host rejecting the entire
 OEM descriptor set when a rear enum occupied the Guide/QAM-only forwarding field. Front long-press
 keyboard events remain suppressed by the separately disabled keyboard leaf described above.
+
+## Stock-profile limit observations (2026-10-27)
+
+A read-only follow-up queried command 0002/get (payload [00 A0 02 00 02 selector]) for selectors 0,
+1, 2 and 3. Firmware echoed each selector at offset 5. Observed PL1/PL2 values at offsets 6/10 were
+35/65, 40/65, 30/65 and 40/65 W respectively. These are observations on this unit, not a hard-coded
+stock wattage table. Mode 3 was active during the inventory. The old service queried only Manual and
+withheld numeric power in every stock mode, which explains the first-launch unknown TDP. ReadCurrent
+now keeps Manual bytes for edits while publishing limits read from the active stock profile. Missing
+getters still do not gate writes.

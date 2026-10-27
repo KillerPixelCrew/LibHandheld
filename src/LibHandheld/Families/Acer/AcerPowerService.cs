@@ -153,9 +153,13 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
     }
 
     /// <summary>Best-effort observation of active mode and retention of Manual/profile 3 bytes.</summary>
-    /// <remarks>Stored manual limits are published as active only in Manual mode; presets have no invented wattage table.</remarks>
+    /// <remarks>
+    ///     Retains Manual separately for edits, then reads the active firmware profile for display.
+    ///     Stock profile values come from EC replies, never an inferred wattage table.
+    /// </remarks>
     private void ReadCurrent(CancellationToken token)
     {
+        byte[]? manual = null;
         try
         {
             var reply = _ec!.Exchange([0, 0xA0, 1, 0, 2], token);
@@ -169,25 +173,42 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
 
         try
         {
-            var profile = _ec!.Exchange([0, 0xA0, 2, 0, 2, 3], token);
-            if (profile[5] != 3)
-            {
-                throw new IOException("Acer manual profile selector mismatch.");
-            }
-
-            _profile = profile[..25];
-            if (_mode == 3)
-            {
-                _observed.Read(CapabilityIds.PowerSustained,
-                    CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(6))));
-                _observed.Read(CapabilityIds.PowerBoost,
-                    CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(10))));
-            }
+            var profile = ReadProfile(selector: 3, token);
+            manual = profile[..25];
+            _profile = manual;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
         {
             DeviceTrace.Warn(ServiceId, $"Manual profile unavailable: {exception.Message}");
         }
+
+        try
+        {
+            var active = _mode switch
+            {
+                3 => manual,
+                >= 0 and <= 2 => ReadProfile((byte)_mode.Value, token),
+                _ => null
+            };
+            _observed.Read(CapabilityIds.PowerSustained, active is null ? null
+                : CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(active.AsSpan(6))));
+            _observed.Read(CapabilityIds.PowerBoost, active is null ? null
+                : CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(active.AsSpan(10))));
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
+        {
+            DeviceTrace.Warn(ServiceId, $"Active power profile unavailable: {exception.Message}");
+        }
+    }
+
+    private byte[] ReadProfile(byte selector, CancellationToken token)
+    {
+        var profile = _ec!.Exchange([0, 0xA0, 2, 0, 2, selector], token);
+        if (profile[5] != selector)
+        {
+            throw new IOException("Acer power profile selector mismatch.");
+        }
+        return profile;
     }
 
     /// <summary>Selects a preset, or edits a retained PL1/PL2 pair and then activates Manual mode.</summary>
