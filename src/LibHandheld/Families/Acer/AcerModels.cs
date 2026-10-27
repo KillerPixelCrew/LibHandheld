@@ -46,6 +46,12 @@ internal static class AcerModels
         MaximumWatts = 0,
         Controller = new StandardControllerProfile([new ControllerUsbId(0x0502, 0xF901)])
         {
+            // Steam's SDL claims these four auxiliary collections as additional Xbox pads.
+            // Hide only their exact leaves; WSGM remains allowed for OEM/QAM/vendor access.
+            AuxiliaryHidCollections =
+            [
+                "&MI_01&COL01\\", "&MI_02&COL03\\", "&MI_02&COL04\\", "&MI_02&COL05\\"
+            ],
             // Attended Device Lab calibration; see PROVENANCE.md for the report and trial limits.
             // XInput low/high reach the left/right grips without swapping. The host applies the 2%
             // floor and 5 ms minimum only to bounded haptic events; continuous rumble is unchanged.

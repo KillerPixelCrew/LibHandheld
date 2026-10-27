@@ -239,6 +239,19 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
                     "turbo" => 0, "balanced" => 1, "quiet" => 2, "manual" => 3,
                     _ => throw new ArgumentException("Unknown Acer operating mode.")
                 };
+                // A stock mode changes its limits without a PL1/PL2 write. Capture the selected
+                // profile independently so its accepted selection can publish those limits at once.
+                // Missing observation never prevents the mode command.
+                try
+                {
+                    var profile = ReadProfile((byte)selected, token);
+                    writtenSustained = BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(6));
+                    writtenBoost = BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(10));
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
+                {
+                    DeviceTrace.Warn(ServiceId, $"Selected profile limits unavailable: {exception.Message}");
+                }
             }
             else
             {
@@ -280,7 +293,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
                 _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustainedValue));
                 _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boostValue));
             }
-            if (selected != 3)
+            else
             {
                 _observed.Forget(CapabilityIds.PowerSustained);
                 _observed.Forget(CapabilityIds.PowerBoost);

@@ -343,3 +343,27 @@ window. Every observation turn now invokes the telemetry hook after any maintena
 publication. Maintenance remains on its ten-second schedule; temperature freshness limits and
 firmware-auto fallback are unchanged. A focused regression forces a maintenance turn and asserts
 maintenance/telemetry/publication order. Runtime acceptance must span multiple maintenance turns.
+
+## Power readout after a mode selection (2026-10-27)
+
+The initial stock-profile observation fix did not cover a later scenario command: selecting a stock
+mode still cleared both power observations, and control values are not periodically polled. Mode
+commands now best-effort read the selected profile, then publish that pair immediately after
+firmware accepts the mode. Manual selection publishes its own saved pair rather than retaining the
+previous stock limits. Getter failure never blocks a mode write and leaves its numeric limits
+unknown. Two focused regressions cover mode changes and unavailable getters.
+
+## Auxiliary HID cloaking and SDL enumeration (2026-10-27)
+
+With only the physical XInput/HID nodes hidden, Steam listed four extra Xbox controllers in addition
+to WSGM's Steam Deck. Direct XInput calls from a non-allowlisted process returned 1167 on all four
+slots. Steam's own SDL3.dll reproduced five joystick identities and identified the extra paths as
+F901 MI_01/COL01 and MI_02/COL03, COL04, COL05. Disabling Raw Input, GameInput, WGI or XInput
+individually did not remove these HID entries. Hiding those exact four leaves reduced the same SDL
+inventory to one 28DE:1205 Steam Deck without disabling any backend/service.
+
+The controller profile now includes those measured auxiliary HID collection fragments in its
+physical hide set, restricted to matching VID/PID nodes at the selected controller's physical
+location. It leaves the keyboard, mouse and separate RGB collection out. WSGM stays allowlisted for
+rear/QAM input and vendor access. The host journals/removes the added paths with the rest of its
+HidHide ownership, so stopping management or uninstall restores their visibility.

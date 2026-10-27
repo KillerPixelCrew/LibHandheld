@@ -7,6 +7,52 @@ namespace LibHandheld.Tests.Acer;
 
 public sealed class AcerPowerTests
 {
+    [Fact]
+    public async Task ModeSelectionImmediatelyPublishesItsLimitsAndKeepsSavedManualBytes()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc();
+        var original = (byte[])ec.Profile.Clone();
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        foreach (var (mode, watts) in new[] { ("quiet", 30), ("manual", 25) })
+        {
+            var result = await service.ExecuteAsync(new CapabilityCommand
+            {
+                CommandId = Guid.NewGuid(), CapabilityId = "power.scenario",
+                RequestedValue = CapabilityValue.Choice(mode), Deadline = Deadline.Never
+            }, context.Firmware, CancellationToken.None);
+            Assert.Equal(CommandOutcome.Applied, result.Outcome);
+            Assert.Equal(watts, service.States.Single(state => state.CapabilityId == "power.primary-limit")
+                .ObservedValue?.IntegerValue);
+            Assert.Equal(original, ec.Profile);
+        }
+        Assert.Equal(new[] { "mode:2", "mode:3" }, ec.Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task MissingProfileGetterDoesNotPreventModeSelection()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc { FailProfileRead = true };
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var result = await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "power.scenario",
+            RequestedValue = CapabilityValue.Choice("quiet"), Deadline = Deadline.Never
+        }, context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(new[] { "mode:2" }, ec.Writes);
+        Assert.Null(service.States.Single(state => state.CapabilityId == "power.primary-limit").ObservedValue);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
     [Theory]
     [InlineData(0, 35)]
     [InlineData(1, 40)]
@@ -205,6 +251,7 @@ public sealed class AcerPowerTests
         public bool FailProfileReply { get; set; }
         public bool IgnoreProfileWrite { get; set; }
         public bool FailModeRead { get; init; }
+        public bool FailProfileRead { get; init; }
         public List<string> Writes { get; } = [];
 
         public byte[] Exchange(ReadOnlySpan<byte> payload, CancellationToken token, Action? dispatched = null)
@@ -227,6 +274,10 @@ public sealed class AcerPowerTests
             }
             else if (payload[2] == 2 && payload[4] == 2)
             {
+                if (FailProfileRead)
+                {
+                    throw new IOException("Profile getter unavailable.");
+                }
                 Profile.CopyTo(reply, index: 0);
                 reply[5] = payload[5];
                 if (payload[5] < 3)
