@@ -4,6 +4,12 @@ Source package:
 `C:\Users\d.hirt\Downloads\Predator Sense_Acer_1.0.1563.0_W11x64_A\PS_HH_RC7_1.0.1563.0`. Inspected
 2026-10-27. No vendor executable was run, no installation performed and no hardware accessed.
 
+Later same-build analysis refines the bounded-pass unknowns below: see the
+[power/fan protocol](../POWER_FAN_PROTOCOL.md),
+[controller profile and motion findings](controller-profile-findings.md) and
+[supplied driver-package findings](driver-package-findings.md). Those records preserve the completed
+native traces and independent managed CIL anchors.
+
 ## Binary identities and provenance
 
 SHA256:

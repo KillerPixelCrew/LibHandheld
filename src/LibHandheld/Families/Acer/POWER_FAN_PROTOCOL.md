@@ -126,7 +126,10 @@ for restoration; do not treat a behavior getter reply as an already encoded sett
 
 The vendor UI's global fan mode prefers a cached registry `CurrentFanMode` under
 `HKLM\SOFTWARE\OEM\AcerAgentService\FanControl` (`140034fee`..`140035053`). That preference can
-disagree with firmware or another controller's changes. It is not authoritative restoration state.
+disagree with firmware or another controller's changes. Without the cache, any observed manual
+behavior selects Custom 2; otherwise the getter selects Auto 0. It cannot reconstruct Max 1. Per-fan
+projection also maps other nonmanual behaviors to auto and substitutes speed zero after a failed
+speed getter. Retain raw per-fan values and known/unknown state for restoration.
 
 Custom mode groups per-fan auto/manual behavior writes, then sends speed writes only for manual
 fans. Auto/Max are distinct firmware behaviors, not aliases for speed 0/100. The desktop uses
@@ -135,12 +138,43 @@ Exact fan count/names on the maintainer's Atlas remain unknown. Current measured
 displayed separately in RPM; no physical PWM/percentage calibration is established here.
 
 Native `SUPPORT_FAN_CONTROL` construction (`14001ea00`..`14001fa00`) supplies literal bounds 0..100
-for each supported fan. Fan-count helper `140033790` has INI/configuration and WMI fallback paths;
-their full precedence and count-field decoding remain unresolved. Do not hardcode two Atlas fans
-from the desktop's two displayed rows.
+for each supported fan. Fan-count discovery is decoded below; exact counts on the unit remain
+unverified. Do not hardcode two Atlas fans from the desktop's two displayed rows.
 
 The managed owner has no temperature-curve editor. The shared native service contains fan-table WMI
 methods for other consumers, but their presence does not establish Atlas curve support.
+
+## Fan discovery and EC health
+
+Agent `140033790` initializes CPU/GPU/System counts to zero, reads `Model_Name_1st` from
+`HKLM\SOFTWARE\OEM\AcerAgentService` and opens `<agent directory>\<Model_Name_1st>.ini`. Section
+`FanSupport` has keys `CPU`, `GPU`, `System`, each defaulting to sentinel `NULL`. Present values are
+parsed as integers. Only when all three keys are absent does it query a capability mask; a partial
+INI suppresses the fallback and leaves missing groups at zero.
+
+Topology mask bits are CPU 1, GPU 5/8 and System 3/7. CPU count is zero or one; the other counts are
+the number of their two set bits. These are capability bits, not the setter's selection mask. Helper
+`140035190` first tries EC HID health capabilities when `EC_HID_Support` is true, then falls back to
+the legacy WMI getter. Discovery returns true even if both queries fail and counts remain zero; that
+result alone does not establish zero physical fans.
+
+HardwareService `14000dd10` translates service query 0 into EC subcommand 1 and query 1 plus index
+into EC subcommand 2. `14001c190` uses the existing EC feature-report transport. Offsets exclude the
+report ID, with little-endian fields:
+
+| Query                  | Payload prefix         | Successful reply value     |
+| ---------------------- | ---------------------- | -------------------------- |
+| Health capability mask | `00 A0 08 00 01 00`    | uint16 at payload offset 5 |
+| Indexed health reading | `00 A0 08 00 02 index` | uint16 at payload offset 7 |
+
+The helper checks response command word 8 and result word `E000`, with the same locks and 20 ms
+SetFeature-to-GetFeature delay. Its wrapper `14001b900` permits up to five read attempts, with
+20/40/60/80 ms between attempts; selected errors control retryability. This getter behavior does not
+authorize retrying writes. Agent `140035930` reads indices 6/9, but their metric names and units
+remain unresolved; do not label them RPM, degrees or watts from the numeric indices alone.
+
+[Native follow-up evidence](research/power-fan-agent-native.md) records the exact REA function
+Evidence IDs and the correction to the earlier global-mode interpretation.
 
 ## Selection, recovery and remaining evidence
 
@@ -152,7 +186,7 @@ detection.
 Runtime implementation must retain power data-version/capability response handling and the separate
 fan getter layouts. Preserve per-fan original behavior/speed, the full manual power profile and
 original active mode in firmware-bound recovery, and distinguish a written profile from a selected
-mode. Fan-count discovery, mixed-fan modes and restoration sequencing need further review. Do not
+mode. Live fan topology, mixed-fan recovery and restoration sequencing need further review. Do not
 change another application's profiles or services as part of acquisition.
 
 Attended acceptance still needs the unit's exact EC collection and firmware, returned limits, fan
