@@ -12,6 +12,7 @@
     <PackageReference Include="System.IO.Ports" Version="10.0.13"/>
     <InternalsVisibleTo Include="LibHandheld.Tests"/>
     <InternalsVisibleTo Include="WSGM.Tests"/>
+    <InternalsVisibleTo Include="LibHandheld.AtlasButtonTest"/>
     <None Include="../../LICENSE" Link="LibHandheld-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     <None Include="../../PROVENANCE.md" Link="LibHandheld-PROVENANCE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     <EmbeddedResource Include="Families/**/glyphs/**"/>
