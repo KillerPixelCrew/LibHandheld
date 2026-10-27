@@ -23,8 +23,8 @@ a port of InputPlumber application code or its temporary Linux configuration.
 
 The reporter found that consuming vendor input prevents Linux controller freezes. This is evidence
 for retaining the raw reader, not proof of the same behavior or a required workaround on Windows.
-Rear buttons may depend on the previously selected firmware profile; the library does not rewrite
-it.
+Rear reports depend on the controller's M-key mode. The runtime now owns the temporary mode through
+the controller lifecycle as described in the attended follow-up below; it does not rewrite profile mappings.
 
 ## Boundaries and acceptance
 
@@ -58,6 +58,62 @@ Implemented controls and evidence:
 | Lighting | Controller FFA0:0001, 64-byte reports. Output ID 0F requests profile 0; input ID 10 returns RAM profile 1. Only the 883-byte lighting section at offset 586 is addressable. Brightness, speed, solid/breathing effects and a shared nine-LED color use RAM command 21. Brightness 50 -> 45, both effects, color 123456 and speed 10 read back correctly; release restored every lighting byte. The dedicated command input queue is flushed before snapshots to discard stale replies. No mapping or ROM command is sent. Lighting acquisition currently admits measured release 0100 only. |
 | Lifetime | Physical controller and motion samples, four OEM descriptors, controller disable/re-enable, library suspend/resume and clean stop were observed. A bounded 10% rumble command was followed by an explicit zero; no human perception is claimed.                                                                                                                                                                                                                                                                                                                                             |
 
+## Attended button follow-up, 2026-10-27
+
+The maintainer completed the 27-step CLI capture on the same BIOS V1.03 / controller 0100 unit.
+The front-left extra button delivered `9E0000050000000000000000000000` three times; these are
+Guide taps with synthetic 200 ms release, not measured holds. The front-right extra delivered
+`3781FF` / `370000` three times, a roughly 100 ms QAM pulse. Physical long holds were not tested.
+Face buttons, D-pad and its up-right diagonal, shoulders, stick clicks, both full-range triggers
+and A+B+LB rollover registered. View/Menu came through opposite the step names, and the left
+stick's leftward travel reached only -0.133; these need an isolated confirmation before altering
+mapping or calibration. The right stick reached both extrema. No reader faults or overflow occurred.
+
+The original rear mode was XInput (1) / Macro (0), which produced no rear reports. Acer's installed
+DeviceProxyService uses command 26 hex to read gamepad mode and command 24 hex to select the
+gamepad and M-key modes. The response is report 10 / command 27 hex; its bytes 5 and 6 describe
+those two modes. Selecting XInput (1) / Combination (1) exposes native rear reports without editing
+profile mappings, calibration, lighting, other feature settings or ROM. The runtime journals the
+original mode before dispatch, acquires this mode only with controller management, and restores
+the original on release, disable or suspend. No user setup in Predator Sense is required.
+
+The maintainer then completed the three-step managed rear capture. Rear LEFT delivered
+`9A0400000000000000000000000000`, rear RIGHT `9A0200000000000000000000000000`, each with three
+presses and `9A00...` releases. Both together delivered `9A06...`; partial release retained the
+other button. Unrelated `9B00000080FF7F0080FF7F00000000` reports did not release held rear buttons.
+The existing M1/bit 02 and M2/bit 04 protocol labels remain; measured physical left maps to M2,
+right to M1. There were no reader faults or dropped events. Mode acquisition was Owned and release
+Idle with verified restoration to the original XInput/Macro mode. This proves rear acquisition
+and release on this unit, independently of the normal user-configured profile.
+
+### Front shortcuts and device attribution
+
+The subsequent six-step front capture showed the left short Guide HID report followed about
+200 ms later by injected LeftWin+G. Left long presses produced a complete, non-injected
+LeftWin-down / Tab-down / LeftWin-up / Tab-up sequence, with no Guide HID notification.
+Right holds produced non-injected F22 down/repeat/up; these differ from the shorter QAM HID taps.
+The keyboard hook alone cannot identify a physical source or distinguish this clean Win+Tab from
+the same keys on another keyboard.
+
+With the maintainer's direction, the Acer user-mode software stack was stopped and its restart
+entries disabled for comparison. The maintainer confirmed that Win+G and the Predator Sense
+launch disappeared, while Win+Tab persisted. Native EC power, fans, battery, lighting, controller,
+motion and OEM services still acquired and stopped cleanly with those applications absent.
+
+The four-step Raw Input capture then attributed both Win+Tab and F22 to the controller's USB
+keyboard collection `HID\\VID_0502&PID_F901&MI_02&Col01`, serviced by `kbdhid`, usage 0001:0006.
+The volume buttons instead used the separate I2C consumer collection `HID\\1025174B&Col08`,
+with reports `33E900` / `33EA00` and neutral `330000`. No events were dropped and no reader fault
+was reported. This supports targeting the USB keyboard collection without targeting the parent
+controller, the QAM vendor collection or the I2C volume collection.
+
+The maintainer authorized disabling that exact keyboard collection. Normal disable was refused
+as a required system device; PnPUtil `/disable-device /force` accepted it but required a restart.
+Live disable, preservation of other controls after reboot, automatic WSGM keyboard suppression,
+and runtime F22/long-press routing remain unverified or unimplemented. The runtime contribution
+in this increment owns rear-button mode; it does not yet automate the OEM software comparison
+or the pending keyboard disable. Recovery scripts and private captures remain local artifacts.
+
 Recovery uses captured model/firmware identity; lighting also binds the controller release. Unknown
 observations remain unknown, writable controls do not require current-value readback, and uncertain
 commands are not retried. Profile edits require retained bytes so unrelated fields cannot be
@@ -76,7 +132,7 @@ Protocol implementations are independent code; proprietary binaries and decompil
 private. Windows sensor reference axes follow
 [Microsoft's sensor orientation contract](https://learn.microsoft.com/en-us/windows/uwp/devices-sensors/sensor-orientation).
 
-HardwareVerified remains false. Physical Guide/QAM/M1/M2 attribution on release 0100, positive-axis
-motion, perceptual haptics, held-button disconnect, actual Windows sleep/wake and visible Steam
+HardwareVerified remains false. Runtime front-long handling, View/Menu attribution, full left-stick travel,
+positive-axis motion, perceptual haptics, held-button disconnect, actual Windows sleep/wake and visible Steam
 acceptance were not established by autonomous software trials. Library suspend/resume is not an OS
 sleep test. Builds, fixtures and Overlay replays do not replace those observations.

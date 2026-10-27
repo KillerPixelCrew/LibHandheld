@@ -6,7 +6,7 @@ using LibHandheld.Internal.Windows;
 namespace LibHandheld.Families.Acer;
 
 /// <summary>The controller's volatile lighting profile lane. Firmware mappings and ROM are never written.</summary>
-internal sealed class AcerControllerTransport : IAsyncDisposable
+internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControllerModeTransport
 {
     internal const int LightingOffset = 586;
     internal const int LightingLength = 883;
@@ -19,6 +19,52 @@ internal sealed class AcerControllerTransport : IAsyncDisposable
     }
 
     internal ushort Release { get; }
+
+    public async ValueTask<AcerControllerMode> ReadModeAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!NativeHid.HidD_FlushQueue(_stream.SafeFileHandle))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Atlas controller input queue could not be flushed.");
+        }
+
+        var reply = await HidDevices.ExchangeAsync(_stream, ModePacket(), responseLength: 64,
+            data => data[0] == 0x10 && data[3] == 0x3C && data[4] == 0x27,
+            timeout: TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
+        return reply[5] <= 6 && reply[6] <= 2
+            ? new AcerControllerMode(reply[5], reply[6])
+            : throw new IOException("Unsupported Atlas controller mode reply.");
+    }
+
+    public async ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token, Action dispatched)
+    {
+        var packet = ModePacket(mode);
+        token.ThrowIfCancellationRequested();
+        dispatched();
+        await _stream.WriteAsync(packet, token).ConfigureAwait(false);
+        await _stream.FlushAsync(token).ConfigureAwait(false);
+        await Task.Delay(millisecondsDelay: 20, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    internal static byte[] ModePacket(AcerControllerMode? mode = null)
+    {
+        if (mode is { } value && (value.Gamepad > 6 || value.RearKeys > 2))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        var packet = new byte[64];
+        packet[0] = 0x0F;
+        packet[3] = 0x3C;
+        packet[4] = mode is null ? (byte)0x26 : (byte)0x24;
+        if (mode is { } selected)
+        {
+            packet[5] = selected.Gamepad;
+            packet[6] = selected.RearKeys;
+        }
+
+        return packet;
+    }
 
     internal static AcerControllerTransport? Open()
     {
@@ -128,4 +174,12 @@ internal sealed class AcerControllerTransport : IAsyncDisposable
     {
         return _stream.DisposeAsync();
     }
+}
+
+internal sealed record AcerControllerMode(byte Gamepad, byte RearKeys);
+
+internal interface IAcerControllerModeTransport : IAsyncDisposable
+{
+    ValueTask<AcerControllerMode> ReadModeAsync(CancellationToken token);
+    ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token, Action dispatched);
 }

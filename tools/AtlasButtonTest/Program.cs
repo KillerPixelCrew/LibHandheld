@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using LibHandheld;
 using LibHandheld.Contracts;
 using LibHandheld.Families.Acer;
 using LibHandheld.Internal.Devices;
+using LibHandheld.Internal.Runtime;
+using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.AtlasButtonTest;
@@ -47,8 +50,10 @@ internal static class Program
         Console.OutputEncoding = Encoding.UTF8;
         if (args.Contains("--help"))
         {
-            Console.WriteLine("AtlasButtonTest [--out <directory>] [--self-check]");
+            Console.WriteLine("AtlasButtonTest [--out <directory>] [--rear-test | --front-hold-test] [--self-check]");
             Console.WriteLine("Interactive read-only Atlas 8 button capture. Enter starts/ends each step; S skips; Q saves and exits.");
+            Console.WriteLine("--rear-test temporarily acquires the native rear-button mode, tests three rear actions, then restores it.");
+            Console.WriteLine("--front-hold-test attributes the two OEM holds and volume up/down to Raw Input devices (four steps).");
             return 0;
         }
 
@@ -58,10 +63,13 @@ internal static class Program
         }
 
         var outputIndex = Array.IndexOf(args, "--out");
-        if (args.Any(arg => arg != "--out" && (outputIndex < 0 || arg != args.ElementAtOrDefault(outputIndex + 1)))
+        var rearTest = args.Contains("--rear-test");
+        var frontHoldTest = args.Contains("--front-hold-test");
+        if (rearTest && frontHoldTest
+            || args.Any(arg => arg is not ("--out" or "--rear-test" or "--front-hold-test") && (outputIndex < 0 || arg != args.ElementAtOrDefault(outputIndex + 1)))
             || outputIndex >= 0 && outputIndex + 1 >= args.Length)
         {
-            Console.Error.WriteLine("Usage: AtlasButtonTest [--out <directory>]");
+            Console.Error.WriteLine("Usage: AtlasButtonTest [--out <directory>] [--rear-test]");
             return 64;
         }
 
@@ -126,8 +134,43 @@ internal static class Program
             var vendorSource = new HidReportSource();
             var qamSource = new HidReportSource();
             var controller = new StandardControllerSource(new StandardControllerProfile([new ControllerUsbId(0x0502, 0xF901)]));
+            ShortcutObservation? keyboard = null;
+            RawDeviceObservation? rawInput = null;
+            AcerControllerModeService? modeService = null;
+            DeviceCycleContext<ProfiledCycleIdentity>? modeCycle = null;
             try
             {
+                if (frontHoldTest)
+                {
+                    rawInput = new RawDeviceObservation(capture);
+                    report.RawInputAvailable = rawInput.StartAsync().AsTask().GetAwaiter().GetResult();
+                    keyboard = new ShortcutObservation(capture);
+                    report.KeyboardLongPressAvailable = keyboard.StartAsync().AsTask().GetAwaiter().GetResult();
+                    if (report.KeyboardLongPressAvailable != true)
+                    {
+                        capture.Fault("Keyboard shortcut observation could not start; HID capture remains available.");
+                    }
+                }
+
+                if (rearTest)
+                {
+                    var statePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "LibHandheld", "AtlasButtonTest", "recovery");
+                    var context = new ProfiledFeatureContext(statePath,
+                        $"acer-predator-atlas-8-pa08-i51|{identity.BiosVersion}|{identity.EcFirmwareVersion}|controller:{vendor.ReleaseNumber:X4}", null!)
+                    {
+                        Journal = DeviceRecoveryJournal.OpenAsync(statePath, CancellationToken.None).AsTask().GetAwaiter().GetResult()
+                    };
+                    modeCycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never, new(context.Firmware));
+                    modeService = new AcerControllerModeService(context);
+                    var acquired = modeService.AcquireAsync(modeCycle.Value, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+                    report.ModeAcquisition = acquired.State.ToString();
+                    if (acquired.State != DeviceServiceState.Owned)
+                    {
+                        throw new IOException($"Native rear-button mode could not be acquired: {acquired.Reason}");
+                    }
+                }
+
                 if (!vendorSource.Start(HidDevices.OpenStream(vendor), vendor.InputLength, bytes =>
                     {
                         capture.Raw(lane: 1, bytes);
@@ -155,17 +198,32 @@ internal static class Program
                 }
 
                 Console.WriteLine("ACER ATLAS 8 BUTTON TEST\n");
-                Console.WriteLine("Read-only: no firmware, lighting, rumble, power or controller-mode writes.");
+                Console.WriteLine(rearTest
+                    ? "Temporary native rear-button mode acquired. The original mode will be restored when this tool exits."
+                    : "Read-only: no firmware, lighting, rumble, power or controller-mode writes.");
                 Console.WriteLine("Use the KEYBOARD for Enter/S/Q. Keep the console focused; an OEM button may open Acer's app.");
                 Console.WriteLine("Close any game first. Existing Acer services stay running.");
                 Console.WriteLine("Each step: Enter to start, perform ONLY that action, release everything, Enter to finish.");
                 Console.WriteLine("S skips an unavailable control; Q or Ctrl+C saves the partial result. Each step times out after 60 seconds.");
                 Console.WriteLine($"Controller lane: {(topology is null ? "UNAVAILABLE; raw OEM capture still works" : "available")}");
                 Console.WriteLine($"Results: {output}\n");
-                var deadline = DateTime.UtcNow.AddMinutes(30);
-                for (var index = 0; index < Steps.Length && !cancelled && DateTime.UtcNow < deadline; index++)
+                if (frontHoldTest)
                 {
-                    Console.WriteLine($"[{index + 1}/{Steps.Length}] {Steps[index]}");
+                    Console.WriteLine("Use the two EXTRA OEM buttons, not the ordinary View/Menu buttons.");
+                    Console.WriteLine("The right one is Predator / QAM, the left one Guide / Task.");
+                    Console.WriteLine("Capturing device-attributed keyboard/volume reports and shortcut keys. Nothing is blocked.");
+                }
+                var deadline = DateTime.UtcNow.AddMinutes(30);
+                var steps = frontHoldTest ? new[]
+                {
+                    "Front LEFT Guide / Task extra: hold THREE seconds, release, wait TWO seconds",
+                    "Front RIGHT Predator / QAM extra: hold THREE seconds, release, wait TWO seconds",
+                    "Built-in VOLUME UP button: press once and release",
+                    "Built-in VOLUME DOWN button: press once and release"
+                } : rearTest ? Steps.Where(step => step.Contains("REAR", StringComparison.OrdinalIgnoreCase)).ToArray() : Steps;
+                for (var index = 0; index < steps.Length && !cancelled && DateTime.UtcNow < deadline; index++)
+                {
+                    Console.WriteLine($"[{index + 1}/{steps.Length}] {steps[index]}");
                     Console.WriteLine("Enter = start   S = skip   Q = finish");
                     var key = WaitKey(deadline, () => cancelled);
                     if (key is null or ConsoleKey.Q)
@@ -175,14 +233,14 @@ internal static class Program
 
                     if (key == ConsoleKey.S)
                     {
-                        report.Steps.Add(new StepReport(Steps[index], "skipped", [], 0, 0, [], []));
+                        report.Steps.Add(new StepReport(steps[index], "skipped", [], 0, 0, [], []));
                         continue;
                     }
 
                     capture.Begin();
                     Console.WriteLine("RECORDING: perform the action now, release it, then press Enter.");
                     key = WaitKey(DateTime.UtcNow.AddSeconds(60), () => cancelled);
-                    var step = capture.End(Steps[index], cancelled ? "cancelled" : key is null ? "timeout" : "recorded");
+                    var step = capture.End(steps[index], cancelled ? "cancelled" : key is null ? "timeout" : "recorded");
                     report.Steps.Add(step);
                     Console.WriteLine($"Saved {step.Events.Length} changes, {step.ControllerSamples} controller samples, {step.RawReports} HID reports.");
                     foreach (var entry in step.Events.Where(item => item.Kind == "oem").Take(24))
@@ -202,7 +260,7 @@ internal static class Program
                     }
                 }
 
-                report.Completed = report.Steps.Count == Steps.Length && !cancelled;
+                report.Completed = report.Steps.Count == steps.Length && !cancelled;
                 report.Faults = capture.Faults();
                 if (!vendorSource.IsConnected || !qamSource.IsConnected)
                 {
@@ -211,9 +269,52 @@ internal static class Program
             }
             finally
             {
-                controller.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                vendorSource.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                qamSource.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                try
+                {
+                    try
+                    {
+                        try
+                        {
+                            rawInput?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                        }
+                        finally
+                        {
+                            keyboard?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                        }
+                    }
+                    finally
+                    {
+                        controller.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        vendorSource.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            qamSource.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                        }
+                        finally
+                        {
+                            if (modeService is not null)
+                            {
+                                var release = modeService.ReleaseAsync(modeCycle!.Value, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+                                report.ModeRelease = release.State.ToString();
+                                Console.WriteLine($"Controller mode cleanup: {release.State}");
+                                if (release.State != DeviceServiceState.Idle)
+                                {
+                                    report.Faults = [.. report.Faults, "Original controller mode restoration was not verified."];
+                                }
+                            }
+                            report.Faults = report.Faults.Concat(capture.Faults()).Distinct().ToArray();
+                        }
+                    }
+                }
             }
         }
         catch (Exception exception)
@@ -283,6 +384,10 @@ internal sealed class TestReport
     public object[] Collections { get; set; } = [];
     public bool ControllerAvailable { get; set; }
     public bool Completed { get; set; }
+    public string? ModeAcquisition { get; set; }
+    public string? ModeRelease { get; set; }
+    public bool? KeyboardLongPressAvailable { get; set; }
+    public bool? RawInputAvailable { get; set; }
     public string[] AxisOrder { get; init; } = ["LeftStickX", "LeftStickY", "RightStickX", "RightStickY", "LeftTrigger", "RightTrigger"];
     public List<StepReport> Steps { get; } = [];
     public string[] Faults { get; set; } = [];
@@ -292,7 +397,8 @@ internal sealed record StepReport(string Action, string Status, CapturedEvent[] 
     int ControllerSamples, int RawReports, float[] MinimumAxes, float[] MaximumAxes, int DroppedEvents = 0);
 
 internal readonly record struct CapturedEvent(double Milliseconds, string Kind, string? Control = null,
-    bool Down = false, uint Buttons = 0, string? RawHex = null);
+    bool Down = false, uint Buttons = 0, string? RawHex = null, bool Injected = false,
+    string? Device = null, ushort ScanCode = 0, ushort RawFlags = 0);
 
 internal sealed class CaptureBuffer
 {
@@ -363,6 +469,40 @@ internal sealed class CaptureBuffer
             if (_active)
             {
                 Add(new CapturedEvent(Elapsed(), "oem", id, down, (uint)button));
+            }
+        }
+    }
+
+    internal void Keyboard(string id, bool down, bool injected)
+    {
+        lock (_gate)
+        {
+            if (_active)
+            {
+                Add(new CapturedEvent(Elapsed(), "global-keyboard", id, down, Injected: injected));
+            }
+        }
+    }
+
+    internal void DeviceKeyboard(string device, ushort key, bool down, ushort scan, ushort flags)
+    {
+        lock (_gate)
+        {
+            if (_active)
+            {
+                Add(new CapturedEvent(Elapsed(), "device-keyboard", $"VK_{key:X2}", down,
+                    Device: device, ScanCode: scan, RawFlags: flags));
+            }
+        }
+    }
+
+    internal void DeviceConsumer(string device, string report)
+    {
+        lock (_gate)
+        {
+            if (_active)
+            {
+                Add(new CapturedEvent(Elapsed(), "device-consumer", RawHex: report, Device: device));
             }
         }
     }
@@ -466,5 +606,67 @@ internal sealed class CaptureBuffer
 
         Console.WriteLine("Capture bounds, axes, reset and duplicate filtering passed; no hardware opened.");
         return 0;
+    }
+}
+
+/// <summary>Pass-through observation of a closed key set; never suppresses or injects input.</summary>
+internal sealed class ShortcutObservation(CaptureBuffer capture) : IAsyncDisposable
+{
+    private readonly LowLevelHook _hook = new(hookId: 13, "Atlas shortcut observation");
+    private readonly Channel<KeyboardHookEvent> _events = Channel.CreateBounded<KeyboardHookEvent>(
+        new BoundedChannelOptions(capacity: 256) { SingleReader = true, SingleWriter = true });
+    private Task? _pump;
+    private int _overflow;
+
+    internal ValueTask<bool> StartAsync()
+    {
+        _pump = Task.Run(async () =>
+        {
+            await foreach (var key in _events.Reader.ReadAllAsync().ConfigureAwait(false))
+            {
+                var name = key.VirtualKey switch
+                {
+                    0x09 => "Tab", 0x10 => "Shift", 0x11 => "Ctrl", 0x12 => "Alt",
+                    0x47 => "G", 0x5B => "LeftWin", 0x5C => "RightWin", 0x85 => "F22",
+                    0xA0 => "LeftShift", 0xA1 => "RightShift", 0xA2 => "LeftCtrl", 0xA3 => "RightCtrl",
+                    0xA4 => "LeftAlt", 0xA5 => "RightAlt", _ => "Unknown"
+                };
+                capture.Keyboard(name, key.Down, key.Injected);
+            }
+        });
+        return _hook.StartAsync(Observe, exception => capture.Fault(exception.Message), CancellationToken.None);
+    }
+
+    private bool Observe(in KeyboardHookEvent key)
+    {
+        if (key.VirtualKey is 0x09 or 0x10 or 0x11 or 0x12 or 0x47 or 0x5B or 0x5C or 0x85 or >= 0xA0 and <= 0xA5)
+        {
+            if (!_events.Writer.TryWrite(key))
+            {
+                Interlocked.Exchange(ref _overflow, value: 1);
+            }
+        }
+
+        return false;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await _hook.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _events.Writer.TryComplete();
+            if (_pump is not null)
+            {
+                await _pump.ConfigureAwait(false);
+            }
+            if (_overflow != 0)
+            {
+                capture.Fault("Keyboard shortcut queue overflowed; this session cannot establish complete key ordering.");
+            }
+        }
     }
 }

@@ -5,6 +5,7 @@
     <AssemblyName>LibHandheld.AtlasButtonTest</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/LibHandheld/LibHandheld.csproj"/>
