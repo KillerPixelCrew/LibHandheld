@@ -418,3 +418,16 @@ Turbo 1 and Quiet 2. All three retain 65 W boost because that is what their firm
 contain; no invented boost value or manual-limit write is added to a stock selection. Native service
 tracing confirmed that the OEM path selects a complete profile and only writes numeric fields for
 Manual 3. Originals continue to be stored as raw mode numbers, preserving exact restoration.
+
+## Keyboard-interface hiding withdrawn (2026-10-28)
+
+The deployed F90A companion set stopped all keyboard input again, physical and remote. Both failures
+hid a collection on the keyboard's own USB interface: F901 MI_02/COL03..05 beside keyboard
+MI_02/COL01, and the F90A consumer collection MI_01/COL03 beside keyboard MI_01/COL01. The consumer
+collection is no longer a companion. The shared hide set now drops any identity whose USB interface
+also carries a present keyboard or mouse collection, so no profile can repeat this. The MI_00/COL02
+vendor collection shares an interface only with the gamepad and stays hidden; that remains
+attended acceptance after HidHide is reinstalled.
+
+Lighting edits are no longer restored on release. Restoring the journaled original brought the
+firmware rainbow back every time WSGM stopped. Old lighting originals are retired unrestored.

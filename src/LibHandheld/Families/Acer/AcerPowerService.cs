@@ -127,6 +127,21 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         return Set(DeviceServiceState.Owned);
     }
 
+    /// <summary>Re-reads the active mode and its profile limits, on the observation pass and after each command.</summary>
+    /// <remarks>
+    ///     Firmware can change the active profile without WSGM (mode key, power source, resume). Without
+    ///     this pass the published PL1/PL2 stayed at whatever acquisition or the last command saw.
+    /// </remarks>
+    internal override ValueTask RefreshAsync(CancellationToken token)
+    {
+        if (_ec is not null && State == DeviceServiceState.Owned)
+        {
+            ReadCurrent(token);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     // Stock scenarios include firmware fan/power policy. Their limits are deliberately unspecified:
     // writing manual PL1/PL2 after selecting one would silently switch the device back to Manual.
     private static DevicePowerPreset StockPreset(string id, string name, DevicePowerMode windowsMode) =>

@@ -105,14 +105,20 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     }
 
     /// <summary>The present identities plus the pad's nodes in every other mode Windows has seen it in.</summary>
-    /// <remarks>A pad that comes back under another of the profile's product IDs is then already hidden.</remarks>
+    /// <remarks>
+    ///     A pad that comes back under another of the profile's product IDs is then already hidden. A
+    ///     collection on the same USB interface as a keyboard or mouse is never included: hiding one
+    ///     stopped all keyboard input on the Atlas, including injected remote input.
+    /// </remarks>
     private PhysicalDeviceIdentity[] HideSet(IEnumerable<PhysicalDeviceIdentity> present, ushort vendor,
         string location)
     {
         ushort[] products = [.. profile.UsbIds.Where(id => id.Vendor == vendor).Select(id => id.Product)];
+        var collections = HidDevices.Enumerate(vendor, products);
         return
         [
             .. present.Concat(HidDevices.KnownControllerNodes(vendor, products, location))
+                .Where(device => !HidDevices.SharesInterfaceWithKeyboardOrMouse(device.InstancePath, collections))
                 .DistinctBy(device => device.InstancePath, StringComparer.OrdinalIgnoreCase)
         ];
     }

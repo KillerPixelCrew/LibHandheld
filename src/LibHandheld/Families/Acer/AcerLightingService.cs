@@ -11,8 +11,8 @@ namespace LibHandheld.Families.Acer;
 ///     Only the current animation in the retained 883-byte lighting section is edited. A selected
 ///     animation occupies 220 bytes: effect, nine-slot count, inverse speed, brightness, then eight
 ///     RGB keyframes of 27 bytes (nine slots each). Eight slots are physically mapped; slot 8 and
-///     unrelated keyframes/animations/trailing bytes are preserved. Recovery binds both BIOS and
-///     controller release so a snapshot from another wire layout is not replayed.
+///     unrelated keyframes/animations/trailing bytes are preserved. Edits are left on the controller
+///     when WSGM releases it; firmware returns to its stored lighting after power loss.
 /// </remarks>
 internal sealed class AcerLightingService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-lighting")
 {
@@ -62,7 +62,6 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
     private AcerControllerTransport? _controller;
     private byte[]? _lighting;
     private string _binding = context.Firmware;
-    private bool _restoreUnverified;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Controls;
     internal override IReadOnlyList<CapabilityState> States => Controls.Select(item =>
@@ -71,7 +70,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
             Reason) with { InstanceId = item.InstanceId }).ToArray();
     public override bool Suspendable => true;
 
-    /// <summary>Opens the exact measured command lane, reconciles prior lighting, and retains a complete fresh section.</summary>
+    /// <summary>Opens the exact measured command lane, retires any old lighting original, and retains a complete fresh section.</summary>
     /// <remarks>Unlike a simple scalar readback, retaining unrelated profile bytes is necessary to construct a safe edit.</remarks>
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
@@ -85,7 +84,9 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         }
 
         _binding = $"{context.Firmware}|controller:{_controller.Release:X4}";
-        await context.Journal.ReconcileAsync<AcerLightingOriginal>(ServiceId, _binding, RestoreAsync, token)
+        // Lighting is the user's choice and stays on the controller after WSGM stops; restoring the
+        // OEM rainbow on every exit undid it. Earlier builds journaled an original, so drop it unrestored.
+        await context.Journal.RetireAsync(ServiceId, "lighting edits are kept after release", token)
             .ConfigureAwait(false);
         _lighting = await _controller.ReadLightingAsync(token).ConfigureAwait(false);
         Observe(_lighting, written: false);
@@ -235,8 +236,6 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
             // A fresh read after an uncertain command resolves its bytes before any explicit next action.
             _lighting ??= await _controller.ReadLightingAsync(token).ConfigureAwait(false);
             var changed = Edit(_lighting, command);
-            await context.Journal.BeginAsync(ServiceId, _binding,
-                new AcerLightingOriginal { Lighting = (byte[])_lighting.Clone() }, token).ConfigureAwait(false);
             await _controller.WriteLightingAsync(changed, token, () => dispatched = true, _lighting).ConfigureAwait(false);
             _lighting = changed;
             Observe(changed, written: true);
@@ -254,50 +253,12 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         }
     }
 
-    /// <summary>Restores retained lighting RAM, then compares the entire section for journal verification.</summary>
-    /// <remarks>Known current bytes permit a trimmed write; uncertain current bytes require the full original section.</remarks>
-    private async ValueTask RestoreAsync(AcerLightingOriginal original, CancellationToken token)
-    {
-        _ = AnimationOffset(original.Lighting);
-        // Use known current bytes to keep ordinary restoration to the changed range. After an
-        // uncertain write the retained complete lighting section remains the recovery authority.
-        await _controller!.WriteLightingAsync(original.Lighting, token, previous: _lighting).ConfigureAwait(false);
-        bool? verified = null;
-        try
-        {
-            verified = (await _controller.ReadLightingAsync(token).ConfigureAwait(false)).SequenceEqual(original.Lighting);
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            DeviceTrace.Warn(ServiceId, $"Restored lighting observation unavailable: {exception.Message}");
-        }
-
-        _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ServiceId,
-            verified == true ? DeviceRecoveryStatus.RestoredVerified
-                : verified == false ? DeviceRecoveryStatus.RestoreFailed : DeviceRecoveryStatus.RestoredUnverified,
-            CancellationToken.None).ConfigureAwait(false);
-    }
-
-    /// <summary>Restores a BIOS/controller-bound original before closing the command handle.</summary>
+    /// <summary>Closes the command handle and leaves the user's lighting on the controller.</summary>
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
-        try
-        {
-            if (_controller is not null)
-            {
-                await context.Journal.ReconcileAsync<AcerLightingOriginal>(ServiceId, _binding, RestoreAsync, token)
-                    .ConfigureAwait(false);
-            }
-
-            return Set(_restoreUnverified || context.Journal.HasUnrestoredMutation(ServiceId)
-                ? DeviceServiceState.ReleasedUnverified : DeviceServiceState.Idle);
-        }
-        finally
-        {
-            await DisposeAsync().ConfigureAwait(false);
-        }
+        await DisposeAsync().ConfigureAwait(false);
+        return Set(DeviceServiceState.Idle);
     }
 
     /// <summary>Releases the handle and cached section only; recovery writes belong to ReleaseAsync.</summary>
@@ -313,7 +274,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
     }
 }
 
-/// <summary>Complete retained lighting RAM used for recovery, including bytes with no exposed runtime control.</summary>
+/// <summary>Lighting original journaled by earlier builds; kept so their recovery files still load and retire.</summary>
 internal sealed record AcerLightingOriginal
 {
     public byte[] Lighting { get; init; } = [];

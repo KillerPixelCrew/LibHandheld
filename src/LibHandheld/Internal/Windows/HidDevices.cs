@@ -362,6 +362,49 @@ internal static partial class HidDevices
         return nodes;
     }
 
+    /// <summary>Whether a device shares its USB interface with a present keyboard or mouse collection.</summary>
+    /// <param name="instancePath">The device instance path a hide set would contain.</param>
+    /// <param name="collections">The present HID collections of the same product.</param>
+    /// <returns>True when hiding the device could take the keyboard or mouse with it.</returns>
+    internal static bool SharesInterfaceWithKeyboardOrMouse(string instancePath, IEnumerable<HidCollection> collections)
+    {
+        var key = InterfaceKey(instancePath);
+        return collections.Any(collection => collection is { UsagePage: 1, Usage: 2 or 6 or 7 }
+                                             && string.Equals(InterfaceKey(collection.InstancePath), key,
+                                                 StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>The USB interface a HID collection belongs to.</summary>
+    /// <remarks>
+    ///     <c>HID\VID_0502&amp;PID_F90A&amp;MI_01&amp;COL03\7&amp;37E78F8D&amp;0&amp;0002</c> and its keyboard sibling
+    ///     <c>...&amp;MI_01&amp;COL01\7&amp;37E78F8D&amp;0&amp;0000</c> share the device ID before <c>&amp;COL</c> and the
+    ///     instance prefix before the final collection index.
+    /// </remarks>
+    internal static string InterfaceKey(string instancePath)
+    {
+        var separator = instancePath.LastIndexOf('\\');
+        if (separator < 0)
+        {
+            return instancePath;
+        }
+
+        var device = instancePath[..separator];
+        var instance = instancePath[(separator + 1)..];
+        var collection = device.LastIndexOf("&COL", StringComparison.OrdinalIgnoreCase);
+        if (collection >= 0)
+        {
+            device = device[..collection];
+        }
+
+        var index = instance.LastIndexOf('&');
+        if (index >= 0)
+        {
+            instance = instance[..index];
+        }
+
+        return device + "\\" + instance;
+    }
+
     /// <summary>Whether two location paths name the same composite USB device.</summary>
     /// <param name="left">One location path.</param>
     /// <param name="right">The other.</param>
