@@ -356,12 +356,42 @@ unknown. Two focused regressions cover mode changes and unavailable getters.
 ## Rejected auxiliary HID cloaking (2026-10-27)
 
 An isolated Steam SDL inventory identified four extra Xbox entries as F901 MI_01/COL01 and
-MI_02/COL03, COL04, COL05. Hiding those auxiliary leaves reduced enumeration from five pads to
-one Steam Deck, but the maintainer then lost both physical and RustDesk keyboard input. Turning
-cloaking off, removing the entries and stopping WSGM did not restore input; uninstalling HidHide
-did. That is a failed hardware trial, regardless of its initial controller-list result.
+MI_02/COL03, COL04, COL05. Hiding those auxiliary leaves reduced enumeration from five pads to one
+Steam Deck, but the maintainer then lost both physical and RustDesk keyboard input. Turning cloaking
+off, removing the entries and stopping WSGM did not restore input; uninstalling HidHide did. That is
+a failed hardware trial, regardless of its initial controller-list result.
 
 The auxiliary-hide profile changes were withdrawn. Do not add these vendor/consumer/OEM HID
-collections to the kernel hide set. Keep HidHide scoped to the actual XInput controller nodes.
-Any suppression of SDL's auxiliary Xbox identities must happen inside the consuming application,
-without blocking Windows keyboard, mouse, consumer or OEM collections.
+collections to the kernel hide set. Keep HidHide scoped to the actual XInput controller nodes. Any
+suppression of SDL's auxiliary Xbox identities must happen inside the consuming application, without
+blocking Windows keyboard, mouse, consumer or OEM collections.
+
+## DInput rumble discovery (2026-10-27)
+
+A focused F90A capability query found gamepad input report 01 (64 bytes), output report 05 (32
+bytes, vendor pageFF00), and 17 button usages. A rumble-only report 05 with byte1=01, right/high
+amplitude at4 and left/low at5 produced a pulse the maintainer explicitly felt. Accelerometer RMS
+increased from 0.00324 g idle to 0.04231 g during the 600 ms pulse. A zero-amplitude report stopped
+it, and the original XInput/rear-mode tuple0100000100 was restored and verified. This establishes a
+DInput rumble path; it does not establish motor-side mapping or the complete DInput OEM-button map.
+A subsequent button capture recorded no transitions because the maintainer had left the device and
+was remote-only. Do not infer missing buttons from that empty capture. Physical button acceptance
+remains pending while source/descriptor investigation continues.
+
+## DInput runtime integration (2026-10-27)
+
+Runtime controller ownership now selects DInput 2 / Combination 1 and returns the exact original
+mode pair on release. The command lane follows the same physical port from F901/FFA0:1 to
+F90A/FFF0:40 after one mode dispatch; it waits for enumeration without retrying the write. Input
+uses the generic descriptor parser for the F90A gamepad. The actual gamepad leaf and old XInput
+gamepad nodes form the hide set; auxiliary HID collections are not hidden. Report05 rumble uses an
+independent output handle and sends zero before releasing it. Lighting continues through the
+correlated command lane. Windows IMU remains the motion source.
+
+An on-device library lifecycle run reached Active with every service Owned, produced 128 controller
+samples in one second, accepted rumble and zero output, disabled/re-enabled controller management,
+suspended/resumed, and stopped Clean. All mode changes restored correctly. The generic parser uses
+the 17-button descriptor and the OEM PS/camera/FL1/FR1 naming for face/OEM mapping. Those physical
+button mappings still require attended acceptance; the empty remote-only capture is not evidence
+that buttons are absent. No Steam executable, SDL setting or Windows keyboard filter is changed by
+this route.

@@ -32,7 +32,7 @@ public sealed class AcerControllerModeTests
         var cycle = Cycle(context);
         Assert.True(service.RequiresControllerOwnership);
         await service.AcquireAsync(cycle, CancellationToken.None);
-        Assert.Equal(new AcerControllerMode(Gamepad: 1, RearKeys: 1), transport.Mode);
+        Assert.Equal(new AcerControllerMode(Gamepad: 2, RearKeys: 1), transport.Mode);
         Assert.True(context.Journal.HasUnrestoredMutation(service.ServiceId));
         Assert.Equal(new AcerControllerMode(Gamepad: 1, RearKeys: 0),
             context.Journal.OriginalStateFor<AcerControllerMode>(service.ServiceId));
@@ -50,7 +50,7 @@ public sealed class AcerControllerModeTests
     {
         using var directory = new TemporaryDirectory();
         var context = Context(directory.Root);
-        var transport = new FixtureMode { Mode = new AcerControllerMode(Gamepad: 1, RearKeys: 1) };
+        var transport = new FixtureMode { Mode = new AcerControllerMode(Gamepad: 2, RearKeys: 1) };
         var service = new AcerControllerModeService(context, () => transport);
         var cycle = Cycle(context);
         await service.AcquireAsync(cycle, CancellationToken.None);

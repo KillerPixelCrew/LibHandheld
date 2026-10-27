@@ -8,15 +8,15 @@ namespace LibHandheld.Families.Acer;
 
 /// <summary>Owns the native rear-button reporting mode only while the host manages the controller.</summary>
 /// <remarks>
-///     XInput 1 plus rear Combination 1 delivers native 9A reports without prior Predator Sense
+///     DInput 2 plus rear Combination 1 supplies native gamepad/OEM usages without prior Predator Sense
 ///     assignments. Macro mode 0 can otherwise consume rear presses. The original pair is captured
 ///     before command 24 and restored on release/suspend. This service exposes no user-facing mode
-///     control and never switches to the exploratory DInput/off topologies or saves controller ROM.
+///     control and uses the verified F90A mode/rumble lane and never saves controller ROM.
 /// </remarks>
 internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
     Func<IAcerControllerModeTransport?>? open = null) : ProfiledFeatureService("acer-controller-mode")
 {
-    private static readonly AcerControllerMode Managed = new(Gamepad: 1, RearKeys: 1);
+    private static readonly AcerControllerMode Managed = new(Gamepad: 2, RearKeys: 1);
     private IAcerControllerModeTransport? _transport;
     private bool _restoreUnverified;
 

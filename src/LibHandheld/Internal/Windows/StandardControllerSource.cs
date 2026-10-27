@@ -8,9 +8,10 @@ namespace LibHandheld.Internal.Windows;
 internal sealed record StandardControllerTopology(
     int Slot,
     IReadOnlyList<PhysicalDeviceIdentity> Devices,
-    HidCollection? Hid = null)
+    HidCollection? Hid = null,
+    bool HidRumble = false)
 {
-    internal bool SupportsRumble => Hid is null;
+    internal bool SupportsRumble => Hid is null || HidRumble;
 }
 
 /// <summary>Physical XInput ownership, with the matching USB topology required before a slot is claimed.</summary>
@@ -26,6 +27,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
 
     private Thread? _reader;
     private int _slot = -1;
+    private IHidControllerRumble? _hidRumble;
     private CancellationTokenSource? _stop;
 
     public ValueTask DisposeAsync()
@@ -97,7 +99,8 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
         }
 
         return new StandardControllerTopology(-1,
-            HideSet([PhysicalIdentities.FromCollection(hid)], hid.VendorId, hid.PhysicalLocation), hid);
+            HideSet([PhysicalIdentities.FromCollection(hid)], hid.VendorId, hid.PhysicalLocation), hid,
+            profile.OpenHidRumble is not null);
     }
 
     /// <summary>The present identities plus the pad's nodes in every other mode Windows has seen it in.</summary>
@@ -140,6 +143,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     {
         if (topology.Hid is { } hid)
         {
+            _hidRumble = profile.OpenHidRumble?.Invoke(hid);
             _hid!.Start(hid, buttons, motion, touchpad, publish, fault);
             return;
         }
@@ -164,6 +168,11 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     {
         lock (_gate)
         {
+            if (_hidRumble is { } output)
+            {
+                output.Write(low, high);
+                return;
+            }
             if (_slot < 0)
             {
                 return;
@@ -185,6 +194,21 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
 
     internal async ValueTask StopAsync(CancellationToken cancellationToken)
     {
+        lock (_gate)
+        {
+            try
+            {
+                _hidRumble?.Dispose();
+            }
+            catch (IOException)
+            {
+                // A disconnected HID output still closes its handle in Dispose's finally.
+            }
+            finally
+            {
+                _hidRumble = null;
+            }
+        }
         if (_hid is not null)
         {
             await _hid.StopAsync(cancellationToken).ConfigureAwait(false);

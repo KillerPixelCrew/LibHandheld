@@ -19,6 +19,8 @@ internal sealed class AcerButtonSource : IProfiledOemSource
     private readonly HidReportSource _vendor = new();
     private readonly HidReportSource _qam = new();
     private AcerButtonState? _state;
+    private HidUsageReader? _dinputDecoder;
+    private bool _dinput;
 
     /// <summary>Semantic front/rear controls; action assignments and companion-app suppression belong to the host.</summary>
     internal static IReadOnlyList<OemControlDescriptor> Controls { get; } =
@@ -39,13 +41,38 @@ internal sealed class AcerButtonSource : IProfiledOemSource
             RequiresControllerAcquisition = true
         }).ToArray();
 
-    public bool IsConnected => _vendor.IsConnected && _qam.IsConnected;
+    public bool IsConnected => _vendor.IsConnected && (_dinput || _qam.IsConnected);
 
     /// <summary>Opens one exact vendor/QAM pair and starts allocation-free report handlers for their measured lengths.</summary>
     /// <remarks>Absent/ambiguous or mismatched locations return false. Partial startup tears down both readers and held edges.</remarks>
     public async ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+        var dinput = HidDevices.Unique(HidDevices.Enumerate(0x0502, [0xF90A]),
+            item => item is { ReleaseNumber: 0x0100, UsagePage: 1, Usage: 5, InputLength: 64, OutputLength: 32 });
+        if (dinput is not null)
+        {
+            _dinput = true;
+            _state = new AcerButtonState(publish);
+            var stream = HidDevices.OpenStream(dinput);
+            try
+            {
+                _dinputDecoder = new HidUsageReader(stream.SafeFileHandle);
+                if (_vendor.Start(stream, dinput.InputLength, HandleDInputReport,
+                        () => { _state?.ReleaseVendor(); _state?.ReleaseQam(); }, token))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                stream.Dispose();
+                await StopAsync(CancellationToken.None).ConfigureAwait(false);
+                throw;
+            }
+            await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            return false;
+        }
         var collections = HidDevices.Enumerate(0x0502, [0xF901]).ToArray();
         var vendor = HidDevices.Unique(collections, AcerInputProtocol.IsVendorCollection);
         var qam = HidDevices.Unique(collections, AcerInputProtocol.IsQamCollection);
@@ -94,6 +121,17 @@ internal sealed class AcerButtonSource : IProfiledOemSource
         }
 
         _state = null;
+        _dinputDecoder?.Dispose();
+        _dinputDecoder = null;
+        _dinput = false;
+    }
+
+    private void HandleDInputReport(ReadOnlySpan<byte> report)
+    {
+        if (report.Length == 64 && report[0] == 1 && _dinputDecoder is { } decoder)
+        {
+            _state?.HandleDInputButtons(decoder.Usages(report, 9));
+        }
     }
 
     public ValueTask DisposeAsync()
@@ -120,6 +158,24 @@ internal sealed class AcerButtonState : IDisposable
     {
         _publish = publish;
         _releaseGuide = new Timer(_ => ReleaseGuide(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>Routes the DInput PS/camera and rear usages through the same OEM action owner.</summary>
+    /// <remarks>The 17-button descriptor and OEM PS/camera/FL1/FR1 naming supply this mapping;
+    /// physical front/rear mapping acceptance remains pending.</remarks>
+    internal void HandleDInputButtons(ReadOnlySpan<ushort> usages)
+    {
+        lock (_gate)
+        {
+            if (_publish is null)
+            {
+                return;
+            }
+            Emit("guide", CanonicalButtons.Guide, usages.Contains((ushort)13));
+            Emit("qam", CanonicalButtons.QuickAccess, usages.Contains((ushort)14));
+            Emit("m2", CanonicalButtons.RearPaddle2, usages.Contains((ushort)15));
+            Emit("m1", CanonicalButtons.RearPaddle1, usages.Contains((ushort)16));
+        }
     }
 
     /// <summary>Updates M1/M2 only for report 9A, or extends Guide's 200 ms latch for its exact 9E notification.</summary>

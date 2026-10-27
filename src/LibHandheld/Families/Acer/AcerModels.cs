@@ -44,8 +44,18 @@ internal static class AcerModels
         // Generic bounds are unused: AcerPowerService discovers PL1/PL2 bounds from the EC itself.
         MinimumWatts = 0,
         MaximumWatts = 0,
-        Controller = new StandardControllerProfile([new ControllerUsbId(0x0502, 0xF901)])
+        Controller = new StandardControllerProfile([new ControllerUsbId(0x0502, 0xF901), new ControllerUsbId(0x0502, 0xF90A)])
         {
+            HidFallback = new HidControllerProfile([new ControllerUsbId(0x0502, 0xF90A)],
+            [
+                CanonicalButtons.X, CanonicalButtons.A, CanonicalButtons.B, CanonicalButtons.Y,
+                CanonicalButtons.LeftShoulder, CanonicalButtons.RightShoulder,
+                CanonicalButtons.None, CanonicalButtons.None, CanonicalButtons.View, CanonicalButtons.Menu,
+                CanonicalButtons.LeftStick, CanonicalButtons.RightStick,
+                CanonicalButtons.None, CanonicalButtons.None, CanonicalButtons.None,
+                CanonicalButtons.None, CanonicalButtons.None
+            ]),
+            OpenHidRumble = collection => new AcerDInputRumble(collection),
             // Attended Device Lab calibration; see PROVENANCE.md for the report and trial limits.
             // XInput low/high reach the left/right grips without swapping. The host applies the 2%
             // floor and 5 ms minimum only to bounded haptic events; continuous rumble is unchanged.

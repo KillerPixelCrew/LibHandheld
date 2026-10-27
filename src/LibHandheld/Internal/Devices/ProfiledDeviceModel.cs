@@ -184,6 +184,8 @@ internal sealed record StandardControllerProfile(IReadOnlyList<ControllerUsbId> 
     };
 
     internal HidControllerProfile? HidFallback { get; init; }
+    internal Func<LibHandheld.Internal.Windows.HidCollection,
+        LibHandheld.Internal.Windows.IHidControllerRumble>? OpenHidRumble { get; init; }
     internal IReadOnlyList<ControllerUsbId> CompanionUsbIds { get; init; } = [];
 }
 

@@ -19,10 +19,12 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
     internal const int LightingOffset = 586;
     /// <summary>Complete retained section: selected-animation byte, four 220-byte animations and trailing bytes.</summary>
     internal const int LightingLength = 883;
-    private readonly FileStream _stream;
+    private FileStream _stream;
+    private HidCollection _collection;
 
     private AcerControllerTransport(HidCollection collection)
     {
+        _collection = collection;
         _stream = HidDevices.OpenStream(collection);
         Release = collection.ReleaseNumber;
     }
@@ -61,6 +63,28 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         await _stream.WriteAsync(packet, token).ConfigureAwait(false);
         await _stream.FlushAsync(token).ConfigureAwait(false);
         await Task.Delay(millisecondsDelay: 20, CancellationToken.None).ConfigureAwait(false);
+        var product = mode.Gamepad == 2 ? (ushort)0xF90A : (ushort)0xF901;
+        if (_collection.ProductId != product)
+        {
+            await _stream.DisposeAsync().ConfigureAwait(false);
+            // The acknowledged dispatch changes the USB topology. Poll only for arrival; never
+            // resend the mode command when Windows has not finished enumerating its replacement.
+            var deadline = Environment.TickCount64 + 5000;
+            while (Environment.TickCount64 < deadline)
+            {
+                var replacement = HidDevices.Unique(HidDevices.Enumerate(0x0502, [product]),
+                    item => IsCommandCollection(item)
+                            && HidDevices.SamePhysicalLocation(item.PhysicalLocation, _collection.PhysicalLocation));
+                if (replacement is not null)
+                {
+                    _stream = HidDevices.OpenStream(replacement);
+                    _collection = replacement;
+                    return;
+                }
+                await Task.Delay(100, CancellationToken.None).ConfigureAwait(false);
+            }
+            throw new IOException("The Atlas mode command was sent, but its replacement command interface did not arrive.");
+        }
     }
 
     /// <summary>Builds query 26 when null, or mode command 24 with payload bytes at offsets 5/6.</summary>
@@ -84,14 +108,17 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         return packet;
     }
 
-    /// <summary>Opens only the measured XInput-mode command collection; DInput's F90A topology is not substituted.</summary>
+    /// <summary>Opens the measured command lane in either supported controller topology.</summary>
     internal static AcerControllerTransport? Open()
     {
-        var collection = HidDevices.Unique(HidDevices.Enumerate(0x0502, [0xF901]),
-            item => item.UsagePage == 0xFFA0 && item.Usage == 1
-                    && item.InputLength == 64 && item.OutputLength == 64 && item.ReleaseNumber == 0x0100);
+        var collection = HidDevices.Unique(HidDevices.Enumerate(0x0502, [0xF901, 0xF90A]), IsCommandCollection);
         return collection is null ? null : new AcerControllerTransport(collection);
     }
+
+    private static bool IsCommandCollection(HidCollection item) =>
+        item.InputLength == 64 && item.OutputLength == 64 && item.ReleaseNumber == 0x0100
+        && (item.ProductId == 0xF901 && item.UsagePage == 0xFFA0 && item.Usage == 1
+            || item.ProductId == 0xF90A && item.UsagePage == 0xFFF0 && item.Usage == 0x40);
 
     /// <summary>Reads all 883 retained lighting bytes in correlated chunks of at most 55 data bytes.</summary>
     /// <remarks>
