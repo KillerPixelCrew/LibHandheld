@@ -127,11 +127,79 @@ Local evidence: `artifacts/acer-dinput-motion-attended.log`, `acer-dinput-motion
 `acer-controller-disable-recover.log`, `acer-controller-disable-restored.json`, and
 `acer-controller-motion-*-summary.json`.
 
+## Attended axis validation
+
+The maintainer completed six stationary orientations, three separately named rotations and a final
+screen-up rest capture using the standard Windows source. Samples were captured before the model's
+axis transform. All ten phases completed, with no buffer overflow or nonmonotonic sensor timestamps.
+The capture process exited and no sensor probe remained running afterward.
+
+| Stationary orientation | Mean sensor X, g | Mean sensor Y, g | Mean sensor Z, g |
+| ---------------------- | ---------------- | ---------------- | ---------------- |
+| Screen up              | -0.00566         | +0.13431         | -1.00128         |
+| Screen down            | +0.12540         | -0.01252         | +1.41942         |
+| Top edge up            | +0.05841         | -1.05126         | +0.24028         |
+| Bottom edge up         | -0.09797         | +0.96720         | +0.26797         |
+| Right edge up          | -1.00149         | -0.00143         | +0.09330         |
+| Left edge up           | +1.00484         | -0.03214         | +0.32034         |
+| Final screen up        | -0.00711         | +0.13927         | -1.00900         |
+
+All opposing orientations reverse the expected dominant sensor axis. This confirms the landscape
+sensor basis used by the existing model: X right, Y toward the top edge, Z out of the screen.
+Acceleration includes gravity, directed opposite the upward-facing sensor axis at rest.
+
+| Deliberate rotation                                       | Integrated sensor X, degrees | Sensor Y, degrees | Sensor Z, degrees |
+| --------------------------------------------------------- | ---------------------------- | ----------------- | ----------------- |
+| Clockwise, screen up, viewed from above                   | +3.63                        | +1.95             | -135.93           |
+| Top edge away, screen vertical facing tester to screen up | -98.31                       | +0.64             | +5.29             |
+| Right edge away, screen vertical, top edge kept up        | -4.19                        | +101.18           | -1.19             |
+
+The maintainer confirmed the clockwise turn exceeded 90 degrees. Its 135.93-degree integral is
+therefore not evidence of a 90-to-136-degree scale error. The other two turns were approximate
+quarter turns, with dominant-axis integrals of 98.31 and 101.18 degrees. These observations confirm
+gyro axis selection and sign and support approximate degrees/second units; hand-positioned angles do
+not establish precision scale calibration. Rotation delivery was 99.25..99.62 Hz, with maximum
+sensor gaps of 20..30 ms.
+
+Both gyro and accelerometer retain the model transform `(X, Y, Z) -> (X, Z, -Y)`, matching canonical
+X right, Y out of the screen, Z down. No production transform or sensor calibration was changed.
+
+Accelerometer magnitude needs separate follow-up: screen-down samples had vector magnitudes
+1.404..1.442 g, and the perpendicular Z component in several vertical poses was +0.24..0.32 g.
+Screen-up magnitude was 1.010 g initially and 1.019 g finally. Correct direction does not prove
+calibrated magnitude. Do not normalize these samples, infer correction constants from this single
+hand-held trial, or claim six-face scale calibration passed. The Windows readings themselves contain
+this asymmetry, before the library transform.
+
+Local evidence: `artifacts/acer-motion-axes-20261027-180723.json`, SHA-256
+`DA99F2F93F5512A6C771803F5B06ADA003F88E9A62D3F7175EF2D2AF7C204270`. The temporary capture helper
+compiled in Release with zero warnings and errors. This evidence validates physical axes through the
+Windows acquisition source; it does not establish visible Steam motion behavior or physical rumble
+acceptance.
+
+### Flat-table accelerometer repeat
+
+With the maintainer confirming the device was back on the table, a separate 20-second capture read
+the same standard accelerometer directly through Windows.Devices.Sensors.Accelerometer. It did not
+depend on gyro events. There were 637 distinct sensor timestamps and 572 distinct acceleration
+vectors. Mean raw acceleration was (-0.005509, +0.134265, -1.002202) g. Mean vector magnitude was
+1.011172 g, minimum 1.007681 g and maximum 1.014837 g. The requested interval was 10 ms; the
+original 100 ms property was restored and read back afterward. The helper built with zero
+warnings/errors and exited successfully.
+
+This independently supports the screen-up magnitude and direction. It does not repeat the
+screen-down pose or resolve its 1.42 g result. An earlier repeat using the gyro-driven capture
+helper delivered no samples, then failed its empty-summary calculation after disposing the sensor
+stream; it is not a successful capture. The direct accelerometer capture avoids that dependency.
+
+Local evidence: `artifacts/acer-accel-rest-20261027-181437.json`, SHA-256
+`0193DEFB866881BA53FB68DACA7E2768F0B3CAD99F26ABDCA66ECCE4336C1C5F`.
+
 ## Runtime conclusion and remaining work
 
 Keep the working Windows source. Its 100 Hz moving delivery is verified; it is not a universal
 hardware ceiling. Raw controller gyro, its physical resolution, scale and motion update rate remain
 unverified in these tested firmware states. A 125 Hz gamepad packet rate is not a 125 Hz gyro
-result. No production backend, capability or HardwareVerified claim was widened. Positive-axis
-trials and angle/scale validation still remain; the all-axis movement captures do not replace
-separately named positive rotations.
+result. The separate attended trials above now confirm both Windows motion axis mappings. Precise
+angle/scale calibration and the accelerometer magnitude asymmetry remain unresolved. No production
+backend, capability or HardwareVerified claim was widened.

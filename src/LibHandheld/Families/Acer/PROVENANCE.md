@@ -249,8 +249,13 @@ Protocol implementations are independent code; proprietary binaries and decompil
 private. Windows sensor reference axes follow
 [Microsoft's sensor orientation contract](https://learn.microsoft.com/en-us/windows/uwp/devices-sensors/sensor-orientation).
 
+The subsequent six-pose/three-rotation attended trial confirmed both Windows motion axis mappings as
+`(X, Z, -Y)`. See [motion evidence](MOTION_TESTS.md) for the measured signs, hand-positioned
+rotation integrals and unresolved accelerometer magnitude asymmetry; axis acceptance is not scale
+calibration.
+
 HardwareVerified remains false. Runtime front-long handling, View/Menu attribution, full left-stick
-travel, positive-axis motion, perceptual haptics, held-button disconnect, actual Windows sleep/wake
-and visible Steam acceptance were not established by autonomous software trials. Library
+travel, precise motion scale calibration, perceptual haptics, held-button disconnect, actual Windows
+sleep/wake and visible Steam acceptance were not established by autonomous software trials. Library
 suspend/resume is not an OS sleep test. Builds, fixtures and Overlay replays do not replace those
 observations.
