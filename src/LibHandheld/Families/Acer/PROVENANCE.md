@@ -431,3 +431,13 @@ attended acceptance after HidHide is reinstalled.
 
 Lighting edits are no longer restored on release. Restoring the journaled original brought the
 firmware rainbow back every time WSGM stopped. Old lighting originals are retired unrestored.
+
+## Explicit preset limits (2026-10-28)
+
+The stock EC profiles keep PL2 at 65 W in all three tiers, and the platform's RAPL registers did not
+follow them, so a stock selection changed only the EC's PL1 field and the TDP readout did not match
+what the maintainer measured. At the maintainer's direction the Quiet, Balanced and Turbo presets
+now write explicit PL1/PL2 through Manual 3: 20/20, 25/37 and 30/37 W, HandheldCompanion's Arc G3
+(ClawCG3EM) table after its 20 W floor. Full Power keeps the firmware maximum, 40/65 W. Manual
+limits were measured to bound package power (25 W requested, 24.6 W measured). The stock EC
+profiles remain selectable through the scenario control.

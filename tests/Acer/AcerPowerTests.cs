@@ -116,7 +116,13 @@ public sealed class AcerPowerTests
         Assert.Equal(65, service.Descriptors.Single(item => item.CapabilityId == "power.boost-limit").Maximum);
         var presets = service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").PowerPresets;
         Assert.Equal(new[] { "quiet", "balanced", "turbo", "full-power" }, presets.Select(preset => preset.Id));
-        Assert.All(presets.Take(3), preset => Assert.True(preset.FirmwareManaged));
+        Assert.Equal(new[] { (20, 20), (25, 37), (30, 37) },
+            presets.Take(3).Select(preset => (preset.SustainedWatts, preset.SlowWatts)));
+        Assert.All(presets, preset =>
+        {
+            Assert.False(preset.FirmwareManaged);
+            Assert.Equal("manual", preset.ScenarioOnAc);
+        });
         var full = presets.Last();
         Assert.False(full.FirmwareManaged);
         Assert.Equal(40, full.SustainedWatts);

@@ -96,9 +96,12 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
                     PairedPowerLimitId = CapabilityIds.PowerBoost,
                     PowerPresets =
                     [
-                        StockPreset("quiet", "Quiet", DevicePowerMode.BetterBattery),
-                        StockPreset("balanced", "Balanced", DevicePowerMode.Balanced),
-                        StockPreset("turbo", "Turbo", DevicePowerMode.BestPerformance),
+                        ManualPreset("quiet", "Quiet", 20, 20, DevicePowerMode.BetterBattery,
+                            minimum, maximum, boostMaximum),
+                        ManualPreset("balanced", "Balanced", 25, 37, DevicePowerMode.Balanced,
+                            minimum, maximum, boostMaximum),
+                        ManualPreset("turbo", "Turbo", 30, 37, DevicePowerMode.BestPerformance,
+                            minimum, maximum, boostMaximum),
                         new DevicePowerPreset("full-power", "Full Power", maximum, boostMaximum,
                             DevicePowerMode.BestPerformance)
                         {
@@ -142,13 +145,18 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         return ValueTask.CompletedTask;
     }
 
-    // Stock scenarios include firmware fan/power policy. Their limits are deliberately unspecified:
-    // writing manual PL1/PL2 after selecting one would silently switch the device back to Manual.
-    private static DevicePowerPreset StockPreset(string id, string name, DevicePowerMode windowsMode) =>
-        new(id, name, 0, 0, windowsMode)
+    // The stock EC profiles all keep PL2 at 65 W and their readouts did not match the platform's
+    // limits, so presets write explicit PL1/PL2 through Manual. Values are HandheldCompanion's
+    // Arc G3 (ClawCG3EM) table after its 20 W floor; Full Power keeps the firmware maximum.
+    private static DevicePowerPreset ManualPreset(string id, string name, int sustained, int slow,
+        DevicePowerMode windowsMode, int minimum, int maximum, int boostMaximum)
+    {
+        var pl1 = Math.Clamp(sustained, minimum, maximum);
+        return new DevicePowerPreset(id, name, pl1, Math.Clamp(slow, pl1, boostMaximum), windowsMode)
         {
-            FirmwareManaged = true, ScenarioOnAc = id, ScenarioOnDc = id
+            ScenarioOnAc = "manual", ScenarioOnDc = "manual"
         };
+    }
 
     /// <summary>Queries Manual/profile 3 limit selector 1=PL1 min, 2=PL1 max, 4=PL2 max, in whole watts.</summary>
     /// <remarks>The 26-byte request puts its selector at offset 25; the reply echoes it and returns uint16 at 26.</remarks>
