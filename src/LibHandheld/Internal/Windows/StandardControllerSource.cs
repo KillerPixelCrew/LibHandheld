@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Windows;
 
@@ -148,8 +149,32 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     {
         if (topology.Hid is { } hid)
         {
-            _hidRumble = profile.OpenHidRumble?.Invoke(hid);
-            _hid!.Start(hid, buttons, motion, touchpad, publish, fault);
+            // Rumble is optional output: a failed open leaves the pad without vibration, never without input.
+            IHidControllerRumble? rumble = null;
+            try
+            {
+                rumble = profile.OpenHidRumble?.Invoke(hid);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                DeviceTrace.Warn("controller", $"HID rumble unavailable: {exception.Message}");
+            }
+
+            try
+            {
+                _hid!.Start(hid, buttons, motion, touchpad, publish, fault);
+            }
+            catch
+            {
+                rumble?.Dispose();
+                throw;
+            }
+
+            lock (_gate)
+            {
+                _hidRumble = rumble;
+            }
+
             return;
         }
 

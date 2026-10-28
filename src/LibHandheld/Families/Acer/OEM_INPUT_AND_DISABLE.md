@@ -116,7 +116,7 @@ check.
 
 The task runs the admin-protected script
 `C:\ProgramData\WSGM\AtlasOemControl\Keep-Acer-OemDisabled.ps1`; its source is tracked in WSGM as
-`eng/atlas-oem-disabled-state.ps1`. `last-check.json` records health and any changes. The first
+`eng/atlas-oem-disabled-state.ps1`. `C:\ProgramData\WSGM\AtlasOemControl\last-check.json` records health and any changes. The first
 elevated run completed successfully with no changes needed. This is an explicitly authorized local
 maintenance task, separate from WSGM's subsequent manager-takeover integration and from
 LibHandheld's device lifecycle.

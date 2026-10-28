@@ -30,7 +30,7 @@ internal sealed class IntelMsrSettings(IPawnIoModule module) : IDisposable
     internal void WriteUndervolt(IntelUndervoltRail rail, int millivolts)
     {
         var command = UndervoltCommandFor(rail);
-        var data = EncodeOffset(millivolts);
+        var data = EncodeUndervolt(millivolts);
         lock (_gate)
         {
             if ((Read() & Busy) != 0)
@@ -71,6 +71,16 @@ internal sealed class IntelMsrSettings(IPawnIoModule module) : IDisposable
             IntelUndervoltRail.SystemAgent => 0x80000411,
             _ => throw new ArgumentOutOfRangeException(nameof(rail))
         };
+    }
+
+    /// <summary>Encodes an undervolt amount the way Handheld Companion does: either sign lowers by |mV|.</summary>
+    /// <remarks>
+    ///     The controls are labelled undervolt and range -50 to 50, so a stored 50 must stay a 50 mV
+    ///     decrease. Encoding the signed value would turn every positive setting into an overvolt.
+    /// </remarks>
+    internal static uint EncodeUndervolt(int millivolts)
+    {
+        return EncodeOffset(-Math.Abs(millivolts));
     }
 
     internal static uint EncodeOffset(int millivolts)

@@ -14,6 +14,18 @@ public sealed class IntelMsrSettingsTests
         Assert.Equal(expected, IntelMsrSettings.EncodeOffset(millivolts));
     }
 
+    // Handheld Companion's and the previous helper's bytes; both signs undervolt by the magnitude.
+    [Theory]
+    [InlineData(0, 0u)]
+    [InlineData(50, 0xF9A00000u)]
+    [InlineData(-50, 0xF9A00000u)]
+    [InlineData(25, 0xFCC00000u)]
+    [InlineData(1, 0xFFE00000u)]
+    public void UndervoltLowersByTheMagnitude(int millivolts, uint expected)
+    {
+        Assert.Equal(expected, IntelMsrSettings.EncodeUndervolt(millivolts));
+    }
+
     [Theory]
     [InlineData(0L, 0)]
     [InlineData(0x100000000L, 31)]

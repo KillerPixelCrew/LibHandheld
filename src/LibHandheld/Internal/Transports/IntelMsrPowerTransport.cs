@@ -4,18 +4,20 @@ namespace LibHandheld.Internal.Transports;
 /// <remarks>
 ///     Only MSR_PKG_POWER_LIMIT (0x610) is written. The module has no MCHBAR write, so the MMIO mirror
 ///     at MCHBAR 0x59A0/0x59A4 that Handheld Companion also updates is left as the firmware set it.
-///     Each write replaces only the PL1 and PL2 power fields, sets their enable bits and keeps every
-///     other bit of the current register. It is sent once and never retried.
+///     Each write is Handheld Companion's whole register: PL1 and PL2 enabled and clamped with its time
+///     windows. It is sent once and never retried. A register the firmware locked until reset refuses
+///     the transport at start, because no other signed path can change these limits.
 /// </remarks>
 internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
 {
     internal const long PowerUnitMsr = 0x606;
     internal const long PackagePowerLimitMsr = 0x610;
     private const ulong Pl1Power = 0x7FFFUL;
-    private const ulong Pl1Enable = 1UL << 15;
     private const ulong Pl2Power = 0x7FFFUL << 32;
-    private const ulong Pl2Enable = 1UL << 47;
     private const ulong Locked = 1UL << 63;
+    // HC's set_msr_limits: enable and clamp bits with time window 0x6E for PL1 and 0x21 for PL2.
+    private const ulong Pl1Fixed = 0x00DD8000UL;
+    private const ulong Pl2Fixed = 0x00438000UL << 32;
     private readonly Lock _gate = new();
     private readonly IPawnIoModule _module;
     private readonly double _unitWatts;
@@ -25,6 +27,11 @@ internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
     {
         _module = module;
         _unitWatts = UnitWatts(ReadMsr(module, PowerUnitMsr));
+        if ((ReadMsr(module, PackagePowerLimitMsr) & Locked) != 0)
+        {
+            throw new InvalidOperationException(
+                "The firmware locked Intel package power limits (MSR 0x610 bit 63) until restart.");
+        }
     }
 
     public CpuPowerLimits ReadLimits()
@@ -50,8 +57,7 @@ internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            // The current register supplies the time windows, clamp and lock bits this write keeps.
-            var value = Compose(ReadMsr(_module, PackagePowerLimitMsr), sustained, boost);
+            var value = Compose(sustained, boost);
             _module.Execute("ioctl_write_msr", [PackagePowerLimitMsr, unchecked((long)value)], outputWords: 0);
         }
     }
@@ -93,18 +99,10 @@ internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
         return new CpuPowerLimits(sustained, boost, boost);
     }
 
-    /// <summary>Replaces the PL1 and PL2 power fields and enables both, keeping every other bit.</summary>
-    /// <exception cref="InvalidOperationException">The firmware locked the register until reset.</exception>
-    internal static ulong Compose(ulong current, ushort sustainedUnits, ushort boostUnits)
+    /// <summary>Composes Handheld Companion's register value for one PL1/PL2 pair.</summary>
+    internal static ulong Compose(ushort sustainedUnits, ushort boostUnits)
     {
-        if ((current & Locked) != 0)
-        {
-            throw new InvalidOperationException(
-                "The firmware locked Intel package power limits (MSR 0x610 bit 63); nothing was written.");
-        }
-
-        var kept = current & ~(Pl1Power | Pl2Power);
-        return kept | Pl1Enable | Pl2Enable | (sustainedUnits & Pl1Power) | (((ulong)boostUnits << 32) & Pl2Power);
+        return Pl2Fixed | (((ulong)boostUnits << 32) & Pl2Power) | Pl1Fixed | (sustainedUnits & Pl1Power);
     }
 
     internal static ulong ReadMsr(IPawnIoModule module, long msr)

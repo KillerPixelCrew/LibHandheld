@@ -21,9 +21,11 @@ acceptance of the reset.
 
 Intel package power limits and OC-mailbox voltage offsets use the signed PawnIO IntelMSR module
 embedded in this library ([module source](https://github.com/namazso/PawnIO.Modules/blob/main/IntelMSR.p)).
-Power writes replace only the PL1 and PL2 fields of MSR 0x610, set both enable bits and keep the time
-windows, clamp and lock bits; a locked register is refused without a write. The unit comes from MSR
-0x606. Handheld Companion's KX helper also writes the MCHBAR power mirror at 0x59A0/0x59A4 and the
-GPU clock at MCHBAR 0x5994. PawnIO's MCHBAR module is read-only, so the mirror is left as the
-firmware set it and Intel GPU clock control is not offered. KX and its HwRwDrv driver, which Windows
-blocks, are no longer used.
+Power writes send Handheld Companion's whole MSR 0x610 value: PL1 and PL2 enabled and clamped,
+with its time windows 0x6E and 0x21. The unit comes from MSR 0x606. A register the firmware locked
+until restart refuses the power transport at start, since no signed path could change the limits.
+Undervolt values are encoded like HC: either sign lowers the voltage by the magnitude.
+Handheld Companion's KX helper also writes the MCHBAR power mirror at 0x59A0/0x59A4 and the GPU
+clock at MCHBAR 0x5994. PawnIO's MCHBAR module is read-only, so the mirror is left as the firmware
+set it and Intel GPU clock control is not offered. KX and its HwRwDrv driver, which Windows blocks,
+are no longer used.

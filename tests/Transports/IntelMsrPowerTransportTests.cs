@@ -21,45 +21,37 @@ public sealed class IntelMsrPowerTransportTests
     }
 
     [Fact]
-    public void WriteReplacesOnlyThePowerFieldsEnablesBothAndIsSentOnce()
+    public void WriteSendsHandheldCompanionsWholeRegisterOnce()
     {
         var module = new Module(0x00C21234_00DE1234UL);
         using var transport = new IntelMsrPowerTransport(module);
         transport.WriteLimits(new CpuPowerLimits(15, 28, 28));
 
+        // HC's set_msr_limits writes 0x004380E0 0x00DD8078 for 15/28 W at 1/8 W units.
         var write = Assert.Single(module.Calls, call => call.Function == "ioctl_write_msr");
-        Assert.Equal([0x610L, unchecked((long)0x00C280E0_00DE8078UL)], write.Input);
+        Assert.Equal([0x610L, unchecked((long)0x004380E0_00DD8078UL)], write.Input);
+        Assert.Equal(2, module.Calls.Count(call => call.Function == "ioctl_read_msr"));
     }
 
     [Fact]
-    public void ComposeKeepsEveryOtherBit()
-    {
-        Assert.Equal(0x7FFF8002_FFFF8001UL,
-            IntelMsrPowerTransport.Compose(0x7FFFFFFF_FFFFFFFFUL, sustainedUnits: 1, boostUnits: 2));
-        Assert.Equal(0x00008002_00008001UL, IntelMsrPowerTransport.Compose(current: 0, sustainedUnits: 1, boostUnits: 2));
-    }
-
-    [Fact]
-    public void LockedRegisterIsRefusedWithoutWriting()
+    public void LockedRegisterRefusesTheTransportAtStart()
     {
         var module = new Module(0x80438168_00DD8078UL);
-        using var transport = new IntelMsrPowerTransport(module);
-        var refusal = Assert.Throws<InvalidOperationException>(() =>
-            transport.WriteLimits(new CpuPowerLimits(15, 28, 28)));
+        var refusal = Assert.Throws<InvalidOperationException>(() => new IntelMsrPowerTransport(module));
         Assert.Contains("locked", refusal.Message);
         Assert.DoesNotContain(module.Calls, call => call.Function == "ioctl_write_msr");
     }
 
     [Fact]
-    public void InvalidRequestsReachNoHardwareBeyondTheUnitRead()
+    public void InvalidRequestsReachNoHardwareBeyondTheStartReads()
     {
         var module = new Module(0x00438168_00DD8078UL);
         using var transport = new IntelMsrPowerTransport(module);
         Assert.Throws<ArgumentException>(() => transport.WriteLimits(new CpuPowerLimits(15, 20, 28)));
         Assert.Throws<ArgumentOutOfRangeException>(() => transport.WriteLimits(new CpuPowerLimits(0, 28, 28)));
         Assert.Throws<ArgumentOutOfRangeException>(() => transport.WriteLimits(new CpuPowerLimits(15, 5000, 5000)));
-        var only = Assert.Single(module.Calls);
-        Assert.Equal(("ioctl_read_msr", 0x606L), (only.Function, only.Input[0]));
+        Assert.Equal([("ioctl_read_msr", 0x606L), ("ioctl_read_msr", 0x610L)],
+            module.Calls.Select(call => (call.Function, call.Input[0])));
     }
 
     [Fact]
