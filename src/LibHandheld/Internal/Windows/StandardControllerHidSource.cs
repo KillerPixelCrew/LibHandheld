@@ -3,6 +3,20 @@ using LibHandheld.Internal.Devices;
 
 namespace LibHandheld.Internal.Windows;
 
+/// <summary>Receives the profiled HID gamepad's decoded button usages on its reader thread.</summary>
+/// <remarks>
+///     Lets a family derive OEM button edges from the one gamepad reader instead of opening the collection
+///     a second time. Calls arrive per report, so implementations must not block, allocate or log.
+/// </remarks>
+internal interface IHidButtonObserver
+{
+    /// <summary>Receives one report's pressed page-9 usages, before the sample is published.</summary>
+    void OnUsages(ReadOnlySpan<ushort> usages);
+
+    /// <summary>The gamepad reader lost the device; every held edge must be released.</summary>
+    void OnHidDisconnected();
+}
+
 /// <summary>Descriptor-based acquisition of a documented DirectInput-mode HID gamepad.</summary>
 internal sealed class StandardControllerHidSource(HidControllerProfile profile)
 {
@@ -21,7 +35,7 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
 
     internal void Start(HidCollection collection, Func<CanonicalButtons> oem, Func<MotionSample?> motion,
         Func<StandardTouchSample>? touchpad, Func<CanonicalControllerSample, CancellationToken, ValueTask> publish,
-        Action<Exception> fault)
+        Action<Exception> fault, Func<IHidButtonObserver?>? observer = null)
     {
         if (_stream is not null)
         {
@@ -52,14 +66,14 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
         _stream = stream;
         _decoder = decoder;
         _stop = new CancellationTokenSource();
-        _reader = ReadAsync(stream, decoder, collection.InputLength, oem, motion, touchpad, publish, fault,
+        _reader = ReadAsync(stream, decoder, collection.InputLength, oem, motion, touchpad, publish, fault, observer,
             _stop.Token);
     }
 
     private async Task ReadAsync(FileStream stream, HidUsageReader decoder, int length, Func<CanonicalButtons> oem,
         Func<MotionSample?> motion, Func<StandardTouchSample>? touchpad,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
-        CancellationToken token)
+        Func<IHidButtonObserver?>? observer, CancellationToken token)
     {
         var report = new byte[length];
         try
@@ -72,7 +86,7 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
                     throw new IOException("The physical HID gamepad disconnected.");
                 }
 
-                if (!Decode(decoder, report.AsSpan(0, count), oem(), motion(), touchpad?.Invoke() ?? default,
+                if (!Decode(decoder, report.AsSpan(0, count), oem, observer, motion(), touchpad?.Invoke() ?? default,
                         out var sample))
                 {
                     continue;
@@ -86,14 +100,15 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
         }
         catch (Exception exception) when (exception is not OutOfMemoryException && !token.IsCancellationRequested)
         {
+            observer?.Invoke()?.OnHidDisconnected();
             await publish(CanonicalControllerSample.Neutral(DateTimeOffset.UtcNow), CancellationToken.None)
                 .ConfigureAwait(false);
             fault(exception);
         }
     }
 
-    private bool Decode(HidUsageReader decoder, ReadOnlySpan<byte> report, CanonicalButtons buttons,
-        MotionSample? motion, StandardTouchSample touch, out CanonicalControllerSample sample)
+    private bool Decode(HidUsageReader decoder, ReadOnlySpan<byte> report, Func<CanonicalButtons> oem,
+        Func<IHidButtonObserver?>? observer, MotionSample? motion, StandardTouchSample touch, out CanonicalControllerSample sample)
     {
         sample = default;
         if (!decoder.TryValue(report, profile.LeftX, out var leftX) || !decoder.TryValue(report, profile.LeftY,
@@ -109,9 +124,13 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
             return false;
         }
 
+        var usages = decoder.Usages(report, 9);
+        // OEM edges derived from this report reach the held buttons before they are read, without a lag.
+        observer?.Invoke()?.OnUsages(usages);
+        var buttons = oem();
         var leftFull = false;
         var rightFull = false;
-        foreach (var usage in decoder.Usages(report, 9))
+        foreach (var usage in usages)
         {
             if (usage > 0 && usage <= profile.Buttons.Count)
             {

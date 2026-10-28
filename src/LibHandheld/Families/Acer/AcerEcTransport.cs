@@ -21,10 +21,13 @@ internal sealed class AcerEcTransport : IAcerEcTransport
     private readonly SafeFileHandle _handle;
     private readonly Mutex _mutex = new(false, "Global\\ECHIDFeatureVID_1025&PID_174B");
     private readonly Lock _gate = new();
+    // One feature report reused under _gate, so telemetry polls allocate nothing per exchange.
+    private readonly byte[] _report;
 
     private AcerEcTransport(HidCollection collection)
     {
         _collection = collection;
+        _report = new byte[collection.FeatureLength];
         _handle = HidDevices.Open(collection, overlapped: false);
     }
 
@@ -51,10 +54,28 @@ internal sealed class AcerEcTransport : IAcerEcTransport
     /// </remarks>
     public byte[] Exchange(ReadOnlySpan<byte> payload, CancellationToken token, Action? dispatched = null)
     {
+        var reply = new byte[_collection.FeatureLength - 1];
+        Exchange(payload, reply, token, dispatched);
+        return reply;
+    }
+
+    /// <summary>Performs one exchange into a caller-owned reply buffer; see the allocating overload.</summary>
+    /// <param name="payload">A000-prefixed request excluding report ID, bounded by the descriptor and 64 bytes.</param>
+    /// <param name="reply">Receives the first bytes of the validated reply payload, without the report ID.</param>
+    /// <param name="token">Checked before mutex acquisition and immediately before dispatch.</param>
+    /// <param name="dispatched">Called just before SetFeature so callers distinguish rejection from uncertain effects.</param>
+    public void Exchange(ReadOnlySpan<byte> payload, Span<byte> reply, CancellationToken token,
+        Action? dispatched = null)
+    {
         if (payload.Length < 4 || payload.Length > Math.Min(64, _collection.FeatureLength - 1)
             || BinaryPrimitives.ReadUInt16LittleEndian(payload) != 0xA000)
         {
             throw new ArgumentException("Invalid Acer EC request.", nameof(payload));
+        }
+
+        if (reply.Length > _collection.FeatureLength - 1)
+        {
+            throw new ArgumentException("The reply buffer exceeds the Acer EC feature report.", nameof(reply));
         }
 
         lock (_gate)
@@ -78,11 +99,16 @@ internal sealed class AcerEcTransport : IAcerEcTransport
                 }
 
                 token.ThrowIfCancellationRequested();
-                var report = new byte[_collection.FeatureLength];
+                var report = _report;
+                Array.Clear(report);
                 report[0] = 0xA0;
                 payload.CopyTo(report.AsSpan(1));
                 dispatched?.Invoke();
-                HidDevices.SetFeature(_handle, _collection, report);
+                if (!NativeHid.HidD_SetFeature(_handle, report, report.Length))
+                {
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "HidD_SetFeature failed; effect unknown.");
+                }
+
                 // Complete an already dispatched transaction even if its caller cancels the wait.
                 Thread.Sleep(millisecondsTimeout: 20);
                 Array.Clear(report);
@@ -99,7 +125,7 @@ internal sealed class AcerEcTransport : IAcerEcTransport
                     throw new IOException("Acer EC did not acknowledge the requested command; effect unknown.");
                 }
 
-                return report[1..];
+                report.AsSpan(1, reply.Length).CopyTo(reply);
             }
             finally
             {
@@ -124,4 +150,10 @@ internal interface IAcerEcTransport : IDisposable
 {
     /// <summary>Exchanges one EC payload; the dispatch callback marks the uncertain-write boundary.</summary>
     byte[] Exchange(ReadOnlySpan<byte> payload, CancellationToken token, Action? dispatched = null);
+
+    /// <summary>Exchanges one EC payload into a caller-owned buffer, for allocation-free polling.</summary>
+    void Exchange(ReadOnlySpan<byte> payload, Span<byte> reply, CancellationToken token, Action? dispatched = null)
+    {
+        Exchange(payload, token, dispatched).AsSpan(0, reply.Length).CopyTo(reply);
+    }
 }

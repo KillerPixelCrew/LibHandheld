@@ -77,6 +77,9 @@ internal sealed class ProfiledOemService(
                                                           && profile.NativeOemRequiresController;
 
     internal bool NeedsReconnect => _native is { IsConnected: false } || _keyboard is { IsConnected: false };
+
+    /// <summary>The started native source when it derives its edges from the HID gamepad reader.</summary>
+    internal IHidButtonObserver? HidButtons => Volatile.Read(ref _native) as IHidButtonObserver;
     public override bool Suspendable => true;
 
     internal override async ValueTask DisposeAsync()
@@ -139,7 +142,8 @@ internal sealed partial class ProfiledControllerService(
     IDeviceSink sink,
     Func<CanonicalButtons> buttons,
     Func<MotionSample?> motion,
-    Func<StandardTouchSample>? touchpad = null)
+    Func<StandardTouchSample>? touchpad = null,
+    Func<IHidButtonObserver?>? hidButtons = null)
     : DeviceService<ProfiledCycleIdentity>("controller")
 {
     private volatile bool _connected;
@@ -191,7 +195,7 @@ internal sealed partial class ProfiledControllerService(
                     _connected = false;
                     _ownershipAt = DateTimeOffset.UtcNow;
                 },
-                touchpad);
+                touchpad, hidButtons);
             _readerStarted = true;
         }
         catch

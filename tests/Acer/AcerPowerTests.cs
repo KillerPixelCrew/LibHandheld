@@ -33,6 +33,23 @@ public sealed class AcerPowerTests
     }
 
     [Fact]
+    public async Task StockModeRefreshReadsOnlyTheActiveProfile()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc { Mode = 1 };
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.RefreshAsync(CancellationToken.None);
+
+        // Manual (profile 3) is read only when a PL1/PL2 edit needs the bytes it preserves.
+        Assert.Equal([1, 1], ec.ProfileReads);
+        Assert.Equal(40, service.States.Single(state => state.CapabilityId == "power.primary-limit").ObservedValue?.IntegerValue);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Fact]
     public async Task ModeSelectionImmediatelyPublishesItsLimitsAndKeepsSavedManualBytes()
     {
         using var directory = new TemporaryDirectory();
@@ -286,10 +303,15 @@ public sealed class AcerPowerTests
         public bool FailModeRead { get; init; }
         public bool FailProfileRead { get; init; }
         public List<string> Writes { get; } = [];
+        public List<int> ProfileReads { get; } = [];
 
         public byte[] Exchange(ReadOnlySpan<byte> payload, CancellationToken token, Action? dispatched = null)
         {
             token.ThrowIfCancellationRequested();
+            if (payload.Length > 5 && payload[2] == 2 && payload[4] == 2)
+            {
+                ProfileReads.Add(payload[5]);
+            }
             var reply = new byte[64];
             reply[1] = 0xE0;
             reply[2] = payload[2];

@@ -30,11 +30,6 @@ internal static class AcerModels
             CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,
             CapabilityRole.ChargeProtectionMode, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
             CapabilityRole.LightingEffectSpeed, CapabilityRole.LightingZoneColor, CapabilityRole.Telemetry],
-        // The mode owner supplies Combination rear reports; it must precede the dependent OEM readers.
-        // This mode is lifecycle-owned, not a user-visible remapping option or a permanent ROM setting.
-        ServiceFactories = [context => new AcerControllerModeService(context),
-            context => new AcerPowerService(context), context => new AcerFanService(context),
-            context => new AcerBatteryService(context), context => new AcerLightingService(context)],
         // Generic bounds are unused: AcerPowerService discovers PL1/PL2 bounds from the EC itself.
         MinimumWatts = 0,
         MaximumWatts = 0,
@@ -100,6 +95,17 @@ internal static class AcerModels
     /// <summary>Creates the profiled lifecycle after exact detection; construction itself acquires no hardware.</summary>
     internal static NativeEngine CreateEngine(HandheldDefinition definition)
     {
-        return new ProfiledDeviceEngine(Atlas8);
+        // One EC lane for power and fans, one controller lane for mode and lighting: each endpoint is
+        // enumerated once, and lighting keeps working when a mode change re-enumerates the controller.
+        var ec = new AcerLease<IAcerEcTransport>(AcerEcTransport.Open);
+        var controller = new AcerLease<AcerControllerTransport>(AcerControllerTransport.Open);
+        return new ProfiledDeviceEngine(Atlas8 with
+        {
+            // The mode owner supplies Combination rear reports; it must precede the dependent OEM readers.
+            // This mode is lifecycle-owned, not a user-visible remapping option or a permanent ROM setting.
+            ServiceFactories = [context => new AcerControllerModeService(context, controller),
+                context => new AcerPowerService(context, ec), context => new AcerFanService(context, ec),
+                context => new AcerBatteryService(context), context => new AcerLightingService(context, controller)]
+        });
     }
 }

@@ -18,13 +18,14 @@ namespace LibHandheld.Families.Acer;
 ///     Each discovered fan retains its own original behavior/speed before mutation. Unreadable originals
 ///     never block control, but recovery falls back to firmware Auto and reports ReleasedUnverified.
 /// </remarks>
-internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-fans")
+internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec)
+    : ProfiledFeatureService("acer-fans")
 {
     private readonly ObservedValues _observed = new();
     private IReadOnlyList<AcerFan> _fans = [];
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private ManagementObject? _wmi;
-    private AcerEcTransport? _ec;
+    private IAcerEcTransport? _ec;
     private bool _inexactRestore;
     private bool _topologyDecided;
     private bool _cpuTemperature;
@@ -44,7 +45,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         token.ThrowIfCancellationRequested();
         _observed.Clear();
         _wmi = WmiProvider.TryOpen("root\\WMI", "SELECT * FROM AcerGamingFunction");
-        _ec = AcerEcTransport.Open();
+        _ec = ec.Acquire();
         if (_wmi is null || _ec is null)
         {
             return Set(DeviceServiceState.Passive, Missing("Acer fan discovery or its WMI provider is unavailable."));
@@ -112,17 +113,30 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         return ValueTask.CompletedTask;
     }
 
+    // Fan RPM and the CPU temperature are the only live state; maintenance must sample them too.
+    internal override ValueTask RefreshAsync(CancellationToken token)
+    {
+        return RefreshTelemetryAsync(token);
+    }
+
     /// <summary>Reads health operation 2: selected item at offset 5, uint16 measurement at offset 7.</summary>
     /// <remarks>SYS/SYS2 indices 4/8 are RPM; health index 1 is CPU degrees Celsius, accepted only up to 150.</remarks>
     private void ObserveRpm(CancellationToken token)
     {
-        foreach (var fan in _fans.Where(fan => fan.RpmIndex is not null))
+        Span<byte> reply = stackalloc byte[9];
+        for (var index = 0; index < _fans.Count; index++)
         {
+            var fan = _fans[index];
+            if (fan.RpmIndex is not { } rpmIndex)
+            {
+                continue;
+            }
+
             try
             {
-                var reply = _ec!.Exchange([0, 0xA0, 8, 0, 2, fan.RpmIndex!.Value], token);
+                _ec!.Exchange([0, 0xA0, 8, 0, 2, rpmIndex], reply, token);
                 _observed.Read(CapabilityIds.FanRpm,
-                    CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(7))), fan.Id);
+                    CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(reply[7..])), fan.Id);
             }
             catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
             {
@@ -134,8 +148,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         {
             try
             {
-                var reply = _ec!.Exchange([0, 0xA0, 8, 0, 2, 1], token);
-                var temperature = BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(7));
+                _ec!.Exchange([0, 0xA0, 8, 0, 2, 1], reply, token);
+                var temperature = BinaryPrimitives.ReadUInt16LittleEndian(reply[7..]);
                 _observed.Read(CapabilityIds.Temperature,
                     temperature <= 150 ? CapabilityValue.Integer(temperature) : null);
             }
@@ -365,13 +379,15 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
     }
 
     /// <summary>Releases WMI and HID resources only; does not independently reset fan behavior.</summary>
-    internal override ValueTask DisposeAsync()
+    internal override async ValueTask DisposeAsync()
     {
         _wmi?.Dispose();
         _wmi = null;
-        _ec?.Dispose();
-        _ec = null;
-        return ValueTask.CompletedTask;
+        if (_ec is not null)
+        {
+            _ec = null;
+            await ec.ReleaseAsync().ConfigureAwait(false);
+        }
     }
 
     private static string RecoveryId(AcerFan fan)

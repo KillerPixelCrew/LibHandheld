@@ -27,6 +27,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     private HidInterfaceNotifications? _accessoryNotifications;
     private CanonicalButtons _buttons;
     private ProfiledControllerService? _controller;
+    private ProfiledOemService? _oem;
     private ProfiledCycleIdentity _cycleIdentity = new("unknown");
     private ProfiledFanService? _fan;
     private ProfiledFeatureContext? _featureContext;
@@ -171,7 +172,8 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
 
             if (_profile.KeyboardChords.Count != 0 || _profile.CreateOemSource is not null)
             {
-                _services.Add(new ProfiledOemService(_profile, OnOem, () => _manageController));
+                _oem = new ProfiledOemService(_profile, OnOem, () => _manageController);
+                _services.Add(_oem);
             }
 
             if (_profile.Controller is { } controller)
@@ -183,7 +185,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                         {
                             return _buttons;
                         }
-                    }, () => _motion?.Latest, () => _touchpad?.Latest ?? default);
+                    }, () => _motion?.Latest, () => _touchpad?.Latest ?? default, () => _oem?.HidButtons);
                 _services.Add(_controller);
             }
 

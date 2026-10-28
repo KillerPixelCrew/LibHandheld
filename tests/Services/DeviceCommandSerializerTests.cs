@@ -6,7 +6,7 @@ namespace LibHandheld.Tests.Services;
 public sealed class DeviceCommandSerializerTests
 {
     [Fact]
-    public async Task MaintenanceTurnSamplesTelemetryBeforePublishing()
+    public async Task MaintenanceTurnSamplesThroughTheFullRefreshOnly()
     {
         var calls = new ConcurrentQueue<string>();
         var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -39,7 +39,8 @@ public sealed class DeviceCommandSerializerTests
             serializer.StopObservation();
             await serializer.RunAsync(() => ValueTask.CompletedTask, CancellationToken.None);
         }
-        Assert.Equal(new[] { "maintenance", "telemetry", "publish" }, calls);
+        // A full refresh samples telemetry itself; repeating the hook would sample twice.
+        Assert.Equal(new[] { "maintenance", "publish" }, calls);
     }
 
     [Fact]

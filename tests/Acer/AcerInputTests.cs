@@ -78,6 +78,28 @@ public sealed class AcerInputTests
     }
 
     [Fact]
+    public void DInputUsagesFromTheGamepadReaderProduceSingleEdges()
+    {
+        var edges = new List<(string Id, bool Down)>();
+        using var state = new AcerButtonState((id, _, down) => edges.Add((id, down)));
+        state.HandleDInputButtons([13, 17]);
+        state.HandleDInputButtons([13, 17]);
+        state.HandleDInputButtons([17]);
+        state.ReleaseVendor();
+        state.ReleaseQam();
+        Assert.Equal(new[] { ("guide", true), ("m2", true), ("guide", false), ("m2", false) }, edges);
+    }
+
+    [Fact]
+    public void UsagesBeforeADInputStartReachNothing()
+    {
+        var source = new AcerButtonSource();
+        source.OnUsages([13, 14, 16, 17]);
+        source.OnHidDisconnected();
+        Assert.False(source.IsConnected);
+    }
+
+    [Fact]
     public void RearRolloverAndUnrelatedReportsPreserveHeldEdges()
     {
         var edges = new List<(string Id, bool Down)>();

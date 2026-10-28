@@ -272,10 +272,10 @@ internal sealed class DeviceCommandSerializer : IDisposable
                         lastFullRefresh = Stopwatch.GetTimestamp();
                         await _refresh(null, cancellationToken).ConfigureAwait(false);
                     }
-                    if (_refreshTelemetry is not null)
+                    else if (_refreshTelemetry is not null)
                     {
-                        // Maintenance does not necessarily sample sensors. Keep measurements fresh on
-                        // that turn too; skipping it doubles the telemetry gap and trips host fan safety.
+                        // A full refresh already samples everything the telemetry hook does (the
+                        // ProfiledFeatureService contract), so a maintenance turn needs no second pass.
                         await _refreshTelemetry(cancellationToken).ConfigureAwait(false);
                     }
 

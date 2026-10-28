@@ -344,6 +344,12 @@ publication. Maintenance remains on its ten-second schedule; temperature freshne
 firmware-auto fallback are unchanged. A focused regression forces a maintenance turn and asserts
 maintenance/telemetry/publication order. Runtime acceptance must span multiple maintenance turns.
 
+Superseded the same week: the fix ran telemetry twice on families whose full refresh already samples
+(Claw, Ally, OneXPlayer, profiled fans). The serializer again runs either the full refresh or the
+telemetry hook. A full refresh must sample what the hook samples, so the Atlas fan service's refresh
+reads RPM and CPU temperature, and the Steam Deck's also measures clocks. The same Atlas runtime
+acceptance across several maintenance turns applies.
+
 ## Power readout after a mode selection (2026-10-27)
 
 The initial stock-profile observation fix did not cover a later scenario command: selecting a stock

@@ -15,11 +15,17 @@ namespace LibHandheld.Families.Acer;
 ///     saves controller ROM.
 /// </remarks>
 internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
-    Func<IAcerControllerModeTransport?>? open = null) : ProfiledFeatureService("acer-controller-mode")
+    IAcerLease<IAcerControllerModeTransport> lane) : ProfiledFeatureService("acer-controller-mode")
 {
     private static readonly AcerControllerMode Managed = new(Gamepad: 1, RearKeys: 1);
     private IAcerControllerModeTransport? _transport;
     private bool _restoreUnverified;
+
+    /// <summary>Creates the service over its own command lane, for fixtures and standalone use.</summary>
+    internal AcerControllerModeService(ProfiledFeatureContext context, Func<IAcerControllerModeTransport?> open)
+        : this(context, new AcerLease<IAcerControllerModeTransport>(open))
+    {
+    }
 
     internal override bool RequiresControllerOwnership => true;
     public override bool Suspendable => true;
@@ -37,7 +43,7 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
     {
         token.ThrowIfCancellationRequested();
         _restoreUnverified = false;
-        _transport = open is null ? AcerControllerTransport.Open() : open();
+        _transport = lane.Acquire();
         if (_transport is null)
         {
             return Set(DeviceServiceState.Passive, Missing("The measured Atlas controller mode lane is unavailable."));
@@ -102,13 +108,13 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
         }
     }
 
-    /// <summary>Closes only the command lane; disposing alone does not restore controller mode.</summary>
+    /// <summary>Releases only its hold on the command lane; disposing alone does not restore controller mode.</summary>
     internal override async ValueTask DisposeAsync()
     {
         if (_transport is not null)
         {
-            await _transport.DisposeAsync().ConfigureAwait(false);
             _transport = null;
+            await lane.ReleaseAsync().ConfigureAwait(false);
         }
     }
 

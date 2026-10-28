@@ -14,7 +14,8 @@ namespace LibHandheld.Families.Acer;
 ///     unrelated keyframes/animations/trailing bytes are preserved. Edits are left on the controller
 ///     when WSGM releases it; firmware returns to its stored lighting after power loss.
 /// </remarks>
-internal sealed class AcerLightingService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-lighting")
+internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerLease<AcerControllerTransport> lane)
+    : ProfiledFeatureService("acer-lighting")
 {
     // Confirmed one at a time in white on controller release 0100, screen facing the user.
     // The ninth wire slot produced no visible light and is retained without exposing a zone.
@@ -77,7 +78,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
     {
         token.ThrowIfCancellationRequested();
         _observed.Clear();
-        _controller = AcerControllerTransport.Open();
+        _controller = lane.Acquire();
         if (_controller is null)
         {
             return Set(DeviceServiceState.Passive, Missing("The measured Atlas controller lighting lane is unavailable."));
@@ -266,8 +267,8 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
     {
         if (_controller is not null)
         {
-            await _controller.DisposeAsync().ConfigureAwait(false);
             _controller = null;
+            await lane.ReleaseAsync().ConfigureAwait(false);
         }
 
         _lighting = null;

@@ -17,7 +17,7 @@ namespace LibHandheld.Families.Acer;
 ///     Bounds come from firmware selectors 1/2/4, not the CPU specification or experimentally accepted
 ///     values. The manual profile and active mode have separate firmware-bound recovery records.
 /// </remarks>
-internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAcerEcTransport?>? open = null)
+internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec)
     : ProfiledFeatureService("acer-power")
 {
     private const string ModeId = CapabilityIds.Scenario;
@@ -26,12 +26,15 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
     private readonly ObservedValues _observed = new();
     private IAcerEcTransport? _ec;
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
-    // Retained payload bytes 0..24, including the command/profile header. Never create a zero-filled
-    // replacement: offsets 8, 12..24 include settings whose meanings are not established.
-    private byte[]? _profile;
     private int? _mode;
     private bool _unknownOriginalChanged;
     private bool _restoreUnverified;
+
+    /// <summary>Creates the service over its own EC lane, for fixtures and standalone use.</summary>
+    internal AcerPowerService(ProfiledFeatureContext context, Func<IAcerEcTransport?> open)
+        : this(context, new AcerLease<IAcerEcTransport>(open))
+    {
+    }
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors;
     internal override IReadOnlyList<CapabilityState> States => _descriptors.Select(item =>
@@ -50,7 +53,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
     {
         token.ThrowIfCancellationRequested();
         _observed.Clear();
-        _ec = open is null ? AcerEcTransport.Open() : open();
+        _ec = ec.Acquire();
         if (_ec is null)
         {
             return Set(DeviceServiceState.Passive, Missing("The Atlas EC HID collection is absent."));
@@ -184,14 +187,13 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         return BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(26));
     }
 
-    /// <summary>Best-effort observation of active mode and retention of Manual/profile 3 bytes.</summary>
+    /// <summary>Best-effort observation of the active mode and the limits of its firmware profile.</summary>
     /// <remarks>
-    ///     Retains Manual separately for edits, then reads the active firmware profile for display.
-    ///     Stock profile values come from EC replies, never an inferred wattage table.
+    ///     Stock profile values come from EC replies, never an inferred wattage table. Only the active
+    ///     profile is read; a PL1/PL2 edit reads the Manual bytes it preserves at the moment it needs them.
     /// </remarks>
     private void ReadCurrent(CancellationToken token)
     {
-        byte[]? manual = null;
         try
         {
             _mode = ReadMode(token);
@@ -204,23 +206,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
 
         try
         {
-            var profile = ReadProfile(selector: 3, token);
-            manual = profile[..25];
-            _profile = manual;
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
-        {
-            DeviceTrace.Warn(ServiceId, $"Manual profile unavailable: {exception.Message}");
-        }
-
-        try
-        {
-            var active = _mode switch
-            {
-                3 => manual,
-                >= 0 and <= 2 => ReadProfile((byte)_mode.Value, token),
-                _ => null
-            };
+            var active = _mode is { } mode ? ReadProfile((byte)mode, token) : null;
             _observed.Read(CapabilityIds.PowerSustained, active is null ? null
                 : CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(active.AsSpan(6))));
             _observed.Read(CapabilityIds.PowerBoost, active is null ? null
@@ -298,24 +284,33 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
                     return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
                 }
 
-                // These bytes carry unrelated firmware fields, so never synthesize a blank profile.
-                ReadCurrent(token);
+                // These bytes carry unrelated firmware fields, so never synthesize a blank profile, and
+                // never write bytes older than this edit.
+                byte[]? manual = null;
+                try
+                {
+                    manual = ReadProfile(selector: 3, token)[..25];
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException
+                                                  && exception is not OperationCanceledException)
+                {
+                    DeviceTrace.Warn(ServiceId, $"Manual profile unavailable: {exception.Message}");
+                }
 
-                if (_profile is null)
+                if (manual is null)
                 {
                     return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                         "The manual profile could not be retained; unrelated firmware fields cannot be preserved.");
                 }
 
                 await context.Journal.BeginAsync(ProfileRecoveryId, context.Firmware,
-                    new AcerProfileOriginal { Profile = (byte[])_profile.Clone() }, token).ConfigureAwait(false);
+                    new AcerProfileOriginal { Profile = (byte[])manual.Clone() }, token).ConfigureAwait(false);
                 await CaptureModeAsync(token).ConfigureAwait(false);
-                var profile = (byte[])_profile.Clone();
+                var profile = manual;
                 BinaryPrimitives.WriteUInt16LittleEndian(profile.AsSpan(6), checked((ushort)sustained));
                 BinaryPrimitives.WriteUInt16LittleEndian(profile.AsSpan(10), checked((ushort)boost));
                 token.ThrowIfCancellationRequested();
                 WriteProfile(profile, token, () => dispatched = true);
-                _profile = profile;
                 writtenSustained = sustained;
                 writtenBoost = boost;
                 selected = 3;
@@ -345,7 +340,6 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
             {
                 _observed.Clear();
                 _mode = null;
-                _profile = null;
             }
 
             return CommandResults.TransportFailure(command, dispatched, exception);
@@ -461,13 +455,14 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
     }
 
     /// <summary>Closes transport and forgets caches only; restoration belongs to ReleaseAsync, not disposal.</summary>
-    internal override ValueTask DisposeAsync()
+    internal override async ValueTask DisposeAsync()
     {
-        _ec?.Dispose();
-        _ec = null;
-        _profile = null;
         _mode = null;
-        return ValueTask.CompletedTask;
+        if (_ec is not null)
+        {
+            _ec = null;
+            await ec.ReleaseAsync().ConfigureAwait(false);
+        }
     }
 
     private static string ModeName(int mode)

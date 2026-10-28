@@ -145,7 +145,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     internal void Start(StandardControllerTopology topology,
         Func<CanonicalButtons> buttons, Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
-        Func<StandardTouchSample>? touchpad = null)
+        Func<StandardTouchSample>? touchpad = null, Func<IHidButtonObserver?>? hidButtons = null)
     {
         if (topology.Hid is { } hid)
         {
@@ -162,7 +162,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
 
             try
             {
-                _hid!.Start(hid, buttons, motion, touchpad, publish, fault);
+                _hid!.Start(hid, buttons, motion, touchpad, publish, fault, hidButtons);
             }
             catch
             {

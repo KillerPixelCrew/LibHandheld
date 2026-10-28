@@ -39,6 +39,10 @@ internal abstract class ProfiledFeatureService(string serviceId) : DeviceService
     }
 
     /// <summary>Reads live measurements without settings observation, recovery or watchdog writes.</summary>
+    /// <remarks>
+    ///     A maintenance turn runs the full <see cref="RefreshAsync(CancellationToken)" /> instead of this hook,
+    ///     so a service that overrides this must also sample those measurements in its full refresh.
+    /// </remarks>
     internal virtual ValueTask RefreshTelemetryAsync(CancellationToken token)
     {
         return ValueTask.CompletedTask;

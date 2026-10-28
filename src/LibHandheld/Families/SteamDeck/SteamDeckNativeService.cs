@@ -576,6 +576,7 @@ internal sealed partial class SteamDeckNativeService(
     internal override async ValueTask RefreshAsync(CancellationToken token)
     {
         RefreshHardware();
+        RefreshClockMeasurements();
         if (_management && !Connected)
         {
             await ReleaseControllerAsync(token).ConfigureAwait(false);

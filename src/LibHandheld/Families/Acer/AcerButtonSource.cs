@@ -14,12 +14,14 @@ namespace LibHandheld.Families.Acer;
 ///     AcerControllerModeService owns the Combination mode required for native rear notifications.
 ///     Callback publication happens on reader/timer threads and must return without blocking.
 /// </remarks>
-internal sealed class AcerButtonSource : IProfiledOemSource
+internal sealed class AcerButtonSource : IProfiledOemSource, IHidButtonObserver
 {
     private readonly HidReportSource _vendor = new();
     private readonly HidReportSource _qam = new();
     private AcerButtonState? _state;
-    private HidUsageReader? _dinputDecoder;
+    // DInput mode: edges come from the controller's HID reader through OnUsages, not a reader of ours.
+    private volatile bool _dinput;
+    private volatile bool _hidLost;
 
     /// <summary>Semantic front/rear controls; action assignments and companion-app suppression belong to the host.</summary>
     internal static IReadOnlyList<OemControlDescriptor> Controls { get; } =
@@ -40,7 +42,7 @@ internal sealed class AcerButtonSource : IProfiledOemSource
             RequiresControllerAcquisition = true
         }).ToArray();
 
-    public bool IsConnected => _vendor.IsConnected && (_dinputDecoder is not null || _qam.IsConnected);
+    public bool IsConnected => _dinput ? !_hidLost : _vendor.IsConnected && _qam.IsConnected;
 
     /// <summary>Opens one exact vendor/QAM pair and starts allocation-free report handlers for their measured lengths.</summary>
     /// <remarks>Absent/ambiguous or mismatched locations return false. Partial startup tears down both readers and held edges.</remarks>
@@ -51,25 +53,12 @@ internal sealed class AcerButtonSource : IProfiledOemSource
             item => item is { ReleaseNumber: 0x0100, UsagePage: 1, Usage: 5, InputLength: 64, OutputLength: 32 });
         if (dinput is not null)
         {
+            // The controller's HID reader already decodes every gamepad report; it hands the usages to
+            // OnUsages instead of this source opening the collection a second time.
             _state = new AcerButtonState(publish);
-            var stream = HidDevices.OpenStream(dinput);
-            try
-            {
-                _dinputDecoder = new HidUsageReader(stream.SafeFileHandle);
-                if (_vendor.Start(stream, dinput.InputLength, HandleDInputReport,
-                        () => { _state?.ReleaseVendor(); _state?.ReleaseQam(); }, token))
-                {
-                    return true;
-                }
-            }
-            catch
-            {
-                stream.Dispose();
-                await StopAsync(CancellationToken.None).ConfigureAwait(false);
-                throw;
-            }
-            await StopAsync(CancellationToken.None).ConfigureAwait(false);
-            return false;
+            _hidLost = false;
+            _dinput = true;
+            return true;
         }
         var collections = HidDevices.Enumerate(0x0502, [0xF901]).ToArray();
         var vendor = HidDevices.Unique(collections, AcerInputProtocol.IsVendorCollection);
@@ -119,15 +108,26 @@ internal sealed class AcerButtonSource : IProfiledOemSource
         }
 
         _state = null;
-        _dinputDecoder?.Dispose();
-        _dinputDecoder = null;
+        _dinput = false;
     }
 
-    private void HandleDInputReport(ReadOnlySpan<byte> report)
+    /// <inheritdoc />
+    public void OnUsages(ReadOnlySpan<ushort> usages)
     {
-        if (report.Length == 64 && report[0] == 1 && _dinputDecoder is { } decoder)
+        if (_dinput)
         {
-            _state?.HandleDInputButtons(decoder.Usages(report, 9));
+            _state?.HandleDInputButtons(usages);
+        }
+    }
+
+    /// <inheritdoc />
+    public void OnHidDisconnected()
+    {
+        if (_dinput)
+        {
+            _hidLost = true;
+            _state?.ReleaseVendor();
+            _state?.ReleaseQam();
         }
     }
 
