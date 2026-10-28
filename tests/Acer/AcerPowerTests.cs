@@ -226,6 +226,13 @@ public sealed class AcerPowerTests
         report[1] = 6;
         Assert.True(AcerInputProtocol.TryDecodeRear(report, out var buttons));
         Assert.Equal(CanonicalButtons.RearPaddle1 | CanonicalButtons.RearPaddle2, buttons);
+        // Rear-left (9A04) is the left paddle, rear-right (9A02) the right one.
+        report[1] = 4;
+        Assert.True(AcerInputProtocol.TryDecodeRear(report, out buttons));
+        Assert.Equal(CanonicalButtons.RearPaddle1, buttons);
+        report[1] = 2;
+        Assert.True(AcerInputProtocol.TryDecodeRear(report, out buttons));
+        Assert.Equal(CanonicalButtons.RearPaddle2, buttons);
         report[0] = 0x9E;
         report[1] = 0;
         report[3] = 5;

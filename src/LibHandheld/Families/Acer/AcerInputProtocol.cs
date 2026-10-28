@@ -77,8 +77,9 @@ internal static class AcerInputProtocol
             return false;
         }
 
-        buttons = ((report[1] & 2) != 0 ? CanonicalButtons.RearPaddle1 : 0)
-                  | ((report[1] & 4) != 0 ? CanonicalButtons.RearPaddle2 : 0);
+        // Bit 2 is rear-left (M2), bit 1 rear-right (M1). RearPaddle1 is the left paddle (L4).
+        buttons = ((report[1] & 4) != 0 ? CanonicalButtons.RearPaddle1 : 0)
+                  | ((report[1] & 2) != 0 ? CanonicalButtons.RearPaddle2 : 0);
         return true;
     }
 

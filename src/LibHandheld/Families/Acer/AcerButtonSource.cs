@@ -173,8 +173,8 @@ internal sealed class AcerButtonState : IDisposable
             }
             Emit("guide", CanonicalButtons.Guide, usages.Contains((ushort)13));
             Emit("qam", CanonicalButtons.QuickAccess, usages.Contains((ushort)14));
-            Emit("m2", CanonicalButtons.RearPaddle2, usages.Contains((ushort)17));
-            Emit("m1", CanonicalButtons.RearPaddle1, usages.Contains((ushort)16));
+            Emit("m2", CanonicalButtons.RearPaddle1, usages.Contains((ushort)17));
+            Emit("m1", CanonicalButtons.RearPaddle2, usages.Contains((ushort)16));
         }
     }
 
@@ -191,8 +191,8 @@ internal sealed class AcerButtonState : IDisposable
 
             if (AcerInputProtocol.TryDecodeRear(report, out var rear))
             {
-                Emit("m1", CanonicalButtons.RearPaddle1, (rear & CanonicalButtons.RearPaddle1) != 0);
-                Emit("m2", CanonicalButtons.RearPaddle2, (rear & CanonicalButtons.RearPaddle2) != 0);
+                Emit("m1", CanonicalButtons.RearPaddle2, (rear & CanonicalButtons.RearPaddle2) != 0);
+                Emit("m2", CanonicalButtons.RearPaddle1, (rear & CanonicalButtons.RearPaddle1) != 0);
             }
             else if (AcerInputProtocol.IsGuidePress(report))
             {
@@ -228,8 +228,8 @@ internal sealed class AcerButtonState : IDisposable
             _guidePulse.Clear();
             _releaseGuide.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             Emit("guide", CanonicalButtons.Guide, down: false);
-            Emit("m1", CanonicalButtons.RearPaddle1, down: false);
-            Emit("m2", CanonicalButtons.RearPaddle2, down: false);
+            Emit("m1", CanonicalButtons.RearPaddle2, down: false);
+            Emit("m2", CanonicalButtons.RearPaddle1, down: false);
         }
     }
 
