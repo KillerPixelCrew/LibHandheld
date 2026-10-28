@@ -26,7 +26,7 @@ canonical left paddle (`RearM1`, L4); the right rear button is printed M1 (`Rear
 
 `controller-full-atlas-8.svg` is original line art traced on 2026-10-28 over the maintainer's front
 reference photograph (2000 x 905 px), whose pixel grid is the SVG's viewBox: body and bumpers,
-display bezel, stick bases, D-pad ticks, the two front button slots with their prints, face buttons
+display bezel, stick rings, D-pad ticks, the two front button slots with their prints, face buttons
 and speaker grilles. `research/atlas-controller-art.mjs` generates it. The 643 x 464 PNG halves
 `controller-left-atlas-8.png` and `controller-right-atlas-8.png` are the same art rendered over the
 photo's x 0-880 and x 1120-2000 columns, top 635 px, faded toward the display as the ROG Ally and

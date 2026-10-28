@@ -36,7 +36,7 @@ parts.push(rect(378, 22, 1244, 836, 14), rect(405, 55, 1190, 740, 4));
 
 // Sticks: base ring, light ring and cap.
 for (const [cx, cy] of [[185, 232], [1705, 395]]) {
-    parts.push(circle(cx, cy, 106), circle(cx, cy, 84), circle(cx, cy, 66), circle(cx, cy, 50));
+    parts.push(circle(cx, cy, 80), circle(cx, cy, 62), circle(cx, cy, 48));
 }
 
 // D-pad disc with its four tick marks.
