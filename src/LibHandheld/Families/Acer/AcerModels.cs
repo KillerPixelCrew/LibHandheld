@@ -9,7 +9,7 @@ namespace LibHandheld.Families.Acer;
 ///     PA08-I51 uses native EC power, WMI fans/battery and USB controller lighting, rather than the
 ///     generic CPU power/fan services. Standard XInput input/rumble and standard Windows motion remain
 ///     shared implementations. BIOS and controller-release restrictions belong to the individual
-///     protocol/recovery bindings; the definition deliberately remains not fully HardwareVerified.
+///     protocol/recovery bindings. The definition is hardware verified on a PA08-I51.
 /// </remarks>
 internal static class AcerModels
 {
@@ -19,7 +19,12 @@ internal static class AcerModels
     internal static ProfiledDeviceModel Atlas8 { get; } = new()
     {
         Definition = new HandheldDefinition("acer-predator-atlas-8-pa08-i51", FamilyId,
-            "Acer Predator Atlas 8 (PA08-I51)", "acer-predator-atlas-8"),
+            "Acer Predator Atlas 8 (PA08-I51)", "acer-predator-atlas-8")
+        {
+            // Power, fans, battery, lighting, controller, rear buttons, motion and rumble were accepted on
+            // a PA08-I51 in attended sessions; see PROVENANCE.md.
+            HardwareVerified = true
+        },
         SourceFamilyId = "PredatorAtlas8",
         IdentitySource = ProfileIdentitySource.System,
         Manufacturers = ["Acer"],

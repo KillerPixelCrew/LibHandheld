@@ -494,3 +494,14 @@ and "Keyboard-interface hiding withdrawn" conclusions above rest on that misattr
 attended trial in "Back to XInput with verified auxiliary hiding" is the valid evidence.
 The keyboard-interface guard added on that premise has been removed; the profile's four
 AuxiliaryHidCollections are now hidden with the pad like any other declared identity.
+
+## Hardware verified (2026-10-28)
+
+The maintainer accepted the integration on the PA08-I51 used for every session above, and the
+definition is now marked hardware verified. Accepted in use on the device: the explicit power presets
+and manual PL1/PL2 with AutoTDP, both fans in firmware, software-curve and manual control, battery
+charge protection, shared and per-segment ring lighting, the managed XInput controller with front
+buttons, triggers, Task/Predator as Guide/Quick Access and the M1/M2 rear buttons on their printed
+sides, Windows motion, calibrated rumble, auxiliary-interface hiding without keyboard loss, the
+Predator Sense takeover and the Game Mode boot. The DInput path remains a fallback used only when the
+mode lane is unavailable; its button mapping has no separate attended acceptance.

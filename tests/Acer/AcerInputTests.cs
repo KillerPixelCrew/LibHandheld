@@ -35,12 +35,12 @@ public sealed class AcerInputTests
     };
 
     [Fact]
-    public void ExactSystemAndBoardSelectTheUnverifiedIntelModel()
+    public void ExactSystemAndBoardSelectTheVerifiedIntelModel()
     {
         var definition = DeviceFamilies.Detect(Identity);
         Assert.NotNull(definition);
         Assert.Equal(AcerModels.Atlas8.Definition.Id, definition.Id);
-        Assert.False(definition.HardwareVerified);
+        Assert.True(definition.HardwareVerified);
         Assert.True(definition.HasController);
         Assert.True(definition.HardwareAccess.HasFlag(DeviceHardwareAccess.PawnIo));
         Assert.Contains(CapabilityRole.ControllerSource, definition.DeclaredRoles);
