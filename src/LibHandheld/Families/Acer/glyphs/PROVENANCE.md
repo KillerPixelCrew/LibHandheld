@@ -21,3 +21,14 @@ shipped by the ROG Ally family, copied unmodified; see `THIRD_PARTY_NOTICES.md`.
 
 Rear sides follow the 2026-10-28 attended capture: the left rear button is printed M2 and is the
 canonical left paddle (`RearM1`, L4); the right rear button is printed M1 (`RearM2`, R4).
+
+## Controller artwork
+
+`controller-full-atlas-8.svg` is original line art traced on 2026-10-28 over the maintainer's front
+reference photograph (2000 x 905 px), whose pixel grid is the SVG's viewBox: body and bumpers,
+display bezel, stick bases, D-pad ticks, the two front button slots with their prints, face buttons
+and speaker grilles. `research/atlas-controller-art.mjs` generates it. The 643 x 464 PNG halves
+`controller-left-atlas-8.png` and `controller-right-atlas-8.png` are the same art rendered over the
+photo's x 0-880 and x 1120-2000 columns, top 635 px, faded toward the display as the ROG Ally and
+Claw halves are. Back and side photographs were used only to confirm M1 is the right rear button and
+M2 the left; Steam's controller editor has no slot for back or side artwork.

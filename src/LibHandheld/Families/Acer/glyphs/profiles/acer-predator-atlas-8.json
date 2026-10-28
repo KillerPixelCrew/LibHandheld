@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "profileId": "acer-predator-atlas-8",
   "displayName": "Acer Predator Atlas 8 (PA08-I51)",
-  "revision": 2,
+  "revision": 3,
   "exactDeviceIds": [
     "acer-predator-atlas-8-pa08-i51"
   ],
@@ -338,9 +338,38 @@
         "width": 32,
         "height": 32
       }
+    },
+    {
+      "assetId": "controller-full-atlas-8",
+      "format": "Svg",
+      "role": "FullController",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 2000,
+        "height": 905
+      }
+    },
+    {
+      "assetId": "controller-left-atlas-8",
+      "format": "Png",
+      "role": "LeftController",
+      "pixelWidth": 643,
+      "pixelHeight": 464
+    },
+    {
+      "assetId": "controller-right-atlas-8",
+      "format": "Png",
+      "role": "RightController",
+      "pixelWidth": 643,
+      "pixelHeight": 464
     }
   ],
-  "controllerImages": {},
+  "controllerImages": {
+    "fullAssetId": "controller-full-atlas-8",
+    "leftAssetId": "controller-left-atlas-8",
+    "rightAssetId": "controller-right-atlas-8"
+  },
   "controls": [
     {
       "control": "FaceSouth",
