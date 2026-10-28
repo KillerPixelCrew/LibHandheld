@@ -110,9 +110,33 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## Additional HC parity glyphs
 
-The `pf-*.svg` stick-direction and Xbox-guide outlines come from original HC PromptFont at revision
+The `pf-*.svg` stick-direction outlines come from original HC PromptFont at revision
 `a250b19a4b7e29dac3b383f2d1ac517d1af43e4e`, SHA-256
 `b190b52ef647e20e8850f5f4c3a972d2c5cf0e14e4c3e104b90d65646cb7559a`. Contours and proportions are
 unchanged; only SVG coordinates and white paint are selected. Copyright 2018-2026, Yukari Hafner.
 Copyright 2011-2016, Severin Meyer. PromptFont by Shinmera (Yukari Hafner),
 https://shinmera.com/promptfont. SIL OFL 1.1 above applies.
+
+## Handheld controller glyphs
+
+The rear badges `glyphs/assets/rear-m1-right.svg` and `glyphs/assets/rear-m2-left.svg` come from the
+`handheld-controller-glyphs` project at revision `46792aadf3b104efec1c5240ba414d2c0bf84127`, licensed
+under the MIT License, and are copied unmodified from the ROG Ally family. The `atlas-*.svg` front
+button glyphs are original drawings made for this library; see `glyphs/PROVENANCE.md`.
+
+Copyright (c) 2024 victor-borges
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial
+portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

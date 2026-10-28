@@ -2,8 +2,10 @@
   "schemaVersion": 1,
   "profileId": "acer-predator-atlas-8",
   "displayName": "Acer Predator Atlas 8 (PA08-I51)",
-  "revision": 1,
-  "exactDeviceIds": ["acer-predator-atlas-8-pa08-i51"],
+  "revision": 2,
+  "exactDeviceIds": [
+    "acer-predator-atlas-8-pa08-i51"
+  ],
   "sourceRevision": "hc-a250b19a4b7e-promptfont-b190b52ef647",
   "noticePath": "THIRD_PARTY_NOTICES.md",
   "assets": [
@@ -272,7 +274,7 @@
       }
     },
     {
-      "assetId": "pf-21e5",
+      "assetId": "atlas-task",
       "format": "Svg",
       "role": "Control",
       "viewBox": {
@@ -283,7 +285,7 @@
       }
     },
     {
-      "assetId": "pf-21fa",
+      "assetId": "atlas-view",
       "format": "Svg",
       "role": "Control",
       "viewBox": {
@@ -294,7 +296,7 @@
       }
     },
     {
-      "assetId": "pf-21fb",
+      "assetId": "atlas-menu",
       "format": "Svg",
       "role": "Control",
       "viewBox": {
@@ -305,7 +307,7 @@
       }
     },
     {
-      "assetId": "pf-2276",
+      "assetId": "atlas-predator",
       "format": "Svg",
       "role": "Control",
       "viewBox": {
@@ -316,7 +318,7 @@
       }
     },
     {
-      "assetId": "pf-2277",
+      "assetId": "rear-m1-right",
       "format": "Svg",
       "role": "Control",
       "viewBox": {
@@ -327,7 +329,7 @@
       }
     },
     {
-      "assetId": "pf-e001",
+      "assetId": "rear-m2-left",
       "format": "Svg",
       "role": "Control",
       "viewBox": {
@@ -433,41 +435,41 @@
     {
       "control": "Guide",
       "presence": "Present",
-      "assetId": "pf-e001",
+      "assetId": "atlas-task",
       "physicalLabel": "Task",
       "oemControlId": "guide"
     },
     {
       "control": "View",
       "presence": "Present",
-      "assetId": "pf-21fa"
+      "assetId": "atlas-view"
     },
     {
       "control": "Menu",
       "presence": "Present",
-      "assetId": "pf-21fb"
+      "assetId": "atlas-menu"
     },
     {
       "control": "QuickAccess",
       "presence": "Present",
-      "assetId": "pf-21e5",
+      "assetId": "atlas-predator",
       "physicalLabel": "Predator",
       "oemControlId": "qam"
     },
     {
       "control": "RearM1",
       "presence": "Present",
-      "assetId": "pf-2276",
-      "physicalLabel": "M1",
-      "oemControlId": "m1",
+      "assetId": "rear-m2-left",
+      "physicalLabel": "M2",
+      "oemControlId": "m2",
       "side": "Left"
     },
     {
       "control": "RearM2",
       "presence": "Present",
-      "assetId": "pf-2277",
-      "physicalLabel": "M2",
-      "oemControlId": "m2",
+      "assetId": "rear-m1-right",
+      "physicalLabel": "M1",
+      "oemControlId": "m1",
       "side": "Right"
     },
     {

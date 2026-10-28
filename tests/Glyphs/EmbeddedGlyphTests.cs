@@ -90,6 +90,9 @@ public sealed class EmbeddedGlyphTests
     [InlineData("ayaneo.3-hx370", "RearM2", "R4", "r4", "pf-2277")]
     [InlineData("ayaneo.3-hx370", "RearLeft2", "L5", "l5", "pf-2278")]
     [InlineData("ayaneo.3-hx370", "RearRight2", "R5", "r5", "pf-2279")]
+    // The Atlas prints M2 on its left rear button and M1 on its right one.
+    [InlineData("acer-predator-atlas-8-pa08-i51", "RearM1", "M2", "m2", "rear-m2-left")]
+    [InlineData("acer-predator-atlas-8-pa08-i51", "RearM2", "M1", "m1", "rear-m1-right")]
     public async Task RearArtworkTracksThePhysicalControl(string id, string control, string label,
         string nativeId, string asset)
     {
