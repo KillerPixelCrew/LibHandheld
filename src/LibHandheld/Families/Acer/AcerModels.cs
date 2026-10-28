@@ -43,6 +43,8 @@ internal static class AcerModels
         MaximumWatts = 0,
         Controller = new StandardControllerProfile([new ControllerUsbId(0x0502, 0xF901), new ControllerUsbId(0x0502, 0xF90A)])
         {
+            // Analog Rx/Ry triggers run 0..255; buttons 7/8 switch on at value 2 (2026-10-28 capture),
+            // so they must not force the trigger to full.
             HidFallback = new HidControllerProfile([new ControllerUsbId(0x0502, 0xF90A)],
             [
                 CanonicalButtons.X, CanonicalButtons.A, CanonicalButtons.B, CanonicalButtons.Y,
@@ -51,7 +53,7 @@ internal static class AcerModels
                 CanonicalButtons.LeftStick, CanonicalButtons.RightStick,
                 CanonicalButtons.None, CanonicalButtons.None, CanonicalButtons.None,
                 CanonicalButtons.None, CanonicalButtons.None
-            ]),
+            ], LeftTriggerButton: 0, RightTriggerButton: 0),
             OpenHidRumble = collection => new AcerDInputRumble(collection),
             HidCompanions = AcerInputProtocol.DInputCompanions,
             // Attended Device Lab calibration; see PROVENANCE.md for the report and trial limits.

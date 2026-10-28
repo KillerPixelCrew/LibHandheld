@@ -448,3 +448,16 @@ KX and its HwRwDrv driver were removed from LibHandheld and WSGM. Every Intel mo
 Atlas, now uses PawnIO IntelMSR for processor settings, and the generic Intel package power path
 writes MSR 0x610 through the same module. The Atlas keeps its native EC power path and does not use
 that generic transport. Intel GPU clock control is no longer offered on any model.
+
+## DInput input capture (2026-10-28)
+
+A read-only attended capture of every 0502 collection, with Steam closed, measured the F90A gamepad
+report 01. Triggers are analog Rx (left) and Ry (right), 0..255. Buttons 7/8 switch on at value 2,
+so they no longer force a trigger to full. Rear-right is button 16 (M1) and rear-left button 17
+(M2). L3/R3 are 11/12. The front OEM keys send nothing in any gamepad, vendor or consumer report:
+a tap produces no event at all, a hold of front-left sends one Win+Tab pulse and a hold of
+front-right sends F22 (VK 0x85, scan 0x6D) with auto-repeat and a release, both on the keyboard
+interface. Predator Sense never selects DInput; its tap handling uses the XInput-topology vendor
+reports. Firmware mode 3 ("Special") keeps the F901 XInput topology, including the IG_00 collection
+and the auxiliary SDL identities: front-left tap 9E, front-right tap `37 81FF` on MI_02/COL04, rear
+9A. The probe restored the original mode 1/0 with verified readback.

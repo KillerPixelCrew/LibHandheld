@@ -161,8 +161,8 @@ internal sealed class AcerButtonState : IDisposable
     }
 
     /// <summary>Routes the DInput PS/camera and rear usages through the same OEM action owner.</summary>
-    /// <remarks>The 17-button descriptor and OEM PS/camera/FL1/FR1 naming supply this mapping;
-    /// physical front/rear mapping acceptance remains pending.</remarks>
+    /// <remarks>2026-10-28 capture: rear-right is usage 16 (M1), rear-left usage 17 (M2). Guide/QAM
+    /// 13/14 come from the descriptor naming; the front keys produced no gamepad report in that capture.</remarks>
     internal void HandleDInputButtons(ReadOnlySpan<ushort> usages)
     {
         lock (_gate)
@@ -173,7 +173,7 @@ internal sealed class AcerButtonState : IDisposable
             }
             Emit("guide", CanonicalButtons.Guide, usages.Contains((ushort)13));
             Emit("qam", CanonicalButtons.QuickAccess, usages.Contains((ushort)14));
-            Emit("m2", CanonicalButtons.RearPaddle2, usages.Contains((ushort)15));
+            Emit("m2", CanonicalButtons.RearPaddle2, usages.Contains((ushort)17));
             Emit("m1", CanonicalButtons.RearPaddle1, usages.Contains((ushort)16));
         }
     }
