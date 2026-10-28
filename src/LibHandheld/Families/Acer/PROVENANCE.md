@@ -461,3 +461,9 @@ interface. Predator Sense never selects DInput; its tap handling uses the XInput
 reports. Firmware mode 3 ("Special") keeps the F901 XInput topology, including the IG_00 collection
 and the auxiliary SDL identities: front-left tap 9E, front-right tap `37 81FF` on MI_02/COL04, rear
 9A. The probe restored the original mode 1/0 with verified readback.
+
+Motion upload in Special mode: after mode 3/1 was selected, command 2F 01 was sent once and the
+device was held still, then pitched, yawed and rolled. No collection reported anything during
+those phases, including the FFA0 command lane. Predator Sense defines but never calls this
+command. Command 2F 00 and the original mode 1/0 were restored and verified. Windows sensors
+remain the motion source.
