@@ -477,4 +477,12 @@ After each step the maintainer typed a confirmation through the keyboard path, a
 four hidden. Steam then enumerated exactly one controller, the XInput pad. The profile lists these
 four exact leaves as AuxiliaryHidCollections, the only identities allowed past the
 keyboard-interface guard. WSGM remains allowed to read them for the command lane and QAM report.
-The earlier keyboard losses remain unexplained; if they recur, remove this list first.
+The earlier keyboard losses are explained in the correction below.
+
+## Correction: the keyboard losses were not caused by hiding (2026-10-28)
+
+The maintainer traced both "no keyboard" incidents to outside causes. GTA V Enhanced running on the
+RustDesk client PC blocked RustDesk keyboard input, and the physical keyboard's USB-C hub had
+failed. HidHide and the hidden HID leaves were not involved. The "Rejected auxiliary HID cloaking"
+and "Keyboard-interface hiding withdrawn" conclusions above rest on that misattribution; the
+attended trial in "Back to XInput with verified auxiliary hiding" is the valid evidence.
