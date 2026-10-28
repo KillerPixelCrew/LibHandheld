@@ -164,8 +164,7 @@ internal static class GpdModels
         {
             Definition = new HandheldDefinition(id, FamilyId, name, id)
             {
-                HardwareAccess = DeviceHardwareAccess.PawnIo |
-                                 (cpu == CpuPowerKind.Intel ? DeviceHardwareAccess.IntelKx : DeviceHardwareAccess.None)
+                HardwareAccess = DeviceHardwareAccess.PawnIo
             },
             SourceFamilyId = source, Manufacturers = ["GPD"], Products = products, Processors = processors,
             Cpu = cpu, MinimumWatts = minimum, MaximumWatts = maximum, Fan = fan, Motion = motion,

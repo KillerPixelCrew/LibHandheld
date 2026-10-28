@@ -1,6 +1,9 @@
 namespace LibHandheld.Internal.Devices;
 
-/// <summary>HC a250b19 model GPU-clock bounds, kept separate from native command availability.</summary>
+/// <summary>
+///     HC a250b19 model GPU-clock bounds, kept separate from native command availability. Only the AMD
+///     SMU path uses them; PawnIO has no Intel GPU clock write.
+/// </summary>
 internal static class ProcessorClockLimits
 {
     internal static (int Minimum, int Maximum) For(string definitionId, string? processor = null)

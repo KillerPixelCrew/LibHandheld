@@ -583,7 +583,6 @@ Native dependencies required by a model, independently of application controller
 | --------- | ------------- | --------------------------------------------------------------------- |
 | `None`    | `0`           | No privileged driver helper is required.                              |
 | `PawnIo`  | `1`           | Signed PawnIO modules provide embedded-controller or CPU access.      |
-| `IntelKx` | `2`           | The pinned Intel KX helper provides the supported write path.         |
 | `InpOut`  | `4`           | The pinned InpOut helper provides Steam Deck EC port and MMIO access. |
 
 ## DeviceIdentitySnapshot
@@ -592,7 +591,7 @@ Namespace: `LibHandheld.Contracts`.
 
 The normalized machine facts a device definition's identity observations are matched against. This
 is the observed half of identity. The backend's exact model predicates match what the machine
-actually reports. Producing it is platform work owned by Device Lab and WSGM's runtime; the contract
+actually reports. Producing it is platform work owned by the host runtime; the contract
 only fixes which facts exist and how they compare, so both sides agree on what "matched" means.
 Every value arrives with normalized whitespace. Comparison is ordinal and case-insensitive on the
 normalized form, so a vendor that changes casing or padding between firmware revisions does not
@@ -808,7 +807,6 @@ Consumer-supplied locations of separately deployed native hardware helpers.
 | Member                              | Contract                                                         |
 | ----------------------------------- | ---------------------------------------------------------------- |
 | `HandheldResources()`               |                                                                  |
-| `String IntelKxPath { get; init; }` | The pinned Intel power helper, or null when it was not deployed. |
 | `String InpOutPath { get; init; }`  | The pinned InpOut library, or null when it was not deployed.     |
 
 ## HapticActuatorSide

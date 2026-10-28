@@ -6,7 +6,7 @@ namespace LibHandheld.Contracts;
 /// <remarks>
 ///     This is the observed half of identity. The backend's exact model predicates match what the
 ///     machine actually reports.
-///     Producing it is platform work owned by Device Lab and WSGM's runtime; the contract only fixes which
+///     Producing it is platform work owned by the host runtime; the contract only fixes which
 ///     facts exist and how they compare, so both sides agree on what "matched" means.
 ///     <para>
 ///         Every value arrives with normalized whitespace. Comparison is ordinal

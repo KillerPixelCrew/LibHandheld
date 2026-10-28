@@ -74,7 +74,7 @@ internal sealed record AllyPreset(string Id, string Name, int Watts, string Scen
 
 /// <summary>Everything that differs between the four supported Ally models.</summary>
 /// <remarks>
-///     Every per-model fact lives here and nowhere else, so a Device Lab report corrects one row
+///     Every per-model fact lives here and nowhere else, so an attended observation corrects one row
 ///     rather than a scattering of conditionals. The source of each value is in PROVENANCE.md.
 /// </remarks>
 internal sealed record AllyModel

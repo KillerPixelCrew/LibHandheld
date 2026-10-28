@@ -94,7 +94,7 @@ artwork; the Avalonia adapter parses compact SVG paths with its own rendering ba
 
 Default AMD transports expose independent fast PPT alongside the existing sustained/slow pair.
 `SetTdpAsync` updates every declared limit; explicit paired changes retain independently authored
-fast values. Presets and saved custom profiles carry the optional fast target. Processor GPU clocks,
+fast values. Presets and saved custom profiles carry the optional fast target. AMD processor GPU clocks,
 supported curve/thermal controls and Intel undervolting are ordinary typed descriptor commands, with
 exact model bounds and command availability.
 

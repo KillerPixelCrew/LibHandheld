@@ -143,13 +143,6 @@ public sealed class PrivilegedTransportTests
         Assert.Equal(120, CpuPowerEncoding.IntelUnits(15, 0.125));
     }
 
-    [Fact]
-    public void IntelParsersRetainFullWidthValues()
-    {
-        Assert.Equal(0xFEDC0000L, IntelPowerTransport.ParseReturn("Return 4275830784\r\n"));
-        Assert.Null(IntelPowerTransport.ParseReturn("not a response"));
-    }
-
     private sealed class RecordingModule : IPawnIoModule
     {
         private bool _submitted;

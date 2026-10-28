@@ -12,15 +12,13 @@ internal sealed class ProfiledProcessorService(
     CpuPowerKind kind,
     int minimumGpuClock = 100,
     int maximumGpuClock = 3000,
-    Func<AmdSmuTransport>? openAmd = null,
-    bool usePawnIoIntel = false) : ProfiledFeatureService("processor-settings")
+    Func<AmdSmuTransport>? openAmd = null) : ProfiledFeatureService("processor-settings")
 {
     private readonly Dictionary<string, ProcessorSetting> _settings = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int Value, DateTimeOffset At)> _observed = new(StringComparer.Ordinal);
     private readonly HashSet<string> _changedWithoutOriginal = new(StringComparer.Ordinal);
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private AmdSmuTransport? _amd;
-    private IntelPowerTransport? _intel;
     private IntelMsrSettings? _intelMsr;
     private CapabilityDescriptor? _automaticGpu;
     private bool _descriptorsChanged;
@@ -65,14 +63,7 @@ internal sealed class ProfiledProcessorService(
             }
             else
             {
-                if (usePawnIoIntel)
-                {
-                    _intelMsr = IntelMsrSettings.Open();
-                }
-                else
-                {
-                    _intel = IntelPowerTransport.Open(featureContext.Resources.IntelKxPath);
-                }
+                _intelMsr = IntelMsrSettings.Open();
                 DescribeIntel();
             }
 
@@ -168,17 +159,10 @@ internal sealed class ProfiledProcessorService(
                 _changedWithoutOriginal.Add(settingId);
             }
 
-            var value = automaticGpu ? 12750 : command.RequestedValue!.IntegerValue!.Value;
-            if (automaticGpu && _amd is not null)
-            {
-                _amd.RestoreGpuClockRange(minimumGpuClock, maximumGpuClock);
-            }
-            else
-            {
-                setting.Write(value);
-            }
+            // Only AMD publishes the automatic clock action; it restores the model's clock range.
             if (automaticGpu)
             {
+                _amd!.RestoreGpuClockRange(minimumGpuClock, maximumGpuClock);
                 _observed.Remove(settingId);
                 _changedWithoutOriginal.Remove(settingId);
                 await featureContext.Journal.SetStatusAsync(settingId, DeviceRecoveryStatus.RestoredUnverified, token)
@@ -186,6 +170,8 @@ internal sealed class ProfiledProcessorService(
             }
             else
             {
+                var value = command.RequestedValue!.IntegerValue!.Value;
+                setting.Write(value);
                 _observed[settingId] = (value, DateTimeOffset.UtcNow);
             }
             return CommandResults.Applied(command);
@@ -243,23 +229,16 @@ internal sealed class ProfiledProcessorService(
                 dispatched = true;
                 try
                 {
-                    if (automaticClock && _amd is not null)
+                    if (automaticClock)
                     {
-                        _amd.RestoreGpuClockRange(minimumGpuClock, maximumGpuClock);
+                        _amd!.RestoreGpuClockRange(minimumGpuClock, maximumGpuClock);
                         _observed.Remove(id);
                     }
                     else
                     {
-                        var value = neutralOffset ? 0 : automaticClock ? 12750 : original!.Value;
+                        var value = neutralOffset ? 0 : original!.Value;
                         setting.Write(value);
-                        if (automaticClock)
-                        {
-                            _observed.Remove(id);
-                        }
-                        else
-                        {
-                            _observed[id] = (value, DateTimeOffset.UtcNow);
-                        }
+                        _observed[id] = (value, DateTimeOffset.UtcNow);
                     }
                 }
                 catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
@@ -313,7 +292,7 @@ internal sealed class ProfiledProcessorService(
     {
         try
         {
-            if (_amd is not null || _intel is not null)
+            if (_amd is not null || _intelMsr is not null)
             {
                 foreach (var (id, setting) in _settings)
                 {
@@ -355,10 +334,8 @@ internal sealed class ProfiledProcessorService(
     internal override ValueTask DisposeAsync()
     {
         _amd?.Dispose();
-        _intel?.Dispose();
         _intelMsr?.Dispose();
         _amd = null;
-        _intel = null;
         _intelMsr = null;
         return ValueTask.CompletedTask;
     }
@@ -410,46 +387,20 @@ internal sealed class ProfiledProcessorService(
 
     private void DescribeIntel()
     {
-        var intel = _intel;
-        if (intel is null && _intelMsr is null)
-        {
-            throw new InvalidOperationException("The Intel processor transport is not owned.");
-        }
-        if (intel is not null && minimumGpuClock > 0 && maximumGpuClock >= minimumGpuClock)
-        {
-            Add("processor.gpu-clock", "GPU clock", minimumGpuClock, maximumGpuClock, CapabilityUnit.Megahertz,
-                intel.WriteGpuClock, intel.ReadGpuClock, step: 50);
-            _automaticGpu = new CapabilityDescriptor
-            {
-                CapabilityId = "processor.gpu-clock-automatic", Role = CapabilityRole.GenericAction,
-                Display = CapabilityDescriptors.Label("Automatic GPU clock"), ValueKind = CapabilityValueKind.None,
-                SupportsAction = true, Persistence = CapabilityPersistence.Volatile
-            };
-        }
+        var intel = _intelMsr ?? throw new InvalidOperationException("The Intel processor transport is not owned.");
+        // PawnIO IntelMSR has no MCHBAR write, so Intel has no GPU clock setting.
         // HC's CPU editor writes both Core and Cache. Keep the pair on one command so neither surface
         // can report a successful CPU adjustment when only one rail was accepted.
         Add("processor.cpu-undervolt", "CPU core/cache undervolt", -50, 50, CapabilityUnit.Millivolt,
             value =>
             {
-                WriteIntelOffset(IntelUndervoltRail.Core, value);
-                WriteIntelOffset(IntelUndervoltRail.Cache, value);
+                intel.WriteUndervolt(IntelUndervoltRail.Core, value);
+                intel.WriteUndervolt(IntelUndervoltRail.Cache, value);
             }, neutral: 0);
         Add("processor.gpu-undervolt", "GPU undervolt", -50, 50, CapabilityUnit.Millivolt,
-            value => WriteIntelOffset(IntelUndervoltRail.Gpu, value), neutral: 0);
+            value => intel.WriteUndervolt(IntelUndervoltRail.Gpu, value), neutral: 0);
         Add("processor.system-agent-undervolt", "System Agent undervolt", -50, 50, CapabilityUnit.Millivolt,
-            value => WriteIntelOffset(IntelUndervoltRail.SystemAgent, value), neutral: 0);
-    }
-
-    private void WriteIntelOffset(IntelUndervoltRail rail, int value)
-    {
-        if (_intelMsr is { } pawnIo)
-        {
-            pawnIo.WriteUndervolt(rail, value);
-        }
-        else
-        {
-            _intel!.WriteUndervolt(rail, value);
-        }
+            value => intel.WriteUndervolt(IntelUndervoltRail.SystemAgent, value), neutral: 0);
     }
 
     private void Add(string id, string label, int minimum, int maximum, CapabilityUnit unit,
@@ -557,15 +508,7 @@ internal sealed class ProfiledProcessorService(
 
             try
             {
-                var value = setting.Read();
-                if (id == "processor.gpu-clock" && _intel is not null && value == 12750)
-                {
-                    _observed.Remove(id);
-                }
-                else
-                {
-                    _observed[id] = (value, DateTimeOffset.UtcNow);
-                }
+                _observed[id] = (setting.Read(), DateTimeOffset.UtcNow);
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {

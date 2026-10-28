@@ -62,7 +62,6 @@ public sealed class AcerInputTests
         Assert.False(definition.HardwareVerified);
         Assert.True(definition.HasController);
         Assert.True(definition.HardwareAccess.HasFlag(DeviceHardwareAccess.PawnIo));
-        Assert.False(definition.HardwareAccess.HasFlag(DeviceHardwareAccess.IntelKx));
         Assert.Contains(CapabilityRole.ControllerSource, definition.DeclaredRoles);
         Assert.Contains(CapabilityRole.MotionSource, definition.DeclaredRoles);
         Assert.Contains(CapabilityRole.PowerSustainedLimit, definition.DeclaredRoles);

@@ -42,7 +42,7 @@ mappings.
 The initial contribution supplied exact detection, standard controller/rumble routing, OEM button
 decoding and stock gamepad glyphs. The on-device implementation below adds EC power, fan control and
 RPM, battery protection, Windows motion and volatile controller lighting. Optional Intel processor
-settings remain owned by the shared processor service and declare its IntelKx dependency.
+settings remain owned by the shared processor service and use the signed PawnIO IntelMSR module.
 
 Predator Sense 1.0.1563.0 was supplied separately by the maintainer for offline protocol research.
 The follow-up [power and fan protocol research](POWER_FAN_PROTOCOL.md) records the separate EC HID
@@ -441,3 +441,10 @@ now write explicit PL1/PL2 through Manual 3: 20/20, 25/37 and 30/37 W, HandheldC
 (ClawCG3EM) table after its 20 W floor. Full Power keeps the firmware maximum, 40/65 W. Manual
 limits were measured to bound package power (25 W requested, 24.6 W measured). The stock EC
 profiles remain selectable through the scenario control.
+
+## Follow-up: KX removed (2026-10-28)
+
+KX and its HwRwDrv driver were removed from LibHandheld and WSGM. Every Intel model, not only the
+Atlas, now uses PawnIO IntelMSR for processor settings, and the generic Intel package power path
+writes MSR 0x610 through the same module. The Atlas keeps its native EC power path and does not use
+that generic transport. Intel GPU clock control is no longer offered on any model.

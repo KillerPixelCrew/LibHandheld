@@ -21,13 +21,10 @@ and the ACPI embedded-controller specification; its source code is not incorpora
 - PawnIO is an independently installed dependency. The host supplies the verified installer;
   LibHandheld never installs, upgrades or removes its driver. PawnIO verifies module signatures;
   unrestricted loading is never requested. <https://pawnio.eu>.
-- Intel power writes use the host-supplied `KX.exe` pinned by SHA-256
-  `1695E6C7877979B1297179680E5AA3C767EAF13D27EE259D8F332EC60083EAE0`. It is not embedded or
-  redistributed by this library. The existing WSGM payload has no stated licence or author, so its
-  terms remain unknown and it is not covered by the MIT licence.
+- Intel package power limits and OC-mailbox settings use only the signed `IntelMSR` module above.
+  No unsigned register helper is used or redistributed.
 
-The host must deploy KX at `Resources/Intel/KX/KX.exe` or supply an explicit path to the internal
-transport factory. Missing dependencies and rejected native calls are reported as errors.
+Missing dependencies and rejected native calls are reported as errors.
 
 Raw ACPI embedded-controller transactions remain inherently subject to Windows and firmware access;
 the shared `Global\Access_EC` mutex coordinates cooperating applications, not the ACPI kernel

@@ -11,7 +11,6 @@ internal sealed record ProfiledDeviceModel
     internal required HandheldDefinition Definition { get; init; }
     internal IReadOnlyList<CapabilityRole> NativeRoles { get; init; } = [];
     internal bool UseStandardServices { get; init; } = true;
-    internal bool UsePawnIoIntelSettings { get; init; }
     internal IReadOnlyList<Func<ProfiledFeatureContext, ProfiledFeatureService>> ServiceFactories { get; init; } = [];
     internal Func<ProfiledFeatureContext, ICpuPowerTransport>? OpenPower { get; init; }
     internal bool IndependentPowerLimits => UseStandardServices && Cpu == CpuPowerKind.Amd && OpenPower is null;

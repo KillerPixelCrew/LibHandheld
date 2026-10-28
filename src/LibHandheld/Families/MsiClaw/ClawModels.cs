@@ -22,7 +22,7 @@ internal sealed record ClawModel
     /// <summary>The HC device class the row was read from.</summary>
     public required string HcClass { get; init; }
 
-    /// <summary>True only for a model with an attended Device Lab pass.</summary>
+    /// <summary>True only for a model with an attended hardware pass.</summary>
     public required bool HardwareVerified { get; init; }
 
     /// <summary>

@@ -11,7 +11,7 @@ pass. Read the library README, `PROVENANCE.md` and the tests before changing beh
 
 - HC 1.3.1.6 is the primary Windows reference, including default button behavior, ATKACPI, fans,
   power, Aura, rumble and motion. HHD is a secondary cross-check and supplies behavior HC does not
-  implement. A Device Lab observation beats both.
+  implement. An attended hardware observation beats both.
 - Every per-model fact lives in `AllyModels.cs`. Correct a model by changing its row, never by adding
   a model check elsewhere.
 - Every device fact carries a citation, in `PROVENANCE.md` or beside the value. When a lab report
@@ -71,6 +71,6 @@ Every command revalidates service state, cancellation, deadline and range before
 ## Validation
 
 CI is software-only. Tests under `external/libhandheld/tests` use fakes for every
-transport. Any claim that a transport, code or axis works on hardware needs a Device Lab report
-(`wsgm-device report <file.wsgmlab>`) and a PROVENANCE.md update.
+transport. Any claim that a transport, code or axis works on hardware needs attended evidence
+recorded in a PROVENANCE.md update.
 

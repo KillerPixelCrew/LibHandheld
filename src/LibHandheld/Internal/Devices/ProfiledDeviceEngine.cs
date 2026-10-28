@@ -122,7 +122,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             if (_profile.UseStandardServices || !string.IsNullOrWhiteSpace(context.Identity.ProcessorName))
             {
                 var processor = new ProfiledProcessorService(featureContext, _profile.Cpu,
-                    processorClocks.Minimum, processorClocks.Maximum, usePawnIoIntel: _profile.UsePawnIoIntelSettings);
+                    processorClocks.Minimum, processorClocks.Maximum);
                 _nativeServices.Add(processor);
                 _services.Add(processor);
             }
@@ -439,7 +439,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             return AmdSmuTransport.Open();
         }
 
-        return IntelPowerTransport.Open(context.Resources.IntelKxPath);
+        return IntelMsrPowerTransport.Open();
     }
 
     private DeviceCycleContext<ProfiledCycleIdentity> Context(Deadline deadline)

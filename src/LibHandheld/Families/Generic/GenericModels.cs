@@ -56,18 +56,18 @@ internal static class GenericModels
             },
         Hhd("tectoy-zeenix-pro", "TecToy Zeenix Pro", "hhd:generic:Zeenix Pro", "Zeenix Pro", 8, 25) with
         {
-            Definition = Definition("tectoy-zeenix-pro", "TecToy Zeenix Pro", CpuPowerKind.Amd, true),
+            Definition = Definition("tectoy-zeenix-pro", "TecToy Zeenix Pro", controller: true),
             Controller = Xbox, Motion = HhdLokiMotion, KeyboardChords = LokiChords
         },
         Hhd("anbernic-win600", "Anbernic Win600", "hhd:generic:Win600", "Win600", 10, 25) with
         {
-            Definition = Definition("anbernic-win600", "Anbernic Win600", CpuPowerKind.Amd, true),
+            Definition = Definition("anbernic-win600", "Anbernic Win600", controller: true),
             Controller = Xbox, Motion = HhdDefaultMotion,
             KeyboardChords = [new KeyboardOemChord("guide", "Guide", [0x5B, 0x47], CanonicalButtons.Guide)]
         },
         Hhd("tecno-pocket-go", "TECNO Pocket Go", "hhd:generic:Pocket Go", "Pocket Go", 10, 25) with
         {
-            Definition = Definition("tecno-pocket-go", "TECNO Pocket Go", CpuPowerKind.Amd, true),
+            Definition = Definition("tecno-pocket-go", "TECNO Pocket Go", controller: true),
             Controller = new StandardControllerProfile([new ControllerUsbId(0x2993, 0x2001)]),
             CreateOemSource = () => new TecnoButtonSource(), NativeOemReplacesChords = [],
             OemControls = TecnoButtonSource.Controls,
@@ -76,7 +76,7 @@ internal static class GenericModels
         },
         Hhd("orangepi-neo", "OrangePi NEO", "hhd:orangePi:NEO-01", "NEO-01", 8, 25) with
         {
-            Definition = Definition("orangepi-neo", "OrangePi NEO", CpuPowerKind.Amd, true),
+            Definition = Definition("orangepi-neo", "OrangePi NEO", controller: true),
             Controller =
             new StandardControllerProfile([new ControllerUsbId(0x045E, 0x028E), new ControllerUsbId(0x0079, 0x181C)]),
             Motion = new StandardMotionProfile(new MotionAxisMap(0, 2, 1, 1, -1, 1),
@@ -145,7 +145,7 @@ internal static class GenericModels
     {
         return Model(id, name, source, ["AYN"], [product], minimum, maximum) with
         {
-            Definition = Definition(id, name, CpuPowerKind.Amd, true), Controller = Xbox, Motion = LokiMotion,
+            Definition = Definition(id, name, controller: true), Controller = Xbox, Motion = LokiMotion,
             KeyboardChords = LokiChords,
             CreateOemSource = () => new OemMouseChordSource(), NativeOemReplacesChords = [],
             OemControls =
@@ -178,19 +178,18 @@ internal static class GenericModels
     {
         return new ProfiledDeviceModel
         {
-            Definition = Definition(id, name, cpu), SourceFamilyId = source, Manufacturers = manufacturers,
+            Definition = Definition(id, name), SourceFamilyId = source, Manufacturers = manufacturers,
             Products = products,
             MinimumWatts = minimum, MaximumWatts = maximum, Cpu = cpu
         };
     }
 
-    private static HandheldDefinition Definition(string id, string name, CpuPowerKind cpu, bool controller = false)
+    private static HandheldDefinition Definition(string id, string name, bool controller = false)
     {
         return new HandheldDefinition(id, id.Split('-')[0] == "asus" ? "asus-flow" : id.Split('-')[0], name, id)
         {
             HasController = controller,
-            HardwareAccess = DeviceHardwareAccess.PawnIo |
-                             (cpu == CpuPowerKind.Intel ? DeviceHardwareAccess.IntelKx : DeviceHardwareAccess.None)
+            HardwareAccess = DeviceHardwareAccess.PawnIo
         };
     }
 }

@@ -169,9 +169,7 @@ internal static class AyaneoModels
         {
             Definition = new HandheldDefinition("ayaneo." + id, FamilyId, name, "ayaneo-" + id)
             {
-                HardwareAccess = DeviceHardwareAccess.PawnIo | (cpu == CpuPowerKind.Intel
-                    ? DeviceHardwareAccess.IntelKx
-                    : DeviceHardwareAccess.None)
+                HardwareAccess = DeviceHardwareAccess.PawnIo
             },
             SourceFamilyId = FamilyId, Manufacturers = manufacturers ?? Manufacturers,
             Products = products, Processors = processors ?? [], ProcessorSkus = id switch

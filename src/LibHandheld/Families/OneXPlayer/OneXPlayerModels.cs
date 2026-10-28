@@ -241,9 +241,7 @@ internal static class OneXPlayerModels
         {
             Definition = new HandheldDefinition(id, FamilyId, name, id)
             {
-                HardwareAccess = DeviceHardwareAccess.PawnIo | (cpu == CpuPowerKind.Intel
-                    ? DeviceHardwareAccess.IntelKx
-                    : DeviceHardwareAccess.None)
+                HardwareAccess = DeviceHardwareAccess.PawnIo
             },
             SourceFamilyId = source, Manufacturers = OneNetbook, Products = products,
             SystemProducts = HhdProducts(source), Cpu = cpu,

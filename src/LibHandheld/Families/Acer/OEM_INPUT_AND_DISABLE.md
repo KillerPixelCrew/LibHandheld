@@ -191,7 +191,7 @@ isolated confirmation. Both Windows motion axis mappings and XInput perceptual r
 were subsequently confirmed; see [motion evidence](MOTION_TESTS.md) and
 [rumble provenance](PROVENANCE.md#attended-rumble-calibration-2026-10-27). Precise motion scale,
 held-button disconnect, actual Windows sleep/wake and live WSGM/Steam UI routing remain unverified.
-Library suspend/resume and fixture/build success do not establish those behaviors. The original
-optional KX driver is blocked by a revoked certificate; Acer EC power does not depend on it. Nothing
+Library suspend/resume and fixture/build success do not establish those behaviors. Optional Intel
+voltage settings use the signed PawnIO IntelMSR module; Acer EC power does not depend on it. Nothing
 in this workflow requires disabling Defender, driver signing, a shared PS/2 service or Windows
 keyboard support globally.

@@ -12,7 +12,7 @@ lighting protocols. Read the library README, `PROVENANCE.md`, the relevant tests
 implementation before changing behavior. `PROVENANCE.md` records the reference unit's revision and motion evidence
 and cites each HC-derived model fact.
 
-- HC 1.3.1.6 is the reference for the models without hardware evidence. A Device Lab observation on that model beats it.
+- HC 1.3.1.6 is the reference for the models without hardware evidence. An attended hardware observation on that model beats it.
 - Every per-model fact lives in `ClawModels.cs`. Correct a model by changing its row, never by adding a model check
   elsewhere. A measured A2VM behaviour applies to another model only where HC shows the same code path.
 
@@ -143,6 +143,6 @@ changes, update the declared `viewBox` or pixel dimensions, the source revision,
 artwork as upstream drew it rather than reformatting it. Keep all manifest assets packaged.
 
 CI is software-only. Any claim about WMI, HID, Sensor API, controller re-enumeration, fan/lighting payloads, or power
-behavior requires an explicit attended Device Lab run on that model and a provenance update. Add focused regression tests for each changed identity gate, protocol byte, timeout, rollback, journal, mapping,
+behavior requires an explicit attended run on that model and a provenance update. Add focused regression tests for each changed identity gate, protocol byte, timeout, rollback, journal, mapping,
 transform, calibration, ABI, and package invariant. Preserve repository `.editorconfig` conventions.
 

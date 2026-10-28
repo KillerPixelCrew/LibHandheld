@@ -204,7 +204,7 @@ guide glyph; the theme draws Armoury Crate there because it follows HHD's routin
 are shipped, including the mono face buttons and the alternate rear-button marks, unmodified. No
 highlight overlays are declared: their coordinates would be guesses.
 
-## What the Device Lab report must confirm
+## What attended evidence must confirm
 
 Everything below except the DSTS readback in items 9 and 10 is established by HC; a report confirms
 it. Readback is the one question HC cannot answer, because it never reads the power limits and never

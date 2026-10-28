@@ -29,9 +29,6 @@ internal static class AcerModels
         Products = ["Predator PA08-I51"],
         Cpu = CpuPowerKind.Intel,
         UseStandardServices = false,
-        // HwRwDrv used by KX is blocked on the measured Windows build. Native EC controls do not
-        // need it; optional OC-mailbox settings use the signed, constrained IntelMSR module.
-        UsePawnIoIntelSettings = true,
         NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
             CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,
             CapabilityRole.ChargeProtectionMode, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,

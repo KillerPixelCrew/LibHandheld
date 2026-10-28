@@ -64,7 +64,7 @@ host-supplied `Resources/InpOut/inpoutx64.dll`, SHA-256
 [author's distribution page](https://www.highrez.co.uk/downloads/inpout32/) documents MIT licensing
 and the DLL's possible first-load driver installation; the library prevents that installation path
 by checking an existing device first. Only documented EC fields and the allocated, selected GPU's
-three mailbox words can be mapped. Missing mapping/driver/export access fails closed. No KX or
+three mailbox words can be mapped. Missing mapping/driver/export access fails closed. No
 denied LpcIO port fallback is used. An offline review of this exact DLL and its embedded x64 driver
 found that `MapPhysToLin` carries the full 64-bit physical address through `HalTranslateBusAddress`
 and `ZwMapViewOfSection`; no 2 GiB address rejection or truncation was found for the zero-extended

@@ -23,8 +23,8 @@ Acer Predator Atlas 8 PA08-I51 supplies exact system/board detection, XInput/con
 Guide/QAM/M1/M2 input, native EC power and performance modes, two firmware-discovered system fans
 with RPM, optimized charging, Windows motion and volatile controller lighting. Eight individual ring segments have attended physical mapping; shared color retains the unassigned ninth wire slot. Power, charge and
 brightness write/readback/restoration passed on BIOS V1.03, controller release 0100. Fan original
-behavior remains unknown; its Auto fallback is reported unverified. Optional KX tuning is blocked by
-Windows security on this unit and is independent of EC power. HardwareVerified remains false; see
+behavior remains unknown; its Auto fallback is reported unverified. Optional processor voltage settings use
+the signed PawnIO IntelMSR module, independently of EC power. HardwareVerified remains false; see
 [Acer provenance](../src/LibHandheld/Families/Acer/PROVENANCE.md) for exact boundaries and the
 remaining physical acceptance.
 
@@ -37,7 +37,6 @@ unconditionally.
 | Access flag | Requirement                                         | Host responsibility                                                           |
 | ----------- | --------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `PawnIo`    | Installed PawnIO provider for signed native modules | Deploy the reviewed provider; embedded module notices remain with the library |
-| `IntelKx`   | Supported pinned Intel power helper                 | Supply `HandheldResources.IntelKxPath`                                        |
 | `InpOut`    | Supported Steam Deck EC/MMIO helper                 | Supply `HandheldResources.InpOutPath`                                         |
 | `None`      | No privileged helper declared by this flag          | HID/WMI access still depends on physical interfaces and permissions           |
 

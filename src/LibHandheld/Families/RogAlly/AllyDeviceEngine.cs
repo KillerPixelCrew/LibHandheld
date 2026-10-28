@@ -32,7 +32,7 @@ internal sealed record AllyHardwareServices(
 /// <summary>The device plugin for the ASUS ROG Ally, Ally X, Xbox Ally and Xbox Ally X.</summary>
 /// <remarks>
 ///     Built from Handheld Companion 1.3.1.6 and HHD without hardware. Each model's facts live in
-///     <c>AllyModels</c>; PROVENANCE.md cites the source of every one and lists what a Device Lab report
+///     <c>AllyModels</c>; PROVENANCE.md cites the source of every one and lists what attended evidence
 ///     must confirm. The plugin owns ACPI, HID, controller and motion resources; WSGM owns profiles,
 ///     virtual targets and HidHide. Services degrade independently. Command and observation work is
 ///     serialized, and accepted writes remain observed when readback is unavailable.

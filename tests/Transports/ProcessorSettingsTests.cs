@@ -220,28 +220,7 @@ public sealed class ProcessorSettingsTests
     [InlineData(3, 0x80000411u)]
     public void IntelRailCommandsUseTheirOwnMailboxField(int rail, uint command)
     {
-        Assert.Equal(command, IntelPowerTransport.UndervoltCommandFor((IntelUndervoltRail)rail));
-    }
-
-    [Theory]
-    [InlineData(0, 0u)]
-    [InlineData(-1, 0xFFE00000u)]
-    [InlineData(-25, 0xFCC00000u)]
-    [InlineData(-50, 0xF9A00000u)]
-    [InlineData(50, 0xF9A00000u)]
-    public void IntelUndervoltUsesHcRoundedVidPacking(int millivolts, uint expected)
-    {
-        Assert.Equal(expected, IntelPowerTransport.EncodeUndervolt(millivolts));
-    }
-
-    [Fact]
-    public void IntelGpuClockPreservesTheAutomaticSentinelAndRejectsTruncation()
-    {
-        Assert.Equal((byte)24, IntelPowerTransport.EncodeGpuClock(megahertz: 1200));
-        Assert.Equal(byte.MaxValue, IntelPowerTransport.EncodeGpuClock(megahertz: 12750));
-        Assert.Throws<ArgumentOutOfRangeException>(() => IntelPowerTransport.EncodeGpuClock(megahertz: 1201));
-        Assert.Throws<ArgumentOutOfRangeException>(() => IntelPowerTransport.EncodeGpuClock(megahertz: 12800));
-        Assert.Throws<ArgumentOutOfRangeException>(() => IntelPowerTransport.EncodeUndervolt(offsetMillivolts: -51));
+        Assert.Equal(command, IntelMsrSettings.UndervoltCommandFor((IntelUndervoltRail)rail));
     }
 
     [Theory]

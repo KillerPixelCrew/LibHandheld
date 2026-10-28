@@ -3,9 +3,6 @@ namespace LibHandheld.Contracts;
 /// <summary>Consumer-supplied locations of separately deployed native hardware helpers.</summary>
 public sealed record HandheldResources
 {
-    /// <summary>The pinned Intel power helper, or null when it was not deployed.</summary>
-    public string? IntelKxPath { get; init; }
-
     /// <summary>The pinned InpOut library, or null when it was not deployed.</summary>
     public string? InpOutPath { get; init; }
 }
@@ -53,9 +50,6 @@ public enum DeviceHardwareAccess
 
     /// <summary>Signed PawnIO modules provide embedded-controller or CPU access.</summary>
     PawnIo = 1,
-
-    /// <summary>The pinned Intel KX helper provides the supported write path.</summary>
-    IntelKx = 2,
 
     /// <summary>The pinned InpOut helper provides Steam Deck EC port and MMIO access.</summary>
     InpOut = 4

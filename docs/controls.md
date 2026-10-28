@@ -22,7 +22,7 @@ sustained, slow, fast and peak targets. Omitted limits remain unchanged; paired 
 be consistent. Validation checks the whole request before its first write.
 
 Native fan curves are firmware operations; software curves and AutoTDP remain host policy.
-CurveInputs provides legal editor starting points, not an observation or a write. Processor clocks,
+CurveInputs provides legal editor starting points, not an observation or a write. AMD processor clocks,
 curve/thermal controls and Intel undervolting use descriptor commands with exact model bounds.
 
 ## Direct commands and outcomes

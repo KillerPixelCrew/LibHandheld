@@ -3,10 +3,18 @@ using System.Diagnostics;
 
 namespace LibHandheld.Internal.Transports;
 
+internal enum IntelUndervoltRail
+{
+    Core,
+    Gpu,
+    Cache,
+    SystemAgent
+}
+
 /// <summary>Intel OC-mailbox voltage settings through the signed, allowlisted PawnIO IntelMSR module.</summary>
 /// <remarks>
-///     The module permits MSR 0150 but no arbitrary MMIO writes. In particular this backend does not
-///     pretend to implement KX's MCHBAR GPU-clock write. The mailbox command is sent once; subsequent
+///     The module permits MSR 0150 but no MCHBAR writes, so Intel GPU clock control has no backend.
+///     The mailbox command is sent once; subsequent
 ///     reads only wait for its busy bit and inspect the firmware completion code.
 /// </remarks>
 internal sealed class IntelMsrSettings(IPawnIoModule module) : IDisposable
@@ -21,7 +29,7 @@ internal sealed class IntelMsrSettings(IPawnIoModule module) : IDisposable
 
     internal void WriteUndervolt(IntelUndervoltRail rail, int millivolts)
     {
-        var command = IntelPowerTransport.UndervoltCommandFor(rail);
+        var command = UndervoltCommandFor(rail);
         var data = EncodeOffset(millivolts);
         lock (_gate)
         {
@@ -50,6 +58,19 @@ internal sealed class IntelMsrSettings(IPawnIoModule module) : IDisposable
             } while (deadline.ElapsedMilliseconds < 100);
             throw new TimeoutException("Intel OC mailbox completion is unknown; the command was not retried.");
         }
+    }
+
+    // HC's OC mailbox command 0x11 with the voltage plane in bits 15:8.
+    internal static uint UndervoltCommandFor(IntelUndervoltRail rail)
+    {
+        return rail switch
+        {
+            IntelUndervoltRail.Core => 0x80000011,
+            IntelUndervoltRail.Gpu => 0x80000111,
+            IntelUndervoltRail.Cache => 0x80000211,
+            IntelUndervoltRail.SystemAgent => 0x80000411,
+            _ => throw new ArgumentOutOfRangeException(nameof(rail))
+        };
     }
 
     internal static uint EncodeOffset(int millivolts)
