@@ -486,3 +486,5 @@ RustDesk client PC blocked RustDesk keyboard input, and the physical keyboard's 
 failed. HidHide and the hidden HID leaves were not involved. The "Rejected auxiliary HID cloaking"
 and "Keyboard-interface hiding withdrawn" conclusions above rest on that misattribution; the
 attended trial in "Back to XInput with verified auxiliary hiding" is the valid evidence.
+The keyboard-interface guard added on that premise has been removed; the profile's four
+AuxiliaryHidCollections are now hidden with the pad like any other declared identity.

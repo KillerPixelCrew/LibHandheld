@@ -28,25 +28,6 @@ public sealed class AcerInputTests
         Assert.False(AcerInputProtocol.IsDInputCompanion(vendor with { PhysicalLocation = "" }));
     }
 
-    [Fact]
-    public void CollectionsOnTheKeyboardInterfaceAreNeverHideable()
-    {
-        var keyboard = Collection("mi_01", 1, 6, 9) with
-        {
-            ProductId = 0xF90A, InstancePath = @"HID\VID_0502&PID_F90A&MI_01&COL01\7&37E78F8D&0&0000"
-        };
-        IReadOnlyList<HidCollection> present = [keyboard];
-        Assert.True(HidDevices.SharesInterfaceWithKeyboardOrMouse(
-            @"HID\VID_0502&PID_F90A&MI_01&COL03\7&37E78F8D&0&0002", present));
-        Assert.True(HidDevices.SharesInterfaceWithKeyboardOrMouse(
-            @"HID\VID_0502&PID_F901&MI_02&COL03\7&338D4E88&0&0002",
-            [keyboard with { InstancePath = @"HID\VID_0502&PID_F901&MI_02&COL01\7&338D4E88&0&0000" }]));
-        Assert.False(HidDevices.SharesInterfaceWithKeyboardOrMouse(
-            @"HID\VID_0502&PID_F90A&MI_00&COL01\7&217F620&0&0000", present));
-        Assert.False(HidDevices.SharesInterfaceWithKeyboardOrMouse(
-            @"HID\VID_0502&PID_F90A&MI_00&COL02\7&217F620&0&0001", present));
-    }
-
     private static DeviceIdentitySnapshot Identity => new()
     {
         SystemManufacturer = "Acer", SystemProduct = "Predator PA08-I51",
