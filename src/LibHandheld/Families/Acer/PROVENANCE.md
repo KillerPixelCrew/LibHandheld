@@ -467,3 +467,14 @@ device was held still, then pitched, yawed and rolled. No collection reported an
 those phases, including the FFA0 command lane. Predator Sense defines but never calls this
 command. Command 2F 00 and the original mode 1/0 were restored and verified. Windows sensors
 remain the motion source.
+
+## Back to XInput with verified auxiliary hiding (2026-10-28)
+
+DInput was abandoned because front-key taps never arrive in it. The managed mode is now XInput 1
+with rear Combination 1. With WSGM and Steam stopped and the maintainer's drivers freshly updated,
+an attended trial hid F901 MI_01/COL01, MI_02/COL05, MI_02/COL04 and MI_02/COL03 one at a time.
+After each step the maintainer typed a confirmation through the keyboard path, and again with all
+four hidden. Steam then enumerated exactly one controller, the XInput pad. The profile lists these
+four exact leaves as AuxiliaryHidCollections, the only identities allowed past the
+keyboard-interface guard. WSGM remains allowed to read them for the command lane and QAM report.
+The earlier keyboard losses remain unexplained; if they recur, remove this list first.

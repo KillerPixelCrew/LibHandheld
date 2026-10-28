@@ -189,6 +189,11 @@ internal sealed record StandardControllerProfile(IReadOnlyList<ControllerUsbId> 
     internal Func<LibHandheld.Internal.Windows.HidCollection, IReadOnlyList<PhysicalDeviceIdentity>>?
         HidCompanions { get; init; }
     internal IReadOnlyList<ControllerUsbId> CompanionUsbIds { get; init; } = [];
+    /// <summary>
+    ///     Exact instance-path fragments of auxiliary HID leaves that clients list as extra pads, each
+    ///     verified in an attended keyboard trial. Only these may pass the keyboard-interface guard.
+    /// </summary>
+    internal IReadOnlyList<string> AuxiliaryHidCollections { get; init; } = [];
 }
 
 internal sealed record HidControllerProfile(

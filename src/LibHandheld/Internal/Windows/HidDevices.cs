@@ -304,6 +304,32 @@ internal static partial class HidDevices
         ];
     }
 
+    /// <summary>The pad's auxiliary HID leaves named by exact instance-path fragments, present or not.</summary>
+    /// <param name="vendorId">The USB vendor ID.</param>
+    /// <param name="productIds">Every product ID the pad enumerates under.</param>
+    /// <param name="location">The pad's composite location; nodes elsewhere belong to another device.</param>
+    /// <param name="fragments">Fragments such as <c>&amp;PID_F901&amp;MI_02&amp;COL03\</c>.</param>
+    /// <returns>The identities of HID-class nodes that contain one of the fragments.</returns>
+    public static IReadOnlyList<PhysicalDeviceIdentity> AuxiliaryNodes(ushort vendorId,
+        IReadOnlyCollection<ushort> productIds, string location, IReadOnlyList<string> fragments)
+    {
+        if (fragments.Count == 0 || string.IsNullOrWhiteSpace(location))
+        {
+            return [];
+        }
+
+        return
+        [
+            .. KnownNodes(vendorId, productIds)
+                .Where(node => node.ClassGuid == HidClass
+                               && fragments.Any(fragment =>
+                                   node.InstancePath.Contains(fragment, StringComparison.OrdinalIgnoreCase))
+                               && !string.IsNullOrWhiteSpace(node.PhysicalLocation)
+                               && SamePhysicalLocation(node.PhysicalLocation, location))
+                .Select(PhysicalIdentities.FromNode)
+        ];
+    }
+
     private static IReadOnlyList<DeviceNode> Nodes(ushort vendorId, IReadOnlyCollection<ushort> productIds,
         uint flags)
     {

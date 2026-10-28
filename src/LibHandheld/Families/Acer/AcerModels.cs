@@ -54,6 +54,13 @@ internal static class AcerModels
                 CanonicalButtons.None, CanonicalButtons.None, CanonicalButtons.None,
                 CanonicalButtons.None, CanonicalButtons.None
             ], LeftTriggerButton: 0, RightTriggerButton: 0),
+            // Steam's SDL lists these XInput-topology leaves as extra Xbox pads. Each was hidden one
+            // at a time on 2026-10-28 with the keyboard confirmed after every step; see PROVENANCE.md.
+            AuxiliaryHidCollections =
+            [
+                "&PID_F901&MI_01&COL01\\", "&PID_F901&MI_02&COL03\\", "&PID_F901&MI_02&COL04\\",
+                "&PID_F901&MI_02&COL05\\"
+            ],
             OpenHidRumble = collection => new AcerDInputRumble(collection),
             HidCompanions = AcerInputProtocol.DInputCompanions,
             // Attended Device Lab calibration; see PROVENANCE.md for the report and trial limits.
