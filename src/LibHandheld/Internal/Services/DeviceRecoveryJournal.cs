@@ -238,6 +238,17 @@ internal sealed class DeviceRecoveryJournal
         }
     }
 
+    /// <summary>Classifies a restore by its readback: matched, mismatched, or not observable.</summary>
+    internal static DeviceRecoveryStatus RestoreStatus(bool? verified)
+    {
+        return verified switch
+        {
+            true => DeviceRecoveryStatus.RestoredVerified,
+            false => DeviceRecoveryStatus.RestoreFailed,
+            null => DeviceRecoveryStatus.RestoredUnverified
+        };
+    }
+
     /// <summary>An accepted restore retires the original; a failed restore keeps it for crash recovery.</summary>
     public async ValueTask SetStatusAsync(string id, DeviceRecoveryStatus status, CancellationToken token)
     {

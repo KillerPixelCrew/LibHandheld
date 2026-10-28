@@ -107,7 +107,7 @@ internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
         return kept | Pl1Enable | Pl2Enable | (sustainedUnits & Pl1Power) | (((ulong)boostUnits << 32) & Pl2Power);
     }
 
-    private static ulong ReadMsr(IPawnIoModule module, long msr)
+    internal static ulong ReadMsr(IPawnIoModule module, long msr)
     {
         var reply = module.Execute("ioctl_read_msr", [msr], outputWords: 1);
         return reply.Length == 1

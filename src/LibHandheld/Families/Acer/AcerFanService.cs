@@ -322,12 +322,9 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
     private async ValueTask RestoreAsync(AcerFan fan, AcerFanOriginal original, CancellationToken token)
     {
         // Unknown prior behavior returns cooling to firmware control. It is never an exact restore.
-        var behavior = original.Behavior is >= 1 and <= 3 ? original.Behavior.Value : 1;
-        if (original.Behavior is not (>= 1 and <= 3) || behavior == 3 && original.Speed is not (>= 0 and <= 100))
-        {
-            _inexactRestore = true;
-            behavior = 1;
-        }
+        var exact = original.Behavior is 1 or 2 || original.Behavior == 3 && original.Speed is >= 0 and <= 100;
+        var behavior = exact ? original.Behavior!.Value : 1;
+        _inexactRestore |= !exact;
 
         Write("SetGamingFanBehavior", fan.PackBehavior(behavior), token);
         if (behavior == 3 && original.Speed is { } speed)
@@ -338,7 +335,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context) : ProfiledF
         var restored = Capture(fan);
         var verified = original.Behavior == restored.Behavior
                        && (behavior != 3 || original.Speed == restored.Speed)
-                       && original.Behavior is >= 1 and <= 3;
+                       && exact;
         _inexactRestore |= !verified;
 
         await context.Journal.SetStatusAsync(RecoveryId(fan),

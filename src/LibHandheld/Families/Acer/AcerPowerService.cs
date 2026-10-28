@@ -56,11 +56,42 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
             return Set(DeviceServiceState.Passive, Missing("The Atlas EC HID collection is absent."));
         }
 
+        if (_descriptors.Count == 0)
+        {
+            _descriptors = BuildDescriptors(token);
+        }
+
+        await context.Journal.ReconcileAsync<AcerProfileOriginal>(ProfileRecoveryId, context.Firmware,
+            RestoreProfileAsync, token).ConfigureAwait(false);
+        await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
+            RestoreModeAsync, token).ConfigureAwait(false);
+        ReadCurrent(token);
+        return Set(DeviceServiceState.Owned);
+    }
+
+    /// <summary>Re-reads the active mode and its profile limits, on the observation pass and after each command.</summary>
+    /// <remarks>
+    ///     Firmware can change the active profile without WSGM (mode key, power source, resume). Without
+    ///     this pass the published PL1/PL2 stayed at whatever acquisition or the last command saw.
+    /// </remarks>
+    internal override ValueTask RefreshAsync(CancellationToken token)
+    {
+        if (_ec is not null && State == DeviceServiceState.Owned)
+        {
+            ReadCurrent(token);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    /// <summary>Reads firmware limits once per service lifetime; resume keeps the first visibility decision.</summary>
+    private List<CapabilityDescriptor> BuildDescriptors(CancellationToken token)
+    {
         // Data version describes the wire format, not the firmware identity. An unavailable
         // getter must not disable mode writes or retire an original bound to the captured BIOS.
         try
         {
-            var versionReply = _ec.Exchange([0, 0xA0, 0, 0, 0], token);
+            var versionReply = _ec!.Exchange([0, 0xA0, 0, 0, 0], token);
             var firstVersion = BinaryPrimitives.ReadUInt16LittleEndian(versionReply.AsSpan(4));
             var secondVersion = BinaryPrimitives.ReadUInt16LittleEndian(versionReply.AsSpan(6));
             var version = secondVersion != ushort.MaxValue && (firstVersion & 0xFF) == 0 ? secondVersion : firstVersion;
@@ -84,9 +115,9 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         // Limits are firmware capabilities, not desktop fallback values or guessed CPU limits.
         try
         {
-            var minimum = _descriptors.Count == 0 ? ReadLimit(selector: 1, token) : 0;
-            var maximum = _descriptors.Count == 0 ? ReadLimit(selector: 2, token) : 0;
-            var boostMaximum = _descriptors.Count == 0 ? ReadLimit(selector: 4, token) : 0;
+            var minimum = ReadLimit(selector: 1, token);
+            var maximum = ReadLimit(selector: 2, token);
+            var boostMaximum = ReadLimit(selector: 4, token);
             if (minimum > 0 && maximum >= minimum && boostMaximum >= maximum && boostMaximum <= 200)
             {
                 descriptors.Add(ProviderControls.Integer(CapabilityIds.PowerSustained,
@@ -118,31 +149,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
             DeviceTrace.Warn(ServiceId, $"Firmware power limits unavailable: {exception.Message}");
         }
 
-        if (_descriptors.Count == 0)
-        {
-            _descriptors = descriptors;
-        }
-        await context.Journal.ReconcileAsync<AcerProfileOriginal>(ProfileRecoveryId, context.Firmware,
-            RestoreProfileAsync, token).ConfigureAwait(false);
-        await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
-            RestoreModeAsync, token).ConfigureAwait(false);
-        ReadCurrent(token);
-        return Set(DeviceServiceState.Owned);
-    }
-
-    /// <summary>Re-reads the active mode and its profile limits, on the observation pass and after each command.</summary>
-    /// <remarks>
-    ///     Firmware can change the active profile without WSGM (mode key, power source, resume). Without
-    ///     this pass the published PL1/PL2 stayed at whatever acquisition or the last command saw.
-    /// </remarks>
-    internal override ValueTask RefreshAsync(CancellationToken token)
-    {
-        if (_ec is not null && State == DeviceServiceState.Owned)
-        {
-            ReadCurrent(token);
-        }
-
-        return ValueTask.CompletedTask;
+        return descriptors;
     }
 
     // The stock EC profiles all keep PL2 at 65 W and their readouts did not match the platform's
@@ -187,8 +194,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         byte[]? manual = null;
         try
         {
-            var reply = _ec!.Exchange([0, 0xA0, 1, 0, 2], token);
-            _mode = reply[4] <= 3 ? reply[4] : null;
+            _mode = ReadMode(token);
             _observed.Read(ModeId, _mode is { } mode ? CapabilityValue.Choice(ModeName(mode)) : null);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
@@ -224,6 +230,13 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         {
             DeviceTrace.Warn(ServiceId, $"Active power profile unavailable: {exception.Message}");
         }
+    }
+
+    /// <summary>Reads the active firmware mode; values above Manual are unknown.</summary>
+    private int? ReadMode(CancellationToken token)
+    {
+        var mode = _ec!.Exchange([0, 0xA0, 1, 0, 2], token)[4];
+        return mode <= 3 ? mode : null;
     }
 
     private byte[] ReadProfile(byte selector, CancellationToken token)
@@ -346,8 +359,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         await context.Journal.BeginAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
             () =>
             {
-                var reply = _ec!.Exchange([0, 0xA0, 1, 0, 2], token);
-                return reply[4] <= 3 ? new AcerModeOriginal { Mode = reply[4] } : null;
+                return ReadMode(token) is { } mode ? new AcerModeOriginal { Mode = mode } : null;
             }, token).ConfigureAwait(false);
         if (!context.Journal.HoldsOriginal(ModeRecoveryId, context.Firmware))
         {
@@ -396,9 +408,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         }
 
         _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ProfileRecoveryId,
-            verified == true ? DeviceRecoveryStatus.RestoredVerified
-                : verified == false ? DeviceRecoveryStatus.RestoreFailed : DeviceRecoveryStatus.RestoredUnverified,
+        await context.Journal.SetStatusAsync(ProfileRecoveryId, DeviceRecoveryJournal.RestoreStatus(verified),
             CancellationToken.None).ConfigureAwait(false);
     }
 
@@ -414,7 +424,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         bool? verified = null;
         try
         {
-            verified = _ec!.Exchange([0, 0xA0, 1, 0, 2], token)[4] == original.Mode;
+            verified = ReadMode(token) == original.Mode;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -422,9 +432,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, Func<IAce
         }
 
         _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ModeRecoveryId,
-            verified == true ? DeviceRecoveryStatus.RestoredVerified
-                : verified == false ? DeviceRecoveryStatus.RestoreFailed : DeviceRecoveryStatus.RestoredUnverified,
+        await context.Journal.SetStatusAsync(ModeRecoveryId, DeviceRecoveryJournal.RestoreStatus(verified),
             CancellationToken.None).ConfigureAwait(false);
     }
 

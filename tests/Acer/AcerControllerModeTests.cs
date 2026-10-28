@@ -145,10 +145,9 @@ public sealed class AcerControllerModeTests
 
         public ValueTask<AcerControllerMode> ReadModeAsync(CancellationToken token) => ValueTask.FromResult(Mode);
 
-        public ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token, Action dispatched)
+        public ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
-            dispatched();
             Writes++;
             if (!IgnoreWrites)
             {

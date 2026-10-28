@@ -118,13 +118,8 @@ public sealed class AcerPowerTests
         Assert.Equal(new[] { "quiet", "balanced", "turbo", "full-power" }, presets.Select(preset => preset.Id));
         Assert.Equal(new[] { (20, 20), (25, 37), (30, 37) },
             presets.Take(3).Select(preset => (preset.SustainedWatts, preset.SlowWatts)));
-        Assert.All(presets, preset =>
-        {
-            Assert.False(preset.FirmwareManaged);
-            Assert.Equal("manual", preset.ScenarioOnAc);
-        });
+        Assert.All(presets, preset => Assert.Equal("manual", preset.ScenarioOnAc));
         var full = presets.Last();
-        Assert.False(full.FirmwareManaged);
         Assert.Equal(40, full.SustainedWatts);
         Assert.Equal(65, full.SlowWatts);
         Assert.Equal("manual", full.ScenarioOnAc);

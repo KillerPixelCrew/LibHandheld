@@ -19,10 +19,7 @@ internal static class AcerModels
     internal static ProfiledDeviceModel Atlas8 { get; } = new()
     {
         Definition = new HandheldDefinition("acer-predator-atlas-8-pa08-i51", FamilyId,
-            "Acer Predator Atlas 8 (PA08-I51)", "acer-predator-atlas-8")
-        {
-            HardwareAccess = DeviceHardwareAccess.PawnIo
-        },
+            "Acer Predator Atlas 8 (PA08-I51)", "acer-predator-atlas-8"),
         SourceFamilyId = "PredatorAtlas8",
         IdentitySource = ProfileIdentitySource.System,
         Manufacturers = ["Acer"],
@@ -63,7 +60,7 @@ internal static class AcerModels
             ],
             OpenHidRumble = collection => new AcerDInputRumble(collection),
             HidCompanions = AcerInputProtocol.DInputCompanions,
-            // Attended Device Lab calibration; see PROVENANCE.md for the report and trial limits.
+            // Attended calibration; see PROVENANCE.md for the report and trial limits.
             // XInput low/high reach the left/right grips without swapping. The host applies the 2%
             // floor and 5 ms minimum only to bounded haptic events; continuous rumble is unchanged.
             // 5 ms was the shortest offered trial, not a measured hardware limit below that value.

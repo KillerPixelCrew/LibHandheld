@@ -47,13 +47,13 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
         },
         new()
         {
-            CapabilityId = "lighting.color", InstanceId = "main", Role = CapabilityRole.LightingZoneColor,
+            CapabilityId = CapabilityIds.LightingColor, InstanceId = "main", Role = CapabilityRole.LightingZoneColor,
             Display = CapabilityDescriptors.Label("All ring segments"), ValueKind = CapabilityValueKind.Color,
             SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
         },
         .. Zones.Select(zone => new CapabilityDescriptor
         {
-            CapabilityId = "lighting.color", InstanceId = zone.Id, Role = CapabilityRole.LightingZoneColor,
+            CapabilityId = CapabilityIds.LightingColor, InstanceId = zone.Id, Role = CapabilityRole.LightingZoneColor,
             Display = CapabilityDescriptors.Label(zone.Name), ValueKind = CapabilityValueKind.Color,
             SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
         })
@@ -135,12 +135,12 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
             uniform &= colors[..3].SequenceEqual(colors.Slice(index, 3));
         }
 
-        Store("lighting.color", uniform ? CapabilityValue.Color((colors[0] << 16) | (colors[1] << 8) | colors[2]) : null,
+        Store(CapabilityIds.LightingColor, uniform ? CapabilityValue.Color((colors[0] << 16) | (colors[1] << 8) | colors[2]) : null,
             written, instance: "main");
         foreach (var zone in Zones)
         {
             var rgb = colors.Slice(zone.Index * 3, 3);
-            Store("lighting.color", CapabilityValue.Color((rgb[0] << 16) | (rgb[1] << 8) | rgb[2]),
+            Store(CapabilityIds.LightingColor, CapabilityValue.Color((rgb[0] << 16) | (rgb[1] << 8) | rgb[2]),
                 written, instance: zone.Id);
         }
     }
@@ -188,7 +188,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
                     lighting.AsSpan(offset + 4 + 27, 24).Clear();
                 }
                 break;
-            case "lighting.color":
+            case CapabilityIds.LightingColor:
                 var color = command.RequestedValue!.ColorValue!.Value;
                 var shared = command.InstanceId is null or "main";
                 var zoneIndex = Array.FindIndex(Zones, zone => zone.Id == command.InstanceId);
@@ -272,10 +272,4 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context) : Prof
 
         _lighting = null;
     }
-}
-
-/// <summary>Lighting original journaled by earlier builds; kept so their recovery files still load and retire.</summary>
-internal sealed record AcerLightingOriginal
-{
-    public byte[] Lighting { get; init; } = [];
 }

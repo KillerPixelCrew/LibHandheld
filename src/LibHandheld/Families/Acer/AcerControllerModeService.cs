@@ -55,7 +55,7 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
         if (original != Managed)
         {
             await context.Journal.BeginAsync(ServiceId, context.Firmware, original, token).ConfigureAwait(false);
-            await _transport.WriteModeAsync(Managed, token, () => { }).ConfigureAwait(false);
+            await _transport.WriteModeAsync(Managed, token).ConfigureAwait(false);
         }
 
         return Set(DeviceServiceState.Owned);
@@ -65,7 +65,7 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
     /// <remarks>An absent observation is RestoredUnverified; a differing pair is RestoreFailed and remains journaled.</remarks>
     private async ValueTask RestoreAsync(AcerControllerMode original, CancellationToken token)
     {
-        await _transport!.WriteModeAsync(original, token, () => { }).ConfigureAwait(false);
+        await _transport!.WriteModeAsync(original, token).ConfigureAwait(false);
         bool? verified = null;
         try
         {
@@ -77,9 +77,7 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
         }
 
         _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ServiceId,
-            verified == true ? DeviceRecoveryStatus.RestoredVerified
-                : verified == false ? DeviceRecoveryStatus.RestoreFailed : DeviceRecoveryStatus.RestoredUnverified,
+        await context.Journal.SetStatusAsync(ServiceId, DeviceRecoveryJournal.RestoreStatus(verified),
             CancellationToken.None).ConfigureAwait(false);
     }
 

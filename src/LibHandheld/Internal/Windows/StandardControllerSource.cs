@@ -115,8 +115,8 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
         ushort[] products = [.. profile.UsbIds.Where(id => id.Vendor == vendor).Select(id => id.Product)];
         return
         [
-            .. present.Concat(HidDevices.KnownControllerNodes(vendor, products, location))
-                .Concat(HidDevices.AuxiliaryNodes(vendor, products, location, profile.AuxiliaryHidCollections))
+            .. present.Concat(HidDevices.KnownControllerNodes(vendor, products, location,
+                    profile.AuxiliaryHidCollections))
                 .DistinctBy(device => device.InstancePath, StringComparer.OrdinalIgnoreCase)
         ];
     }

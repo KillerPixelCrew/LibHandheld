@@ -20,7 +20,6 @@ internal sealed class AcerButtonSource : IProfiledOemSource
     private readonly HidReportSource _qam = new();
     private AcerButtonState? _state;
     private HidUsageReader? _dinputDecoder;
-    private bool _dinput;
 
     /// <summary>Semantic front/rear controls; action assignments and companion-app suppression belong to the host.</summary>
     internal static IReadOnlyList<OemControlDescriptor> Controls { get; } =
@@ -41,7 +40,7 @@ internal sealed class AcerButtonSource : IProfiledOemSource
             RequiresControllerAcquisition = true
         }).ToArray();
 
-    public bool IsConnected => _vendor.IsConnected && (_dinput || _qam.IsConnected);
+    public bool IsConnected => _vendor.IsConnected && (_dinputDecoder is not null || _qam.IsConnected);
 
     /// <summary>Opens one exact vendor/QAM pair and starts allocation-free report handlers for their measured lengths.</summary>
     /// <remarks>Absent/ambiguous or mismatched locations return false. Partial startup tears down both readers and held edges.</remarks>
@@ -52,7 +51,6 @@ internal sealed class AcerButtonSource : IProfiledOemSource
             item => item is { ReleaseNumber: 0x0100, UsagePage: 1, Usage: 5, InputLength: 64, OutputLength: 32 });
         if (dinput is not null)
         {
-            _dinput = true;
             _state = new AcerButtonState(publish);
             var stream = HidDevices.OpenStream(dinput);
             try
@@ -123,7 +121,6 @@ internal sealed class AcerButtonSource : IProfiledOemSource
         _state = null;
         _dinputDecoder?.Dispose();
         _dinputDecoder = null;
-        _dinput = false;
     }
 
     private void HandleDInputReport(ReadOnlySpan<byte> report)

@@ -175,9 +175,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         }
 
         _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ServiceId,
-            verified == true ? DeviceRecoveryStatus.RestoredVerified
-                : verified == false ? DeviceRecoveryStatus.RestoreFailed : DeviceRecoveryStatus.RestoredUnverified,
+        await context.Journal.SetStatusAsync(ServiceId, DeviceRecoveryJournal.RestoreStatus(verified),
             CancellationToken.None).ConfigureAwait(false);
     }
 

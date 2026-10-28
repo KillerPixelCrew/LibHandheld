@@ -31,16 +31,20 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
 
     internal ushort Release { get; }
 
+    private void FlushReplies()
+    {
+        if (!NativeHid.HidD_FlushQueue(_stream.SafeFileHandle))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Atlas controller input queue could not be flushed.");
+        }
+    }
+
     /// <summary>Discards stale command replies, sends query 26 and reads the gamepad/rear-key bytes from reply 27.</summary>
     /// <remarks>Reply bytes 5 and 6 are the two owned modes; other returned mode/status bytes are not rewritten.</remarks>
     public async ValueTask<AcerControllerMode> ReadModeAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        if (!NativeHid.HidD_FlushQueue(_stream.SafeFileHandle))
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Atlas controller input queue could not be flushed.");
-        }
-
+        FlushReplies();
         var reply = await HidDevices.ExchangeAsync(_stream, ModePacket(), responseLength: 64,
             data => data[0] == 0x10 && data[3] == 0x3C && data[4] == 0x27,
             timeout: TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
@@ -51,15 +55,14 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
 
     /// <summary>Writes immediate command 24 with gamepad and rear-key modes, followed by the vendor's 20 ms pacing.</summary>
     /// <remarks>
-    ///     The callback runs immediately before the stream write. There is no acknowledgement/retry in
-    ///     this method; recovery reads the mode separately. Cancellation can reject before dispatch but
-    ///     must not be interpreted as proof that a submitted mode change did not happen.
+    ///     There is no acknowledgement/retry in this method; recovery reads the mode separately.
+    ///     Cancellation can reject before dispatch but must not be interpreted as proof that a submitted
+    ///     mode change did not happen.
     /// </remarks>
-    public async ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token, Action dispatched)
+    public async ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token)
     {
         var packet = ModePacket(mode);
         token.ThrowIfCancellationRequested();
-        dispatched();
         await _stream.WriteAsync(packet, token).ConfigureAwait(false);
         await _stream.FlushAsync(token).ConfigureAwait(false);
         await Task.Delay(millisecondsDelay: 20, CancellationToken.None).ConfigureAwait(false);
@@ -131,11 +134,7 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         token.ThrowIfCancellationRequested();
         // This dedicated command handle also receives other clients' query replies. Discard
         // already queued input before requesting a fresh snapshot; never flush an OEM reader.
-        if (!NativeHid.HidD_FlushQueue(_stream.SafeFileHandle))
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Atlas controller input queue could not be flushed.");
-        }
-
+        FlushReplies();
         var lighting = new byte[LightingLength];
         for (var offset = 0; offset < lighting.Length; offset += 55)
         {
@@ -245,5 +244,5 @@ internal sealed record AcerControllerMode(byte Gamepad, byte RearKeys);
 internal interface IAcerControllerModeTransport : IAsyncDisposable
 {
     ValueTask<AcerControllerMode> ReadModeAsync(CancellationToken token);
-    ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token, Action dispatched);
+    ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token);
 }

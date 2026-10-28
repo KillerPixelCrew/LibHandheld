@@ -20,7 +20,7 @@ public sealed class AcerLightingTests
     {
         var retained = Lighting();
         retained[1] = 4;
-        var changed = AcerLightingService.Edit(retained, Command("lighting.color", CapabilityValue.Color(0x123456)));
+        var changed = AcerLightingService.Edit(retained, Command("lighting.zone-color", CapabilityValue.Color(0x123456)));
         Assert.Equal(1, changed[1]);
         for (var index = 0; index < 8; index++)
         {
@@ -45,7 +45,7 @@ public sealed class AcerLightingTests
     public void SpatialColorChangesOnlyItsMeasuredSlot(string zone, int index)
     {
         var retained = Lighting();
-        var command = Command("lighting.color", CapabilityValue.Color(0x123456)) with { InstanceId = zone };
+        var command = Command("lighting.zone-color", CapabilityValue.Color(0x123456)) with { InstanceId = zone };
         var changed = AcerLightingService.Edit(retained, command);
         var expected = (byte[])retained.Clone();
         new byte[] { 0x12, 0x34, 0x56 }.CopyTo(expected, 5 + index * 3);
@@ -56,7 +56,7 @@ public sealed class AcerLightingTests
     public void UnassignedSlotCannotBecomeAUserZone()
     {
         Assert.Throws<ArgumentException>(() => AcerLightingService.Edit(Lighting(),
-            Command("lighting.color", CapabilityValue.Color(0x123456)) with { InstanceId = "slot-9" }));
+            Command("lighting.zone-color", CapabilityValue.Color(0x123456)) with { InstanceId = "slot-9" }));
     }
 
     [Fact]

@@ -38,10 +38,6 @@ public sealed record DevicePowerPreset(
     /// <summary>Optional independent fast-PPT target; when omitted on a three-limit device, use SlowWatts.</summary>
     public int? FastWatts { get; init; }
 
-    /// <summary>Selects the complete firmware scenario without overwriting its internal power or cooling table.</summary>
-    /// <remarks>Both scenario choices are required. Watt fields are zero placeholders and are not commands.</remarks>
-    public bool FirmwareManaged { get; init; }
-
     /// <summary>Optional ScenarioMode choice applied before watt limits on AC power.</summary>
     /// <remarks>
     ///     Declare both scenario targets or neither. Choices belong to the single readable,
@@ -85,13 +81,10 @@ public sealed record DevicePowerPreset(
                                    || preset.Id == "custom" ||
                                    !ids.Add(preset.Id) || string.IsNullOrWhiteSpace(preset.Name)
                                    || !Enum.IsDefined(preset.WindowsMode)
-                                   || (preset.FirmwareManaged
-                                       ? preset.SustainedWatts != 0 || preset.SlowWatts != 0
-                                         || preset.FastWatts is not null || preset.ScenarioOnAc is null || preset.ScenarioOnDc is null
-                                       : preset.SustainedWatts > preset.SlowWatts
-                                         || !DevicePowerPair.Fits(preset.SustainedWatts, descriptor)
-                                         || !DevicePowerPair.Fits(preset.SlowWatts, slow[0])
-                                         || !ValidFast(preset, descriptors))
+                                   || preset.SustainedWatts > preset.SlowWatts
+                                   || !DevicePowerPair.Fits(preset.SustainedWatts, descriptor)
+                                   || !DevicePowerPair.Fits(preset.SlowWatts, slow[0])
+                                   || !ValidFast(preset, descriptors)
                                    || !ValidScenario(preset, descriptors)))
             {
                 return false;

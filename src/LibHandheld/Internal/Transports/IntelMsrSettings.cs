@@ -86,8 +86,6 @@ internal sealed class IntelMsrSettings(IPawnIoModule module) : IDisposable
 
     private ulong Read()
     {
-        var reply = module.Execute("ioctl_read_msr", [Mailbox], outputWords: 1);
-        return reply.Length == 1 ? unchecked((ulong)reply[0])
-            : throw new IOException("The IntelMSR module returned no OC mailbox value.");
+        return IntelMsrPowerTransport.ReadMsr(module, Mailbox);
     }
 }
