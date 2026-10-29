@@ -14,8 +14,8 @@ namespace LibHandheld.Families.Acer;
 ///     EC command 0001 selects the profile; command 0002 reads or writes
 ///     profile 3 and its limits. PL1/PL2 are unsigned little-endian integer watts at payload offsets
 ///     6/10. The other fields in the 25-byte profile snapshot are opaque and must survive edits.
-///     Bounds come from firmware selectors 1/2/4, not the CPU specification or experimentally accepted
-///     values. The manual profile and active mode have separate firmware-bound recovery records.
+///     Maxima come from firmware selectors 2/4. The PL1 floor is the lower of selector 1 and the
+///     attended 8 W. The manual profile and active mode have separate firmware-bound recovery records.
 /// </remarks>
 internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec)
     : ProfiledFeatureService("acer-power")
@@ -23,6 +23,10 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
     private const string ModeId = CapabilityIds.Scenario;
     private const string ProfileRecoveryId = "acer.manual-profile";
     private const string ModeRecoveryId = "acer.operating-mode";
+
+    // Selector 1 advertises 10 W, but Manual stores 8 W and the maintainer confirmed it runs on the
+    // PA08-I51. Intel's Arc G3 configurable TDP also starts at 8 W.
+    private const int AttendedMinimumWatts = 8;
     private readonly ObservedValues _observed = new();
     private IAcerEcTransport? _ec;
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
@@ -115,10 +119,10 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
                 Choices = CapabilityDescriptors.Choices(["turbo", "balanced", "quiet", "manual"])
             }
         ];
-        // Limits are firmware capabilities, not desktop fallback values or guessed CPU limits.
+        // Maxima are firmware capabilities, not desktop fallback values or guessed CPU limits.
         try
         {
-            var minimum = ReadLimit(selector: 1, token);
+            var minimum = Math.Min(ReadLimit(selector: 1, token), AttendedMinimumWatts);
             var maximum = ReadLimit(selector: 2, token);
             var boostMaximum = ReadLimit(selector: 4, token);
             if (minimum > 0 && maximum >= minimum && boostMaximum >= maximum && boostMaximum <= 200)
@@ -130,6 +134,12 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
                     PairedPowerLimitId = CapabilityIds.PowerBoost,
                     PowerPresets =
                     [
+                        ManualPreset("battery-saver", "Battery Saver", 8, 8, DevicePowerMode.BetterBattery,
+                            minimum, maximum, boostMaximum),
+                        ManualPreset("efficiency", "Efficiency", 12, 15, DevicePowerMode.BetterBattery,
+                            minimum, maximum, boostMaximum),
+                        ManualPreset("light", "Light", 15, 20, DevicePowerMode.BetterBattery,
+                            minimum, maximum, boostMaximum),
                         ManualPreset("quiet", "Quiet", 20, 20, DevicePowerMode.BetterBattery,
                             minimum, maximum, boostMaximum),
                         ManualPreset("balanced", "Balanced", 25, 37, DevicePowerMode.Balanced,
@@ -156,8 +166,9 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
     }
 
     // The stock EC profiles all keep PL2 at 65 W and their readouts did not match the platform's
-    // limits, so presets write explicit PL1/PL2 through Manual. Values are HandheldCompanion's
-    // Arc G3 (ClawCG3EM) table after its 20 W floor; Full Power keeps the firmware maximum.
+    // limits, so presets write explicit PL1/PL2 through Manual. Quiet, Balanced and Turbo are
+    // HandheldCompanion's Arc G3 (ClawCG3EM) table after the Claw's 20 W floor, which the Atlas
+    // lacks; the lower tiers reach its 8 W floor. Full Power keeps the firmware maximum.
     private static DevicePowerPreset ManualPreset(string id, string name, int sustained, int slow,
         DevicePowerMode windowsMode, int minimum, int maximum, int boostMaximum)
     {

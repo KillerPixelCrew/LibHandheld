@@ -537,3 +537,14 @@ second channel at 0x68/0x6C. ACPI exposes no fan output field, only RPM (`CPUF`,
 No EC write was attempted.
 
 Rewriting `SetGamingFanBehavior` 3 every second keeps a manual fan at the absolute command indefinitely: both fans held about 1750 RPM at command 25 for 25 s, including while the CPU read 95 degrees C, and a 25 -> 60 -> 25 step settled within about 8 s. A 3 s cadence oscillated between 1700 and 2650 RPM, and rewriting only the speed did not hold. Each manual fan needs its own re-arm; holding only the left fan let the right fan drift back to about 3900 RPM. Held speeds were linear at about 70 RPM per percent (10: 780, 15: 1040, 25: 1750, 35: 2500, 100: 7000). Commands 5 and 0 stalled and restarted the fan repeatedly, so 10 is the lowest usable duty. Twenty consecutive behavior writes took 48 ms each including the 30 ms vendor pacing and produced no measurable all-core stall (2.5 ms maximum gap against a 4.1 ms idle baseline). The runtime now re-arms every held fan at 1 Hz. The firmware's own thermal protection did not intervene within the tested window, so the software curve is the only guard while a fan is held.
+
+## Lower power tiers (2026-10-29)
+
+The Quiet preset inherited the MSI Claw 8 EX's 20 W floor, which the Atlas does not have. Selector 1
+still advertises a 10 W PL1 minimum, but Manual already stored unified 8 and 9 W in the 2026-10-27
+range test, Intel's Arc G3 configurable TDP starts at 8 W, and the maintainer confirmed on the
+PA08-I51 that 8 W works. Both limits now accept the lower of selector 1 and 8 W; the maxima still
+come from selectors 2 and 4. Three tiers sit below Quiet, all through Manual 3 with Windows Better
+battery: Battery Saver 8/8, Efficiency 12/15 and Light 15/20 W. Quiet 20/20, Balanced 25/37, Turbo
+30/37 and Full Power 40/65 W keep their ids and values. No instrumented package-power sweep below
+25 W has been recorded.

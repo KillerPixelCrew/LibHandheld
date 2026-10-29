@@ -128,13 +128,17 @@ public sealed class AcerPowerTests
         var service = new AcerPowerService(context, () => ec);
         var cycle = Cycle(context);
         await service.AcquireAsync(cycle, CancellationToken.None);
-        Assert.Equal(10, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Minimum);
+        // Selector 1 advertises 10 W; the attended 8 W floor is lower.
+        Assert.Equal(8, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Minimum);
         Assert.Equal(40, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Maximum);
+        Assert.Equal(8, service.Descriptors.Single(item => item.CapabilityId == "power.boost-limit").Minimum);
         Assert.Equal(65, service.Descriptors.Single(item => item.CapabilityId == "power.boost-limit").Maximum);
+        Assert.True(DevicePowerPreset.TryValidate(service.Descriptors, out _));
         var presets = service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").PowerPresets;
-        Assert.Equal(new[] { "quiet", "balanced", "turbo", "full-power" }, presets.Select(preset => preset.Id));
-        Assert.Equal(new[] { (20, 20), (25, 37), (30, 37) },
-            presets.Take(3).Select(preset => (preset.SustainedWatts, preset.SlowWatts)));
+        Assert.Equal(new[] { "battery-saver", "efficiency", "light", "quiet", "balanced", "turbo", "full-power" },
+            presets.Select(preset => preset.Id));
+        Assert.Equal(new[] { (8, 8), (12, 15), (15, 20), (20, 20), (25, 37), (30, 37) },
+            presets.SkipLast(1).Select(preset => (preset.SustainedWatts, preset.SlowWatts)));
         Assert.All(presets, preset => Assert.Equal("manual", preset.ScenarioOnAc));
         var full = presets.Last();
         Assert.Equal(40, full.SustainedWatts);

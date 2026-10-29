@@ -79,6 +79,9 @@ Neither the wider accepted storage range nor Intel's CPU specifications widen no
 controlled low/high load sweep remains unperformed; 1..80 W is not verified. The existing runtime
 already implements this policy, so no production power-code change was required for these findings.
 
+On 2026-10-29 the floor of both limits moved to 8 W after the maintainer confirmed 8 W on the device;
+see the [provenance](PROVENANCE.md#lower-power-tiers-2026-10-29). The maxima are unchanged.
+
 OCCT was obtained from its [official download page](https://www.ocbase.com/download-personal). The
 executable matched the published SHA256
 `64F403FB690AFA724B3BF31F439F8A29C81C34B4D3496A63456A9AB224E9599B` and had a valid OCBASE
