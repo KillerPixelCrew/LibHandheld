@@ -505,3 +505,35 @@ buttons, triggers, Task/Predator as Guide/Quick Access and the M1/M2 rear button
 sides, Windows motion, calibrated rumble, auxiliary-interface hiding without keyboard loss, the
 Predator Sense takeover and the Game Mode boot. The DInput path remains a fallback used only when the
 mode lane is unavailable; its button mapping has no separate attended acceptance.
+
+## Attended fan speed calibration (2026-10-29)
+
+Unit PA08-I51 on AC, EC power mode Manual (3), Acer services stopped, idle CPU 52..66 degrees C.
+Speeds were commanded through `AcerGamingFunction` and read at health indices 4 (left) and 8 (right)
+once per second; values below are settled medians. Every run ended with both fans in firmware Auto
+and the original power mode selected.
+
+The meaning of `SetGamingFanSpeed` depends on the left (`sys`) fan's behavior:
+
+| Left fan | Right fan | Settled response to command c                                     |
+| -------- | --------- | ----------------------------------------------------------------- |
+| Auto     | Manual    | Right is absolute, about 70 RPM per step: 25 -> 1770, 100 -> 7000 |
+| Manual   | either    | Each manual fan runs at about Auto + c x (7000 - Auto)            |
+
+With the left fan manual, both fans first fall toward the absolute target for about five seconds and
+then rise to the relative value. Behavior and speed getters keep reporting Manual and the commanded
+speed throughout, so firmware does not switch back to Auto. Command 0 stops a fan until firmware
+restarts it, repeatedly. The fans are independent and equal: L10/R100 settled at 3970/7012 and
+L100/R10 at 6955/3902. One combined behavior write behaves like two single writes. The CPU and GPU
+behavior lanes are rejected with status 0x1.
+
+The Auto floor is the firmware fan table that `_Q30` selects from power mode and AC state through EC
+`FANT`. Measured Auto: Quiet 2860, Balance 3550, Turbo 3645, Manual about 3600 RPM. This also
+explains the 2026-10-27 trial, where Auto was about 2800 and a left-only 50% gave about 4100.
+
+ACPI EC RAM is reachable through PawnIO `LpcACPIEC` on 0x62/0x66; offset 0x58 matched CTMP. Most
+reads time out while Windows' EC driver shares that channel, and the signed module refuses the
+second channel at 0x68/0x6C. ACPI exposes no fan output field, only RPM (`CPUF`, `GPUF`) and `FANT`.
+No EC write was attempted.
+
+Rewriting `SetGamingFanBehavior` 3 every second keeps a manual fan at the absolute command indefinitely: both fans held about 1750 RPM at command 25 for 25 s, including while the CPU read 95 degrees C, and a 25 -> 60 -> 25 step settled within about 8 s. A 3 s cadence oscillated between 1700 and 2650 RPM, and rewriting only the speed did not hold. Each manual fan needs its own re-arm; holding only the left fan let the right fan drift back to about 3900 RPM. Held speeds were linear at about 70 RPM per percent (10: 780, 15: 1040, 25: 1750, 35: 2500, 100: 7000). Commands 5 and 0 stalled and restarted the fan repeatedly, so 10 is the lowest usable duty. Twenty consecutive behavior writes took 48 ms each including the 30 ms vendor pacing and produced no measurable all-core stall (2.5 ms maximum gap against a 4.1 ms idle baseline). The runtime now re-arms every held fan at 1 Hz. The firmware's own thermal protection did not intervene within the tested window, so the software curve is the only guard while a fan is held.

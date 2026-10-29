@@ -211,3 +211,5 @@ returns their uint16 values at payload offset 7. These observations establish th
 readings, not a generic interpretation of every health index. Fan behavior readback remains unknown
 on this unit even when WMI commands are accepted. Auto fallback is safe cooling policy, not proof of
 exact original restoration.
+
+The 2026-10-29 calibration in PROVENANCE.md established that a speed command is absolute only while behavior 3 is re-armed about every second; otherwise the firmware adds the command to its automatic level a few seconds after the behavior write. Speed commands below 10 stall the fans.

@@ -1,31 +1,43 @@
 using System.Buffers.Binary;
-using System.Globalization;
-using System.Management;
+using System.Collections.Concurrent;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Acer;
 
 /// <summary>Firmware-discovered fan groups using Acer's WMI commands, without direct EC register access.</summary>
 /// <remarks>
 ///     Controls use root\WMI AcerGamingFunction; discovery, measured RPM and CPU temperature use the
-///     separate EC HID health command 0008. Thus fan duty is a firmware 0..100 command, not measured
-///     RPM or a calibrated PWM percentage. Auto and Max are distinct behaviors, not duty 0/100 aliases.
-///     Each discovered fan retains its own original behavior/speed before mutation. Unreadable originals
-///     never block control, but recovery falls back to firmware Auto and reports ReleasedUnverified.
+///     separate EC HID health command 0008. Duty is an absolute share of full speed, about 70 RPM per
+///     percent on the measured PA08-I51. The firmware applies a speed command absolutely only for a few
+///     seconds after a behavior write and then adds it to its own automatic level, so while WSGM owns a
+///     fan in manual the hold loop re-arms behavior 3 every second; the 2026-10-29 calibration in
+///     PROVENANCE.md shows that keeps both fans at the commanded speed. Auto and Max are distinct
+///     behaviors, not duty aliases. Each discovered fan retains its own original behavior/speed before
+///     mutation. Unreadable originals never block control, but recovery falls back to firmware Auto and
+///     reports ReleasedUnverified.
 /// </remarks>
-internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec)
+internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec,
+    Func<IAcerFanWmi?>? openWmi = null, Func<CancellationToken, ValueTask>? holdTick = null)
     : ProfiledFeatureService("acer-fans")
 {
+    /// <summary>Re-arm cadence; the firmware adds its automatic level about five seconds after a behavior write.</summary>
+    internal static readonly TimeSpan HoldInterval = TimeSpan.FromSeconds(1);
+
     private readonly ObservedValues _observed = new();
+    private readonly Lock _wmiGate = new();
+    private readonly HashSet<string> _held = [];
+    private readonly ConcurrentQueue<string> _lostHolds = new();
     private IReadOnlyList<AcerFan> _fans = [];
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
-    private ManagementObject? _wmi;
+    private IAcerFanWmi? _wmi;
     private IAcerEcTransport? _ec;
+    private CancellationTokenSource? _holdCancellation;
+    private Task _hold = Task.CompletedTask;
+    private bool _holdRunning;
     private bool _inexactRestore;
     private bool _topologyDecided;
     private bool _cpuTemperature;
@@ -37,6 +49,9 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
             Reason) with { InstanceId = item.InstanceId }).ToArray();
     public override bool Suspendable => true;
 
+    /// <summary>The running manual re-arm loop, completed while no fan is held.</summary>
+    internal Task HoldCompletion => _hold;
+
     /// <summary>Opens WMI/EC, decides topology once, reconciles each fan's original and samples observations.</summary>
     /// <remarks>Resume reuses the initially selected topology; telemetry/readback failures do not redefine controls.</remarks>
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
@@ -44,7 +59,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
     {
         token.ThrowIfCancellationRequested();
         _observed.Clear();
-        _wmi = WmiProvider.TryOpen("root\\WMI", "SELECT * FROM AcerGamingFunction");
+        _lostHolds.Clear();
+        _wmi = (openWmi ?? AcerFanWmi.TryOpen)();
         _ec = ec.Acquire();
         if (_wmi is null || _ec is null)
         {
@@ -69,7 +85,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
                 Choices = CapabilityDescriptors.Choices(["automatic", "full-speed", "custom"])
             },
             ProviderControls.Integer("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed,
-                minimum: 0, maximum: 100, CapabilityUnit.Percent, write: true) with
+                minimum: AcerFan.MinimumDuty, maximum: 100, CapabilityUnit.Percent, write: true) with
             {
                 InstanceId = fan.Id, Display = CapabilityDescriptors.Label($"{fan.Name} fan speed")
             },
@@ -107,6 +123,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
     {
         if (State == DeviceServiceState.Owned)
         {
+            DrainLostHolds();
             ObserveRpm(token);
         }
 
@@ -195,35 +212,32 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
         return fans;
     }
 
-    /// <summary>Invokes a fan getter with uint32 gmInput and retains the complete uint64 gmOutput.</summary>
+    /// <summary>Invokes a fan getter under the WMI gate shared with the hold loop.</summary>
     private ulong Read(string method, uint input)
     {
-        using var arguments = _wmi!.GetMethodParameters(method);
-        arguments["gmInput"] = input;
-        using var reply = WmiProvider.Invoke(_wmi, method, arguments);
-        return reply?["gmOutput"] is { } value
-            ? Convert.ToUInt64(value, CultureInfo.InvariantCulture)
-            : throw new IOException($"Acer {method} returned no value.");
+        lock (_wmiGate)
+        {
+            return (_wmi ?? throw new IOException("Acer fan WMI is closed.")).Read(method, input);
+        }
     }
 
     /// <summary>Invokes a packed uint64 setter, accepts a zero low status byte and applies 30 ms vendor pacing.</summary>
     /// <remarks>Cancellation is checked before invocation; missing/nonzero status after dispatch is effect unknown.</remarks>
     private void Write(string method, ulong input, CancellationToken token, Action? dispatched = null)
     {
-        using var arguments = _wmi!.GetMethodParameters(method);
-        arguments["gmInput"] = input;
-        token.ThrowIfCancellationRequested();
-        dispatched?.Invoke();
-        using var reply = WmiProvider.Invoke(_wmi, method, arguments);
-        var status = reply?["gmOutput"] is { } value
-            ? Convert.ToUInt32(value, CultureInfo.InvariantCulture)
-            : throw new IOException($"Acer {method} returned no status; effect unknown.");
-        if ((status & 0xFF) != 0)
+        lock (_wmiGate)
         {
-            throw new IOException($"Acer {method} returned 0x{status:X8}; effect unknown.");
-        }
+            var wmi = _wmi ?? throw new IOException("Acer fan WMI is closed.");
+            token.ThrowIfCancellationRequested();
+            dispatched?.Invoke();
+            var status = wmi.Write(method, input);
+            if ((status & 0xFF) != 0)
+            {
+                throw new IOException($"Acer {method} returned 0x{status:X8}; effect unknown.");
+            }
 
-        Thread.Sleep(millisecondsTimeout: 30);
+            Thread.Sleep(millisecondsTimeout: 30);
+        }
     }
 
     /// <summary>Decodes getter layouts into recoverable raw behavior and optional manual speed.</summary>
@@ -274,12 +288,14 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
     /// <summary>Journals one fan, writes its behavior, then writes duty only when a duty command requests it.</summary>
     /// <remarks>
     ///     Modes map automatic/full-speed/custom to firmware 1/2/3. A duty write first selects behavior
-    ///     3. The writes are not a firmware transaction: failure after either dispatch discards both
-    ///     cached values and reports partial/uncertain effects without repeating either write.
+    ///     3 and the fan then joins the hold loop. The writes are not a firmware transaction: failure
+    ///     after either dispatch discards both cached values, drops the hold and reports partial/uncertain
+    ///     effects without repeating either write.
     /// </remarks>
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
     {
+        DrainLostHolds();
         var fan = _fans.FirstOrDefault(item => item.Id == command.InstanceId);
         if (_wmi is null || fan is null || State != DeviceServiceState.Owned)
         {
@@ -295,10 +311,11 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
                 "automatic" => 1, "full-speed" => 2, "custom" => 3,
                 _ => throw new ArgumentException("Unknown Acer fan mode.")
             };
-            if (command.CapabilityId == "fan.duty" && command.RequestedValue?.IntegerValue is not (>= 0 and <= 100))
+            if (command.CapabilityId == "fan.duty"
+                && command.RequestedValue?.IntegerValue is not (>= AcerFan.MinimumDuty and <= 100))
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
-                    "Fan speed must be between 0 and 100.");
+                    $"Fan speed must be between {AcerFan.MinimumDuty} and 100.");
             }
 
             var recovery = await context.Journal.BeginAsync(RecoveryId(fan), context.Firmware, () => Capture(fan), token)
@@ -317,6 +334,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
                 _observed.Written("fan.duty", CapabilityValue.Integer(speed), fan.Id);
             }
 
+            await HoldAsync(fan, behavior == 3).ConfigureAwait(false);
             return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -325,9 +343,147 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
             {
                 _observed.Forget(CapabilityIds.FanMode, fan.Id);
                 _observed.Forget("fan.duty", fan.Id);
+                await HoldAsync(fan, false).ConfigureAwait(false);
             }
 
             return CommandResults.TransportFailure(command, dispatched, exception);
+        }
+    }
+
+    /// <summary>Adds or removes a fan from the re-arm set, starting the loop or joining it when it empties.</summary>
+    private async ValueTask HoldAsync(AcerFan fan, bool held)
+    {
+        bool any;
+        var start = false;
+        lock (_held)
+        {
+            if (held)
+            {
+                _held.Add(fan.Id);
+            }
+            else
+            {
+                _held.Remove(fan.Id);
+            }
+
+            any = _held.Count > 0;
+            if (any && !_holdRunning)
+            {
+                // Decided under the same lock the loop uses to leave, so a fan is never held without a loop.
+                _holdRunning = true;
+                start = true;
+            }
+        }
+
+        if (!any)
+        {
+            await StopHoldAsync().ConfigureAwait(false);
+        }
+        else if (start)
+        {
+            await _hold.ConfigureAwait(false);
+            _holdCancellation?.Dispose();
+            _holdCancellation = new CancellationTokenSource();
+            var token = _holdCancellation.Token;
+            _hold = Task.Run(() => RunHoldAsync(token));
+        }
+    }
+
+    private async ValueTask StopHoldAsync()
+    {
+        lock (_held)
+        {
+            _held.Clear();
+            _holdRunning = false;
+        }
+
+        _holdCancellation?.Cancel();
+        await _hold.ConfigureAwait(false);
+        _holdCancellation?.Dispose();
+        _holdCancellation = null;
+    }
+
+    /// <summary>Re-arms behavior 3 for every held fan each interval so the firmware keeps the absolute speed.</summary>
+    /// <remarks>
+    ///     A failed re-arm is resolved by readback rather than repeated blindly: a fan the firmware still
+    ///     reports manual stays held, any other answer drops the hold and forgets that fan's values on
+    ///     the next owner pass. Observations are never touched from this thread.
+    /// </remarks>
+    private async Task RunHoldAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(HoldInterval);
+        try
+        {
+            while (true)
+            {
+                if (holdTick is { } tick)
+                {
+                    await tick(token).ConfigureAwait(false);
+                }
+                else if (!await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                foreach (var fan in _fans)
+                {
+                    bool held;
+                    lock (_held)
+                    {
+                        held = _held.Contains(fan.Id);
+                    }
+
+                    if (!held)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        Write("SetGamingFanBehavior", fan.PackBehavior(behavior: 3), token);
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception exception) when (exception is not OutOfMemoryException)
+                    {
+                        if (Capture(fan).Behavior == 3)
+                        {
+                            continue;
+                        }
+
+                        lock (_held)
+                        {
+                            _held.Remove(fan.Id);
+                        }
+
+                        _lostHolds.Enqueue(fan.Id);
+                        DeviceTrace.Warn(ServiceId, $"{fan.Name} manual hold lost: {exception.Message}");
+                    }
+                }
+
+                lock (_held)
+                {
+                    if (_held.Count == 0)
+                    {
+                        _holdRunning = false;
+                        return;
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void DrainLostHolds()
+    {
+        while (_lostHolds.TryDequeue(out var id))
+        {
+            _observed.Forget(CapabilityIds.FanMode, id);
+            _observed.Forget("fan.duty", id);
         }
     }
 
@@ -340,6 +496,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
         var behavior = exact ? original.Behavior!.Value : 1;
         _inexactRestore |= !exact;
 
+        // A restored manual original is the firmware's own meaning of manual, so it is not held.
+        await HoldAsync(fan, false).ConfigureAwait(false);
         Write("SetGamingFanBehavior", fan.PackBehavior(behavior), token);
         if (behavior == 3 && original.Speed is { } speed)
         {
@@ -357,12 +515,13 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
             CancellationToken.None).ConfigureAwait(false);
     }
 
-    /// <summary>Reconciles every fan before disposing both native providers; incomplete originals remain recoverable.</summary>
+    /// <summary>Stops the hold loop, reconciles every fan, then disposes both native providers.</summary>
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
         try
         {
+            await StopHoldAsync().ConfigureAwait(false);
             foreach (var fan in _fans)
             {
                 await context.Journal.ReconcileAsync<AcerFanOriginal>(RecoveryId(fan), context.Firmware,
@@ -381,8 +540,13 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
     /// <summary>Releases WMI and HID resources only; does not independently reset fan behavior.</summary>
     internal override async ValueTask DisposeAsync()
     {
-        _wmi?.Dispose();
-        _wmi = null;
+        await StopHoldAsync().ConfigureAwait(false);
+        lock (_wmiGate)
+        {
+            _wmi?.Dispose();
+            _wmi = null;
+        }
+
         if (_ec is not null)
         {
             _ec = null;
@@ -411,6 +575,9 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
 internal sealed record AcerFan(string Id, string Name, int SelectionBit, int BehaviorShift, int SpeedSelector,
     byte? RpmIndex = null)
 {
+    /// <summary>The lowest commandable duty: 0 and 5 stalled and restarted the measured fans, 10 (about 700 RPM) held.</summary>
+    internal const int MinimumDuty = 10;
+
     /// <summary>Packs a raw 1/2/3 behavior into its setter lane while selecting only this fan.</summary>
     internal ulong PackBehavior(int behavior)
     {
