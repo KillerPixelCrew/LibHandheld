@@ -199,8 +199,7 @@ internal sealed class GpdNativeService()
             CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice,
             Display = CapabilityDescriptors.Label(label),
             SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent,
-            Choices = Array.AsReadOnly(choices
-                .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
+            Choices = CapabilityDescriptors.Choices(choices)
         };
     }
 

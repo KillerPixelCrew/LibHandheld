@@ -663,8 +663,7 @@ internal sealed class OneXNativeService(
             SupportsRead = true,
             SupportsWrite = true,
             Persistence = persistent ? CapabilityPersistence.DevicePersistent : CapabilityPersistence.Volatile,
-            Choices = Array.AsReadOnly(choices
-                .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
+            Choices = CapabilityDescriptors.Choices(choices)
         };
     }
 }

@@ -683,8 +683,7 @@ internal sealed class AyaneoNativeService(
                         CapabilityValueKind.Choice)
                     with
                     {
-                        Choices = Array.AsReadOnly(new[] { "solid", "pulse", "rainbow" }
-                            .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
+                        Choices = CapabilityDescriptors.Choices(new[] { "solid", "pulse", "rainbow" })
                     });
             }
         }
@@ -705,16 +704,14 @@ internal sealed class AyaneoNativeService(
                     CapabilityValueKind.Choice)
                 with
                 {
-                    Choices = Array.AsReadOnly(new[] { "disabled", "low", "medium", "high" }
-                        .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
+                    Choices = CapabilityDescriptors.Choices(new[] { "disabled", "low", "medium", "high" })
                 });
             descriptors.Add(Value("controller.modules", CapabilityRole.GenericReadOnly, "Connected modules",
                     CapabilityValueKind.Choice)
                 with
                 {
                     SupportsRead = true, SupportsWrite = false,
-                    Choices = Array.AsReadOnly(new[] { "both", "left", "right", "none" }
-                        .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
+                    Choices = CapabilityDescriptors.Choices(new[] { "both", "left", "right", "none" })
                 });
             foreach (var side in new[] { (ModuleLeftId, "Left module"), (ModuleRightId, "Right module") })
             {

@@ -615,8 +615,7 @@ internal sealed partial class SteamDeckNativeService(
             CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice,
             Display = CapabilityDescriptors.Label(label),
             SupportsRead = true, Persistence = CapabilityPersistence.Volatile,
-            Choices = Array.AsReadOnly(SourceOwnership.Choices
-                .Select(value => new CapabilityChoice(value, CapabilityDescriptors.Label(value))).ToArray())
+            Choices = CapabilityDescriptors.Choices(SourceOwnership.Choices)
         };
     }
 }

@@ -49,8 +49,7 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
             CapabilityId = EffectId, Role = CapabilityRole.LightingEffect, ValueKind = CapabilityValueKind.Choice,
             Display = CapabilityDescriptors.Label("Lighting effect"), SupportsRead = true, SupportsWrite = true,
             Persistence = CapabilityPersistence.Volatile,
-            Choices = Array.AsReadOnly(Effects
-                .Select(effect => new CapabilityChoice(effect, CapabilityDescriptors.Label(effect))).ToArray())
+            Choices = CapabilityDescriptors.Choices(Effects)
         }
     ]);
 

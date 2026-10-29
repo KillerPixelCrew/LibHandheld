@@ -34,9 +34,25 @@ internal static class CapabilityDescriptors
         };
     }
 
+    /// <summary>Choices labelled by <see cref="ChoiceLabel" />; each value stays the id the protocol and profiles use.</summary>
     internal static IReadOnlyList<CapabilityChoice> Choices(IEnumerable<string> values)
     {
-        return values.Select(value => new CapabilityChoice(value, Label(value))).ToArray();
+        return Array.AsReadOnly(values.Select(value => new CapabilityChoice(value, Label(ChoiceLabel(value))))
+            .ToArray());
+    }
+
+    /// <summary>The display name of a choice id, so a surface never shows the raw id.</summary>
+    /// <param name="value">A lowercase, hyphenated choice id such as <c>solid</c> or <c>full-speed</c>.</param>
+    /// <returns>The id as words with a leading capital ("Solid", "Full speed"), or a named exception.</returns>
+    internal static string ChoiceLabel(string value)
+    {
+        return value switch
+        {
+            "" => value,
+            SourceOwnership.Managed => "Plugin",
+            "aok-classic" => "AOKZOE classic",
+            _ => char.ToUpperInvariant(value[0]) + value[1..].Replace('-', ' ')
+        };
     }
 
     internal static CapabilityDescriptor Color(string id, string instance, CapabilityDisplay display, bool read,

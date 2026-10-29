@@ -302,8 +302,7 @@ internal sealed class AsusAuraController(
                 Role = CapabilityRole.LightingEffect,
                 ValueKind = CapabilityValueKind.Choice, Display = CapabilityDescriptors.Label(label + " effect"),
                 SupportsWrite = true,
-                Choices = Array.AsReadOnly(AsusAuraProtocol.Effects(module.ProductId)
-                    .Select(effect => new CapabilityChoice(effect, CapabilityDescriptors.Label(effect))).ToArray()),
+                Choices = CapabilityDescriptors.Choices(AsusAuraProtocol.Effects(module.ProductId)),
                 Persistence = CapabilityPersistence.DevicePersistent
             },
             new()

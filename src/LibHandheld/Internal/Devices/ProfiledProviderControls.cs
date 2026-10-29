@@ -143,8 +143,7 @@ internal sealed partial class ProfiledFanService
                     ValueKind = CapabilityValueKind.Choice,
                     Display = new CapabilityDisplay { Key = DisplayKey.FanMode },
                     SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
-                    Choices = new[] { "automatic", "custom", "full-speed" }.Select(value => new CapabilityChoice(value,
-                        new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = value })).ToArray()
+                    Choices = CapabilityDescriptors.Choices(["automatic", "custom", "full-speed"])
                 },
                 ProviderControls.Integer("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100,
                     CapabilityUnit.Percent, true, false)

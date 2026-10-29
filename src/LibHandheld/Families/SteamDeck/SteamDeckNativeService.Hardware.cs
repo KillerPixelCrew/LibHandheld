@@ -48,8 +48,7 @@ internal sealed partial class SteamDeckNativeService
             CapabilityId = "fan.mode", Role = CapabilityRole.FanMode, ValueKind = CapabilityValueKind.Choice,
             Display = CapabilityDescriptors.Label("Fan mode"), SupportsWrite = true,
             Persistence = CapabilityPersistence.Volatile,
-            Choices = Array.AsReadOnly(new[] { "automatic", "custom", "full-speed" }
-                .Select(mode => new CapabilityChoice(mode, CapabilityDescriptors.Label(mode))).ToArray())
+            Choices = CapabilityDescriptors.Choices(new[] { "automatic", "custom", "full-speed" })
         },
         Range("fan.duty", CapabilityRole.FanDuty, "Target fan speed", 0, 100, CapabilityUnit.Percent, true),
         Range("fan.target-rpm", CapabilityRole.FanTargetRpm, "Target fan RPM", 0, MaximumFanRpm, CapabilityUnit.Rpm,
