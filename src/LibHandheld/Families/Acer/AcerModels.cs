@@ -59,6 +59,9 @@ internal static class AcerModels
                 "&PID_F901&MI_02&COL05\\"
             ],
             OpenHidRumble = collection => new AcerDInputRumble(collection),
+            // After a Modern Standby the pad can go dark while staying enumerated, leaving XInput blocked
+            // until a power cut (2026-10-30); a USB port cycle re-enumerates it. See PROVENANCE.md.
+            CycleUsbPortWhenStalled = true,
             HidCompanions = AcerInputProtocol.DInputCompanions,
             // Attended calibration; see PROVENANCE.md for the report and trial limits.
             // XInput low/high reach the left/right grips without swapping. The host applies the 2%

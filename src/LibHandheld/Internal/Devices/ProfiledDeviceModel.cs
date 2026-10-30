@@ -193,6 +193,12 @@ internal sealed record StandardControllerProfile(IReadOnlyList<ControllerUsbId> 
     ///     verified in an attended keyboard trial. The host hides them with the pad.
     /// </summary>
     internal IReadOnlyList<string> AuxiliaryHidCollections { get; init; } = [];
+
+    /// <summary>
+    ///     Whether a reader left blocked in XInput for three seconds cycles the pad's USB port, once per
+    ///     reader. Only for a pad measured to hang that way while staying enumerated.
+    /// </summary>
+    internal bool CycleUsbPortWhenStalled { get; init; }
 }
 
 internal sealed record HidControllerProfile(
