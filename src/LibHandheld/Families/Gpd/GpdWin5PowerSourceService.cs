@@ -14,12 +14,8 @@ internal sealed class GpdWin5PowerSourceService(Func<IEmbeddedController>? open 
 
     private static readonly IReadOnlyList<CapabilityDescriptor> Controls =
     [
-        new()
-        {
-            CapabilityId = CapabilityId, Role = CapabilityRole.GenericReadOnly,
-            ValueKind = CapabilityValueKind.Boolean, Display = CapabilityDescriptors.Label("Type-C power only"),
-            SupportsRead = true, Persistence = CapabilityPersistence.Volatile
-        }
+        CapabilityDescriptors.Boolean(CapabilityId, CapabilityRole.GenericReadOnly,
+            CapabilityDescriptors.Label("Type-C power only"), read: true, write: false)
     ];
 
     private readonly ObservedValues _observed = new();

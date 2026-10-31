@@ -853,6 +853,35 @@ public sealed class PluginTests
     }
 
     [Fact]
+    public async Task AReaderFaultAndThePadsReturnPublishTheControllerStateWithoutAnObservationPass()
+    {
+        // The telemetry tick publishes only the fan readings, so the fault callback itself must publish.
+        using var directory = new TemporaryDirectory();
+        var hardware = new AllyFakeHardware();
+        var host = new TestPluginHostAdapter(1);
+        await using var plugin = hardware.CreatePlugin();
+        _ = await plugin.StartAsync(Start(host, directory, "rc72la"), CancellationToken.None);
+        var provider = Assert.IsType<AllyDeviceEngine>(hardware.Provider);
+        Assert.True(Latest(CapabilityIds.Controller).Available);
+
+        hardware.Controller.Present = false;
+        hardware.Controller.RaiseLost();
+
+        Assert.False(Latest(CapabilityIds.Controller).Available);
+        Assert.False(Latest(CapabilityIds.Rumble).Available);
+        Assert.True(Latest(CapabilityIds.Motion).Available);
+
+        hardware.Controller.Present = true;
+        await AsyncConditions.WaitForAsync(() => Latest(CapabilityIds.Controller).Available);
+        Assert.True(Latest(CapabilityIds.Rumble).Available);
+
+        CapabilityState Latest(string id)
+        {
+            return provider.States.Single(state => state.CapabilityId == id && state.InstanceId == null);
+        }
+    }
+
+    [Fact]
     public async Task AVendorReadFailureWaitsForTheCollectionAndReopensIt()
     {
         // HC treats a failed read as a removal and reopens the collection when it is back

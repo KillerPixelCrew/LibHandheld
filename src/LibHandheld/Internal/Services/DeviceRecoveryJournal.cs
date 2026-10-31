@@ -112,6 +112,12 @@ internal sealed class DeviceRecoveryJournal
         }
     }
 
+    /// <summary>Restores an outstanding original once, or retires one captured under other firmware.</summary>
+    /// <remarks>
+    ///     The restore callback retires the entry itself when its write was accepted; a failed restore is traced
+    ///     and the entry stays pending for the next release or start. Retiring a stale entry writes no hardware,
+    ///     so it is not cancelled with the start.
+    /// </remarks>
     public async ValueTask ReconcileAsync<T>(string id, string firmware,
         Func<T, CancellationToken, ValueTask> restore, CancellationToken token) where T : class
     {
@@ -122,7 +128,8 @@ internal sealed class DeviceRecoveryJournal
 
         if (entry.FirmwareIdentity != firmware)
         {
-            await RetireAsync(id, "firmware changed", token).ConfigureAwait(false);
+            await RetireAsync(id, $"bound to {entry.FirmwareIdentity}, the firmware now reads {firmware}",
+                CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
@@ -130,6 +137,10 @@ internal sealed class DeviceRecoveryJournal
         {
             token.ThrowIfCancellationRequested();
             await restore(entry.OriginalState, token).ConfigureAwait(false);
+            if (!_originals.ContainsKey(id))
+            {
+                DeviceTrace.Info("recovery", $"outstanding '{id}' restored.");
+            }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -252,6 +263,45 @@ internal sealed class DeviceRecoveryJournal
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>Retires an original whose restore write the transport accepted, logging the optional readback.</summary>
+    /// <param name="id">The restored entry.</param>
+    /// <param name="observe">
+    ///     Reads the restored state back: true when it matches the original, false when it differs, null when the
+    ///     device reports nothing comparable. It may throw.
+    /// </param>
+    /// <param name="token">Cancels the readback only; the entry is retired either way.</param>
+    /// <remarks>
+    ///     The readback is evidence for the log and gates nothing: the accepted write completes the restore, so a
+    ///     mismatch or failed read neither keeps the entry nor causes a second write.
+    /// </remarks>
+    public async ValueTask CompleteRestoreAsync(string id, Func<CancellationToken, ValueTask<bool?>> observe,
+        CancellationToken token)
+    {
+        try
+        {
+            var matched = await observe(token).ConfigureAwait(false);
+            if (matched != true)
+            {
+                DeviceTrace.Warn("recovery", matched == false
+                    ? $"'{id}' restore was accepted but reads back differently."
+                    : $"'{id}' restore was accepted; the device reports nothing to compare.");
+            }
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            DeviceTrace.Warn("recovery", $"'{id}' restore was accepted; its observation is unavailable: "
+                                         + exception.Message);
+        }
+
+        await MarkRestoredAsync(id, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc cref="CompleteRestoreAsync(string, Func{CancellationToken, ValueTask{bool?}}, CancellationToken)" />
+    public ValueTask CompleteRestoreAsync(string id, Func<bool?> observe)
+    {
+        return CompleteRestoreAsync(id, _ => ValueTask.FromResult(observe()), CancellationToken.None);
     }
 
     public async ValueTask RetireAsync(string id, string reason, CancellationToken token)

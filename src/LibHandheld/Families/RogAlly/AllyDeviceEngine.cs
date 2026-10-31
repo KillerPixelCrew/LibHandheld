@@ -46,6 +46,9 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
 
     private readonly ServicePublications _publications;
 
+    /// <summary>Orders state publication between serialized turns and transport callbacks.</summary>
+    private readonly Lock _publishGate = new();
+
     private IAllyAuraHid? _aura;
     private AllyOemButtonState? _buttons;
     private ChargeLimitService? _charge;
@@ -123,7 +126,7 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
             _lighting = new LightingService(_aura);
             _motion = new AllyMotionService(_motionSource);
             _controller = new ControllerService(_source, _vendor, _motion, _keyboard, _buttons, _publications,
-                _journal)
+                _journal, PublishServiceStates)
             {
                 Enabled = _context.ControllerManagementEnabled
             };

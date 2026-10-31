@@ -471,6 +471,12 @@ public sealed class ClawDeviceEngineTests
         var sustained = Assert.Single(descriptors.Descriptors,
             descriptor => descriptor.CapabilityId == CapabilityIds.PowerSustained);
         Assert.Equal(CapabilityIds.PowerBoost, sustained.PairedPowerLimitId);
+        Assert.True(PowerPairContract.IsValid(descriptors.Descriptors));
+        // Ownership rows carry the labels every family publishes, never the raw choice ids.
+        Assert.All(descriptors.Descriptors.Where(descriptor =>
+                descriptor.CapabilityId is CapabilityIds.Controller or CapabilityIds.Motion),
+            descriptor => Assert.Equal(["Device", "Plugin", "Unavailable"],
+                descriptor.Choices!.Select(choice => choice.Display.CustomText)));
         Assert.True(DevicePowerPreset.TryValidate(descriptors.Descriptors, out var presetError), presetError);
         Assert.Equal([
             new DevicePowerPreset("super-battery", "Super Battery", 8, 9, DevicePowerMode.BetterBattery)

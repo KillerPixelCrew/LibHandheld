@@ -145,9 +145,7 @@ internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmb
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
+            return CommandResults.TransportFailure(command, dispatched, exception);
         }
     }
 

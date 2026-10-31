@@ -48,21 +48,12 @@ internal sealed partial class ClawDeviceEngine
         {
             result = await ApplyCapabilityCommandAsync(command, identity, cancellationToken).ConfigureAwait(false);
         }
-        catch (DeviceWriteBudgetException exception)
+        catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing, exception.Message, true);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return Indeterminate(
-                command,
-                "Command was cancelled after hardware application began.");
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            return Indeterminate(
-                command,
-                $"Capability handler failed after admission: {ex.GetType().Name}.");
+            // A budget refusal is thrown before its write. Anything else failed after admission without a
+            // confirmed rollback, so journalled resources stay outstanding and the effect is unknown.
+            return CommandResults.TransportFailure(command, dispatched: exception is not DeviceWriteBudgetException,
+                exception);
         }
 
         return result;
@@ -248,14 +239,14 @@ internal sealed partial class ClawDeviceEngine
             }
             catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
             {
-                return ClawApplied.Refused(command, "original-state capture", exception, cancellationToken);
+                return CommandResults.TransportFailure(command, dispatched: false, exception);
             }
         }
 
         if (!DeviceWriteBudget.IsAvailable(command.Deadline) || cancellationToken.IsCancellationRequested)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
-                "Cancelled before native dispatch.");
+                "Cancelled before native dispatch.", true);
         }
 
         // A transport exception does not prove whether the firmware accepted a write. Let it
@@ -276,16 +267,6 @@ internal sealed partial class ClawDeviceEngine
         }
 
         return result;
-    }
-
-    // Admission succeeded and the handler failed without confirming a rollback. Journalled resources
-    // remain outstanding, so claiming any restoration here would be fabricated.
-    private static CapabilityCommandResult Indeterminate(CapabilityCommand command, string detail)
-    {
-        return CommandResults.Indeterminate(
-            command,
-            CapabilityReasonCode.TransportFaulted,
-            detail);
     }
 
     private static ValueTask<CapabilityCommandResult> ReadOnlyHandler(

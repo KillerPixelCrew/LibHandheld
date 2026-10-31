@@ -225,13 +225,10 @@ internal sealed partial class ProfiledControllerService
 {
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors { get; } =
     [
-        ProviderControls.Ownership(CapabilityIds.Controller, CapabilityRole.ControllerSource, DisplayKey.Controller),
-        new()
-        {
-            CapabilityId = CapabilityIds.Rumble, Role = CapabilityRole.HapticSink,
-            ValueKind = CapabilityValueKind.None, Display = new CapabilityDisplay { Key = DisplayKey.Rumble },
-            SupportsAction = true, Persistence = CapabilityPersistence.Volatile
-        }
+        CapabilityDescriptors.Ownership(CapabilityIds.Controller, CapabilityRole.ControllerSource,
+            new CapabilityDisplay { Key = DisplayKey.Controller }),
+        CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
+            new CapabilityDisplay { Key = DisplayKey.Rumble })
     ];
 
     internal override IReadOnlyList<CapabilityState> States =>
@@ -258,7 +255,10 @@ internal sealed partial class ProfiledMotionService
     private DateTimeOffset? _startedAt;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors { get; } =
-        [ProviderControls.Ownership(CapabilityIds.Motion, CapabilityRole.MotionSource, DisplayKey.Motion)];
+    [
+        CapabilityDescriptors.Ownership(CapabilityIds.Motion, CapabilityRole.MotionSource,
+            new CapabilityDisplay { Key = DisplayKey.Motion })
+    ];
 
     internal override IReadOnlyList<CapabilityState> States =>
     [

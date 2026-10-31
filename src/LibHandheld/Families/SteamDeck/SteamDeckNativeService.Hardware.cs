@@ -44,13 +44,8 @@ internal sealed partial class SteamDeckNativeService
 
     private static readonly CapabilityDescriptor[] HardwareDescriptors =
     [
-        new()
-        {
-            CapabilityId = "fan.mode", Role = CapabilityRole.FanMode, ValueKind = CapabilityValueKind.Choice,
-            Display = CapabilityDescriptors.Label("Fan mode"), SupportsWrite = true,
-            Persistence = CapabilityPersistence.Volatile,
-            Choices = CapabilityDescriptors.Choices(new[] { "automatic", "custom", "full-speed" })
-        },
+        CapabilityDescriptors.Choice("fan.mode", CapabilityRole.FanMode, CapabilityDescriptors.Label("Fan mode"),
+            CapabilityDescriptors.Choices(["automatic", "custom", "full-speed"]), read: false, write: true),
         Range(CapabilityIds.FanDuty, CapabilityRole.FanDuty, "Target fan speed", 0, 100, CapabilityUnit.Percent, true),
         Range("fan.target-rpm", CapabilityRole.FanTargetRpm, "Target fan RPM", 0, MaximumFanRpm, CapabilityUnit.Rpm,
             true),
@@ -254,10 +249,7 @@ internal sealed partial class SteamDeckNativeService
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                    exception.Message)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
+            return CommandResults.TransportFailure(command, dispatched, exception);
         }
     }
 

@@ -39,10 +39,7 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
 
         if (_serial is null)
         {
-            var v2 = profile.SerialButtons;
-            var collection = HidDevices.Unique(HidDevices.Enumerate(v2 ? (ushort)0x1A2C : (ushort)0x1A86,
-                v2 ? [0xB001] : [0xFE00, 0x1305]), item =>
-                item.UsagePage == (v2 ? 0xFF01 : 0xFF00) && item.Usage == 1 && item.InputLength is 64 or 65);
+            var collection = OneXVendorTransport.FindCollection(profile.SerialButtons, static item => item.InputLength);
             if (collection is null)
             {
                 return ValueTask.FromResult(false);

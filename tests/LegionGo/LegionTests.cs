@@ -240,7 +240,7 @@ public sealed class LegionTests
         await using var engine = Engine("83E1", wmi, hid);
         await engine.StartAsync(Start(host, directory, "83E1", false), CancellationToken.None);
         var surface = host.DescriptorSets[^1];
-        Assert.True(DevicePowerPair.TryValidate(surface.Descriptors, out _));
+        Assert.True(PowerPairContract.IsValid(surface.Descriptors));
         Assert.True(DevicePowerPreset.TryValidate(surface.Descriptors, out _));
         _ = await engine.ExecuteCommandAsync(Command(surface, CapabilityIds.Scenario, CapabilityValue.Choice("quiet")),
             CancellationToken.None);

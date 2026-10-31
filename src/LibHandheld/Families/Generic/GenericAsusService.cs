@@ -18,63 +18,34 @@ internal sealed class GenericAsusService(
 {
     private static readonly IReadOnlyList<CapabilityDescriptor> Surface =
     [
-        new()
+        CapabilityDescriptors.Choice(CapabilityIds.Scenario, CapabilityRole.ScenarioMode,
+            CapabilityDescriptors.Label("Performance mode"),
+            CapabilityDescriptors.Choices(["performance", "turbo", "silent"]), read: false, write: true),
+        CapabilityDescriptors.Integer(CapabilityIds.ChargeLimit, CapabilityRole.ChargeLimit,
+            CapabilityDescriptors.Label("Battery charge ceiling"), AllyChargeLimitCapability.MinimumPercent,
+            AllyChargeLimitCapability.MaximumPercent, CapabilityUnit.Percent, read: false, write: true,
+            CapabilityPersistence.DevicePersistent) with
         {
-            CapabilityId = CapabilityIds.Scenario, Role = CapabilityRole.ScenarioMode,
-            ValueKind = CapabilityValueKind.Choice,
-            Display = CapabilityDescriptors.Label("Performance mode"), SupportsWrite = true,
-            Persistence = CapabilityPersistence.Volatile,
-            Choices =
-            [
-                new CapabilityChoice("performance", CapabilityDescriptors.Label("Performance")),
-                new CapabilityChoice("turbo", CapabilityDescriptors.Label("Turbo")),
-                new CapabilityChoice("silent", CapabilityDescriptors.Label("Silent"))
-            ]
-        },
-        new()
-        {
-            CapabilityId = CapabilityIds.ChargeLimit, Role = CapabilityRole.ChargeLimit,
-            ValueKind = CapabilityValueKind.Integer,
-            Display = CapabilityDescriptors.Label("Battery charge ceiling"),
-            Minimum = AllyChargeLimitCapability.MinimumPercent,
-            Maximum = AllyChargeLimitCapability.MaximumPercent, Step = 1,
-            Unit = CapabilityUnit.Percent,
-            SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent,
             ProfileScope = CapabilityProfileScope.GlobalOnly
         },
         Fan("cpu", "CPU fan curve"), Fan("gpu", "GPU fan curve"),
         Duty("cpu"), Duty("gpu"),
-        new()
+        CapabilityDescriptors.Choice(CapabilityIds.FanMode, CapabilityRole.FanMode,
+            new CapabilityDisplay { Key = DisplayKey.FanMode }, CapabilityDescriptors.Choices(["automatic", "custom"]),
+            read: false, write: true),
+        CapabilityDescriptors.Boolean("asus.xg-enabled", CapabilityRole.GenericToggle,
+            CapabilityDescriptors.Label("XG Mobile enabled"), read: false,
+            persistence: CapabilityPersistence.DevicePersistent, instance: "xg") with
         {
-            CapabilityId = CapabilityIds.FanMode, Role = CapabilityRole.FanMode,
-            ValueKind = CapabilityValueKind.Choice, Display = new CapabilityDisplay { Key = DisplayKey.FanMode },
-            SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
-            Choices =
-            [
-                new CapabilityChoice("automatic", CapabilityDescriptors.Label("Automatic")),
-                new CapabilityChoice("custom", CapabilityDescriptors.Label("Custom"))
-            ]
-        },
-        new()
-        {
-            CapabilityId = "asus.xg-enabled", InstanceId = "xg", Role = CapabilityRole.GenericToggle,
-            ValueKind = CapabilityValueKind.Boolean,
-            Display = CapabilityDescriptors.Label("XG Mobile enabled"), SupportsWrite = true,
-            Persistence = CapabilityPersistence.DevicePersistent,
             ProfileScope = CapabilityProfileScope.GlobalOnly
         },
-        new()
-        {
-            CapabilityId = "asus.xg-lighting", InstanceId = "xg", Role = CapabilityRole.LightingPower,
-            ValueKind = CapabilityValueKind.Boolean,
-            Display = CapabilityDescriptors.Label("XG Mobile lighting"), SupportsWrite = true,
-            Persistence = CapabilityPersistence.Unknown
-        },
+        CapabilityDescriptors.Boolean("asus.xg-lighting", CapabilityRole.LightingPower,
+            CapabilityDescriptors.Label("XG Mobile lighting"), read: false,
+            persistence: CapabilityPersistence.Unknown, instance: "xg"),
         Fan("xg", "XG Mobile fan curve")
     ];
 
     private readonly AsusAuraController _aura = aura ?? new AsusAuraController();
-    private readonly HashSet<string> _captureAttempted = [];
     private readonly HashSet<string> _changedFans = [];
     private readonly ObservedValues _observed = new();
 
@@ -99,10 +70,9 @@ internal sealed class GenericAsusService(
         : MatchesAccessoryIdentity(context.Identity));
 
     private bool XgPresent => _accessoryCollections is { } current
-        ? current.Any(collection => collection.ProductId is 0x1970 or 0x1A9A or 0x1BC1)
+        ? current.Any(collection => AsusAuraProtocol.IsXgMobile(collection.ProductId))
         : context.Identity.UsbEndpoints.Any(endpoint =>
-            endpoint.VendorId.Equals("0B05", StringComparison.OrdinalIgnoreCase)
-            && endpoint.ProductId.ToUpperInvariant() is "1970" or "1A9A" or "1BC1");
+            AsusProduct(endpoint) is { } product && AsusAuraProtocol.IsXgMobile(product));
 
     internal override bool DescriptorsChanged => _topologyChanged || _aura.DescriptorsChanged;
 
@@ -129,12 +99,20 @@ internal sealed class GenericAsusService(
 
     internal static bool MatchesAccessoryIdentity(DeviceIdentitySnapshot identity)
     {
-        return identity.UsbEndpoints.Any(endpoint =>
-            ushort.TryParse(endpoint.VendorId, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var vendor) &&
-            vendor == AsusAuraProtocol.Vendor
-            && ushort.TryParse(endpoint.ProductId, NumberStyles.HexNumber, CultureInfo.InvariantCulture,
-                out var product)
-            && (AsusAuraProtocol.Supported(product) || product is 0x1970 or 0x1A9A));
+        return identity.UsbEndpoints.Any(endpoint => AsusProduct(endpoint) is { } product
+                                                     && (AsusAuraProtocol.Supported(product)
+                                                         || AsusAuraProtocol.IsXgMobile(product)));
+    }
+
+    /// <summary>The endpoint's product id when it is an ASUS USB endpoint.</summary>
+    private static ushort? AsusProduct(UsbEndpointObservation endpoint)
+    {
+        return ushort.TryParse(endpoint.VendorId, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var vendor)
+               && vendor == AsusAuraProtocol.Vendor
+               && ushort.TryParse(endpoint.ProductId, NumberStyles.HexNumber, CultureInfo.InvariantCulture,
+                   out var product)
+            ? product
+            : null;
     }
 
     internal void SetAccessoryCollections(IReadOnlyList<HidCollection> collections)
@@ -168,7 +146,6 @@ internal sealed class GenericAsusService(
             }
 
             _journal = context.Journal;
-            _captureAttempted.Clear();
             foreach (var entry in _journal.Entries<GenericRecoveryState>())
             {
                 await _journal.ReconcileAsync<GenericRecoveryState>(entry.ServiceId, context.Firmware,
@@ -428,12 +405,9 @@ internal sealed class GenericAsusService(
 
     private async ValueTask CaptureAsync(string id, ushort[] addresses, Func<byte[]?> capture, CancellationToken token)
     {
-        if (!_captureAttempted.Add(id))
-        {
-            return;
-        }
-
-        // The original is captured once solely for restoration; it is not a control observation.
+        // The original is captured solely for restoration; it is not a control observation. The journal
+        // captures once per cycle, keeps a held entry without saving and re-enlists the first original after
+        // a mid-cycle restore, so a later write never takes the previous target as the original.
         var captured = await _journal!.BeginAsync(id, context.Firmware, () =>
         {
             var original = capture();
@@ -495,6 +469,9 @@ internal sealed class GenericAsusService(
             _xg = null;
             _aura.Close();
             _observed.Clear();
+            _changedFans.Clear();
+            _unknownOriginal = false;
+            _xgFanChanged = false;
         }
     }
 

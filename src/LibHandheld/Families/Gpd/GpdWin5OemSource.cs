@@ -40,7 +40,7 @@ internal sealed class GpdWin5OemSource : IProfiledOemSource
             _publish = publish;
             return _source.Start(stream, collection.InputLength, HandleReport, ReleaseHeld, token);
         }
-        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        catch (TimeoutException)
         {
             stream.Dispose();
             return false;

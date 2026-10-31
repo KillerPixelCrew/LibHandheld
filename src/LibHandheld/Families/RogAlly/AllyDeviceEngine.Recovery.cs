@@ -10,17 +10,18 @@ internal sealed partial class AllyDeviceEngine
 {
     /// <remarks>
     ///     No outcome here blocks a service. An entry whose transport is not there yet waits, one from another
-    ///     BIOS is dropped, and any other is written once: a restore that dispatched removes it, and one that
-    ///     failed to dispatch leaves it pending for the next release or start, with no status write.
+    ///     BIOS is dropped, and any other is written once through the shared journal reconciliation: a restore
+    ///     that dispatched removes it, and one that failed to dispatch leaves it pending for the next release or
+    ///     start, with no status write.
     /// </remarks>
     private async ValueTask ReconcileOutstandingAsync(AllyIdentityState identity, CancellationToken cancellationToken)
     {
-        if (_journal is null || _model is null)
+        if (_journal is not { } journal || _model is null)
         {
             return;
         }
 
-        foreach (var entry in _journal.Entries<AllyRecoveryState>())
+        foreach (var entry in journal.Entries<AllyRecoveryState>())
         {
             string? current;
             if (entry.ServiceId == AllyServiceIds.Controller)
@@ -40,68 +41,40 @@ internal sealed partial class AllyDeviceEngine
                 continue;
             }
 
-            if (entry.FirmwareIdentity != current)
+            await journal.ReconcileAsync<AllyRecoveryState>(entry.ServiceId, current, async (original, token) =>
             {
-                DeviceTrace.Warn("recovery",
-                    $"dropped the '{entry.ServiceId}' entry bound to {entry.FirmwareIdentity}: the firmware now "
-                    + $"reads {current}, so its captured state is not restored.");
-                await _journal.RetireAsync(entry.ServiceId, "firmware changed",
-                    CancellationToken.None).ConfigureAwait(false);
-                continue;
-            }
-
-            try
-            {
-                await RestoreEntryAsync(entry, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-            {
-                DeviceTrace.Failure("recovery", $"restoring '{entry.ServiceId}' failed; the entry stays pending", ex);
-                continue;
-            }
-
-            await _journal.MarkRestoredAsync(entry.ServiceId, CancellationToken.None).ConfigureAwait(false);
-            DeviceTrace.Info("recovery", $"outstanding '{entry.ServiceId}' restored.");
+                await RestoreEntryAsync(entry.ServiceId, original, token).ConfigureAwait(false);
+                await journal.MarkRestoredAsync(entry.ServiceId, CancellationToken.None).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
         }
     }
 
     /// <summary>Writes an entry's original, or throws when a write failed to dispatch.</summary>
     private async ValueTask RestoreEntryAsync(
-        DeviceRecoveryEntry<AllyRecoveryState> entry,
+        string serviceId,
+        AllyRecoveryState original,
         CancellationToken cancellationToken)
     {
-        switch (entry.ServiceId)
+        switch (serviceId)
         {
-            case AllyServiceIds.Power when entry.OriginalState.ToPower() is { } power:
+            case AllyServiceIds.Power when original.ToPower() is { } power:
                 await new AllyPowerCapability(_hardware.Acpi, _model!, _hardware.Delay)
                     .RestoreAsync(power, cancellationToken)
                     .ConfigureAwait(false);
                 return;
-            case AllyServiceIds.Fans when entry.OriginalState.ToFans() is { } fans:
+            case AllyServiceIds.Fans when original.ToFans() is { } fans:
                 await new AllyFanCapability(_hardware.Acpi, _hardware.Delay)
                     .RestoreAsync(fans, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             case AllyServiceIds.Controller:
-                List<Exception> failures = [];
-                foreach (var report in AllyProtocol.DefaultConfiguration)
+                // HC sends every table even when one is refused. Each gets one attempt, and any refusal
+                // leaves the recovery entry pending.
+                var refused = await ControllerService.WriteTablesAsync(_vendor!, AllyProtocol.DefaultConfiguration,
+                    cancellationToken).ConfigureAwait(false);
+                if (refused.Count != 0)
                 {
-                    // HC sends every table even when one is refused. Each gets one attempt, and any
-                    // refusal leaves the recovery entry pending.
-                    try
-                    {
-                        await _vendor!.WriteConfigurationAsync(report, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (Exception ex) when (ex is not OutOfMemoryException &&
-                                               !cancellationToken.IsCancellationRequested)
-                    {
-                        failures.Add(ex);
-                    }
-                }
-
-                if (failures.Count != 0)
-                {
-                    throw new AggregateException("Controller table restoration was not complete.", failures);
+                    throw new IOException($"{refused.Count} factory controller tables could not be written back.");
                 }
 
                 return;

@@ -28,7 +28,7 @@ internal static partial class UsbPortCycle
                      ?? throw new IOException("No matching controller USB device is present.");
         Check(CM_Locate_DevNode(out var instance, device, 0), "locate the controller");
         Check(NativeDevice.CM_Get_Parent(out var parent, instance, 0), "find its hub");
-        var key = new NativeDevice.DevPropKey { FormatId = NativeDevice.DevicePropertyCategory, PropertyId = 30 };
+        var key = new PropertyKey(NativeDevice.DevicePropertyCategory, propertyId: 30);
         var port = new byte[4];
         uint size = 4;
         Check(NativeDevice.CM_Get_DevNode_Property(instance, ref key, out _, port, ref size, 0), "read its port");

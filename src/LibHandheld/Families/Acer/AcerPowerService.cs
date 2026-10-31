@@ -32,7 +32,6 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private int? _mode;
     private bool _unknownOriginalChanged;
-    private bool _restoreUnverified;
 
     /// <summary>Creates the service over its own EC lane, for fixtures and standalone use.</summary>
     internal AcerPowerService(ProfiledFeatureContext context, Func<IAcerEcTransport?> open)
@@ -388,8 +387,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         _ec!.Exchange([0, 0xA0, 1, 0, 1, checked((byte)mode)], token, dispatched);
     }
 
-    /// <summary>Restores the complete retained Manual profile and classifies independent readback separately.</summary>
-    /// <remarks>Comparison excludes the reply header and includes profile selector plus all 19 data bytes.</remarks>
+    /// <summary>Restores the complete retained Manual profile; the accepted write completes the restore.</summary>
+    /// <remarks>The logged comparison excludes the reply header and includes profile selector plus all 19 data bytes.</remarks>
     private async ValueTask RestoreProfileAsync(AcerProfileOriginal original, CancellationToken token)
     {
         if (original.Profile.Length != 25 || original.Profile[5] != 3)
@@ -398,25 +397,12 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         }
 
         WriteProfile(original.Profile, token);
-        bool? verified = null;
-        try
-        {
-            var reply = _ec!.Exchange([0, 0xA0, 2, 0, 2, 3], token);
-            verified = reply.AsSpan(5, 20).SequenceEqual(original.Profile.AsSpan(5, 20));
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            DeviceTrace.Warn(ServiceId, $"Restored profile observation unavailable: {exception.Message}");
-        }
-
-        _restoreUnverified |= verified != true;
-        if (verified != false)
-        {
-            await context.Journal.MarkRestoredAsync(ProfileRecoveryId, CancellationToken.None).ConfigureAwait(false);
-        }
+        await context.Journal.CompleteRestoreAsync(ProfileRecoveryId, () =>
+            _ec!.Exchange([0, 0xA0, 2, 0, 2, 3], token).AsSpan(5, 20)
+                .SequenceEqual(original.Profile.AsSpan(5, 20))).ConfigureAwait(false);
     }
 
-    /// <summary>Restores a known firmware mode once; missing observation is unverified, mismatch is failed.</summary>
+    /// <summary>Restores a known firmware mode once; the accepted write completes the restore.</summary>
     private async ValueTask RestoreModeAsync(AcerModeOriginal original, CancellationToken token)
     {
         if (original.Mode is < 0 or > 3)
@@ -425,21 +411,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         }
 
         SelectMode(original.Mode, token);
-        bool? verified = null;
-        try
-        {
-            verified = ReadMode(token) == original.Mode;
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            DeviceTrace.Warn(ServiceId, $"Restored mode observation unavailable: {exception.Message}");
-        }
-
-        _restoreUnverified |= verified != true;
-        if (verified != false)
-        {
-            await context.Journal.MarkRestoredAsync(ModeRecoveryId, CancellationToken.None).ConfigureAwait(false);
-        }
+        await context.Journal.CompleteRestoreAsync(ModeRecoveryId, () => ReadMode(token) == original.Mode)
+            .ConfigureAwait(false);
     }
 
     /// <summary>Reconciles both originals before closing EC access, preserving incomplete recovery in the journal.</summary>
@@ -456,7 +429,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
                     RestoreModeAsync, token).ConfigureAwait(false);
             }
 
-            return Set(_unknownOriginalChanged || _restoreUnverified || context.Journal.HasUnrestoredMutation(ProfileRecoveryId)
+            return Set(_unknownOriginalChanged || context.Journal.HasUnrestoredMutation(ProfileRecoveryId)
                                               || context.Journal.HasUnrestoredMutation(ModeRecoveryId)
                 ? DeviceServiceState.ReleasedUnverified : DeviceServiceState.Idle);
         }

@@ -106,7 +106,7 @@ internal sealed class AllyPowerCapability(
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            return AllyApplied.Failed(command, "power limits", ex, cancellationToken);
+            return AllyApplied.Failed(command, "power limits", ex);
         }
     }
 
@@ -134,7 +134,7 @@ internal sealed class AllyPowerCapability(
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            return AllyApplied.Failed(command, "performance mode", ex, cancellationToken);
+            return AllyApplied.Failed(command, "performance mode", ex);
         }
     }
 
@@ -329,7 +329,7 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            return AllyApplied.Failed(command, "fan curve", ex, cancellationToken);
+            return AllyApplied.Failed(command, "fan curve", ex);
         }
     }
 
@@ -384,14 +384,10 @@ internal static class FanModes
 
 internal static class AllyApplied
 {
-    public static CapabilityCommandResult Failed(CapabilityCommand command, string operation, Exception exception,
-        CancellationToken cancellationToken)
+    /// <summary>Traces a write that failed after it began and reports its effect as unknown.</summary>
+    public static CapabilityCommandResult Failed(CapabilityCommand command, string operation, Exception exception)
     {
         DeviceTrace.Failure(operation, "The write failed", exception);
-        return CommandResults.Indeterminate(command,
-            exception is OperationCanceledException && cancellationToken.IsCancellationRequested
-                ? CapabilityReasonCode.Quiescing
-                : CapabilityReasonCode.TransportFaulted,
-            DiagnosticText.FromException($"The {operation} write failed", exception));
+        return CommandResults.TransportFailure(command, dispatched: true, exception);
     }
 }

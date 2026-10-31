@@ -8,17 +8,14 @@ namespace LibHandheld.Families.LegionGo;
 
 internal sealed partial class LegionGoDeviceEngine
 {
-    private async ValueTask<CapabilityCommandResult> ExecuteCoreAsync(CapabilityCommand command,
-        CancellationToken token)
+    internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command,
+        string firmware, CancellationToken token)
     {
         var surface = _surface!;
-
-
-        if (command.Deadline.HasExpired || token.IsCancellationRequested ||
-            !DeviceWriteBudget.IsAvailable(command.Deadline))
+        if (token.IsCancellationRequested)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
-                "No native write was admitted after cancellation or deadline.");
+                "The Lenovo command was cancelled before dispatch.", true);
         }
 
         var identity = _hardware.Identity();
@@ -74,19 +71,13 @@ internal sealed partial class LegionGoDeviceEngine
                 "The Lenovo feature provider is unavailable.");
         }
 
-        if (!_model!.EcFan && command.CapabilityId is CapabilityIds.FanCurve or CapabilityIds.FanMode &&
-            _wmi?.FansAvailable != true)
+        var ecFan = _model!.EcFan;
+        if (IsFanControl(command.CapabilityId) && !FanTransportAvailable)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
-                "The Lenovo fan table provider is unavailable.");
-        }
-
-        if (_model!.EcFan
-            && command.CapabilityId is CapabilityIds.FanDuty or CapabilityIds.FanCurve or CapabilityIds.FanMode
-            && _ec is null)
-        {
-            return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
-                "The signed EC transport is unavailable.");
+                ecFan
+                    ? "The signed EC transport is unavailable."
+                    : "The Lenovo fan table provider is unavailable.");
         }
 
         var dispatched = false;

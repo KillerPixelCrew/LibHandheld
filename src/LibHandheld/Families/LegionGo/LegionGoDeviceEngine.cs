@@ -23,7 +23,6 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
     private string? _controllerBinding;
     private bool _controllerWanted;
     private IEmbeddedController? _ec;
-    private bool _ecFaulted;
     private string _effect = "solid";
     private string _fanMode = "automatic";
     private bool _fansChanged;
@@ -103,7 +102,7 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
         CancellationToken token)
     {
         _quiescing = true;
-        await ReleaseControllerCoreAsync(token).ConfigureAwait(false);
+        await ReleaseControllerAsync(token).ConfigureAwait(false);
         await RestoreAsync(token, cycle.Deadline).ConfigureAwait(false);
         await ReleaseOemAsync().ConfigureAwait(false);
         if (_hid is not null)
@@ -116,12 +115,6 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
         return Set(_journal?.OutstandingEntries.Count > 0 || _hidFaulted
             ? DeviceServiceState.ReleasedUnverified
             : DeviceServiceState.Idle);
-    }
-
-    internal override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
-        CancellationToken token)
-    {
-        return ExecuteCoreAsync(command, token);
     }
 
     internal override async ValueTask RefreshAsync(CancellationToken token)
@@ -150,7 +143,7 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
         }
         else
         {
-            await ReleaseControllerCoreAsync(token).ConfigureAwait(false);
+            await ReleaseControllerAsync(token).ConfigureAwait(false);
         }
 
         await PublishStatesAsync(token).ConfigureAwait(false);
@@ -175,7 +168,6 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
     private async ValueTask OpenTransportsAsync(CancellationToken token)
     {
         _hidFaulted = false;
-        _ecFaulted = false;
         try
         {
             if (await _hid!.OpenAsync(_model!, token).ConfigureAwait(false))
@@ -197,7 +189,6 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                _ecFaulted = true;
                 DeviceTrace.Write(DeviceTraceLevel.Warn, "legion-ec", ex.Message);
             }
         }
@@ -230,11 +221,11 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
         {
             _hidFaulted = true;
             DeviceTrace.Write(DeviceTraceLevel.Warn, "legion-controller", ex.Message);
-            await ReleaseControllerCoreAsync(CancellationToken.None).ConfigureAwait(false);
+            await ReleaseControllerAsync(CancellationToken.None).ConfigureAwait(false);
         }
     }
 
-    private async ValueTask ReleaseControllerCoreAsync(CancellationToken token)
+    private async ValueTask ReleaseControllerAsync(CancellationToken token)
     {
         if (_hid is null)
         {

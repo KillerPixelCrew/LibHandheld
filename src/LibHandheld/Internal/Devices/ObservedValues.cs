@@ -3,56 +3,75 @@ using LibHandheld.Contracts;
 namespace LibHandheld.Internal.Devices;
 
 /// <summary>One owner for readable and acknowledged values, retaining the time that evidence was obtained.</summary>
+/// <remarks>Locked, so a state published from a transport callback can read while a command records a write.</remarks>
 internal sealed class ObservedValues
 {
+    private readonly Lock _gate = new();
     private readonly Dictionary<(string, string?), Observation> _values = [];
 
     internal void Written(string id, CapabilityValue value, string? instance = null)
     {
-        _values[(id, instance)] = new Observation(value, DateTimeOffset.UtcNow, true);
+        lock (_gate)
+        {
+            _values[(id, instance)] = new Observation(value, DateTimeOffset.UtcNow, true);
+        }
     }
 
     internal void Read(string id, CapabilityValue? value, string? instance = null)
     {
         var key = (id, instance);
-        if (value is null)
+        lock (_gate)
         {
-            if (!_values.TryGetValue(key, out var previous) || !previous.Written)
+            if (value is null)
             {
-                _values.Remove(key);
+                if (!_values.TryGetValue(key, out var previous) || !previous.Written)
+                {
+                    _values.Remove(key);
+                }
+
+                return;
             }
 
-            return;
-        }
+            if (_values.TryGetValue(key, out var existing) && existing.Written && !Same(existing.Value, value))
+            {
+                return;
+            }
 
-        if (_values.TryGetValue(key, out var existing) && existing.Written && !Same(existing.Value, value))
-        {
-            return;
+            _values[key] = new Observation(value, DateTimeOffset.UtcNow, false);
         }
-
-        _values[key] = new Observation(value, DateTimeOffset.UtcNow, false);
     }
 
     internal CapabilityValue? Value(string id, string? instance = null)
     {
-        return _values.GetValueOrDefault((id, instance))?.Value;
+        lock (_gate)
+        {
+            return _values.GetValueOrDefault((id, instance))?.Value;
+        }
     }
 
     internal DateTimeOffset? Time(string id, string? instance = null)
     {
-        return _values.GetValueOrDefault((id, instance))?.At;
+        lock (_gate)
+        {
+            return _values.GetValueOrDefault((id, instance))?.At;
+        }
     }
 
     internal void Forget(string id, string? instance = null)
     {
-        _values.Remove((id, instance));
+        lock (_gate)
+        {
+            _values.Remove((id, instance));
+        }
     }
 
     internal void Clear()
     {
-        _values.Clear();
+        lock (_gate)
+        {
+            _values.Clear();
+        }
     }
-
     private static bool Same(CapabilityValue left, CapabilityValue right)
     {
         return left.Kind == right.Kind

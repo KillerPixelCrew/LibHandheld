@@ -1,6 +1,7 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
+using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Generic;
 
@@ -189,8 +190,8 @@ internal sealed class AsusAuraController(
 
             var observedValue = command.CapabilityId switch
             {
-                CapabilityIds.LightingBrightness => CapabilityValue.Integer((int)Math.Round(Math.Clamp(
-                    (int)Math.Round(value.IntegerValue!.Value * 3d / 100), 0, 3) * 100d / 3)),
+                CapabilityIds.LightingBrightness => CapabilityValue.Integer(
+                    AuraProtocol.BrightnessPercent(value.IntegerValue!.Value)),
                 CapabilityIds.LightingSpeed => CapabilityValue.Integer(EncodedSpeed(entry)),
                 CapabilityIds.LightingColor => CapabilityValue.Color(
                     command.InstanceId!.EndsWith("-secondary", StringComparison.Ordinal)
@@ -283,33 +284,16 @@ internal sealed class AsusAuraController(
         List<CapabilityDescriptor> descriptors =
         [
             Toggle("asus.aura.power", CapabilityRole.LightingPower, instance, label + " lighting"),
-            new()
-            {
-                CapabilityId = CapabilityIds.LightingBrightness, InstanceId = instance,
-                Role = CapabilityRole.LightingBrightness,
-                ValueKind = CapabilityValueKind.Integer, Minimum = 0, Maximum = 100, Step = 1,
-                Unit = CapabilityUnit.Percent,
-                Display = CapabilityDescriptors.Label(label + " brightness"), SupportsWrite = true,
-                Persistence = CapabilityPersistence.DevicePersistent
-            },
-            new()
-            {
-                CapabilityId = CapabilityIds.LightingEffect, InstanceId = instance,
-                Role = CapabilityRole.LightingEffect,
-                ValueKind = CapabilityValueKind.Choice, Display = CapabilityDescriptors.Label(label + " effect"),
-                SupportsWrite = true,
-                Choices = CapabilityDescriptors.Choices(AsusAuraProtocol.Effects(module.ProductId)),
-                Persistence = CapabilityPersistence.DevicePersistent
-            },
-            new()
-            {
-                CapabilityId = CapabilityIds.LightingSpeed, InstanceId = instance,
-                Role = CapabilityRole.LightingEffectSpeed,
-                ValueKind = CapabilityValueKind.Integer, Minimum = 0, Maximum = 100, Step = 1,
-                Unit = CapabilityUnit.Percent,
-                Display = CapabilityDescriptors.Label(label + " effect speed"), SupportsWrite = true,
-                Persistence = CapabilityPersistence.DevicePersistent
-            },
+            CapabilityDescriptors.Integer(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness,
+                CapabilityDescriptors.Label(label + " brightness"), minimum: 0, maximum: 100, CapabilityUnit.Percent,
+                read: false, write: true, CapabilityPersistence.DevicePersistent, instance: instance),
+            CapabilityDescriptors.Choice(CapabilityIds.LightingEffect, CapabilityRole.LightingEffect,
+                CapabilityDescriptors.Label(label + " effect"),
+                CapabilityDescriptors.Choices(AsusAuraProtocol.Effects(module.ProductId)), read: false, write: true,
+                CapabilityPersistence.DevicePersistent, instance),
+            CapabilityDescriptors.Integer(CapabilityIds.LightingSpeed, CapabilityRole.LightingEffectSpeed,
+                CapabilityDescriptors.Label(label + " effect speed"), minimum: 0, maximum: 100, CapabilityUnit.Percent,
+                read: false, write: true, CapabilityPersistence.DevicePersistent, instance: instance),
             Color(instance, label + " color"), Color(instance + "-secondary", label + " second color")
         ];
         if (module.ProductId != AsusAuraProtocol.Xg2025)
@@ -324,19 +308,9 @@ internal sealed class AsusAuraController(
 
         if (module.ProductId == AsusAuraProtocol.Lightbar)
         {
-            descriptors.Add(new CapabilityDescriptor
-            {
-                CapabilityId = "asus.aura.direction", InstanceId = instance,
-                Role = CapabilityRole.GenericChoice, ValueKind = CapabilityValueKind.Choice,
-                Display = CapabilityDescriptors.Label(label + " cycle direction"),
-                Choices =
-                [
-                    new CapabilityChoice("left", CapabilityDescriptors.Label("Left")),
-                    new CapabilityChoice("right", CapabilityDescriptors.Label("Right"))
-                ],
-                SupportsWrite = true,
-                Persistence = CapabilityPersistence.DevicePersistent
-            });
+            descriptors.Add(CapabilityDescriptors.Choice("asus.aura.direction", CapabilityRole.GenericChoice,
+                CapabilityDescriptors.Label(label + " cycle direction"), CapabilityDescriptors.Choices(["left", "right"]),
+                read: false, write: true, CapabilityPersistence.DevicePersistent, instance));
         }
 
         return descriptors;
@@ -350,12 +324,8 @@ internal sealed class AsusAuraController(
 
     private static CapabilityDescriptor Toggle(string id, CapabilityRole role, string instance, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, InstanceId = instance, Role = role, ValueKind = CapabilityValueKind.Boolean,
-            Display = CapabilityDescriptors.Label(label),
-            SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
-        };
+        return CapabilityDescriptors.Boolean(id, role, CapabilityDescriptors.Label(label), read: false,
+            persistence: CapabilityPersistence.DevicePersistent, instance: instance);
     }
 
     private static CapabilityDescriptor Color(string instance, string label)

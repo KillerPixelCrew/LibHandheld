@@ -25,13 +25,46 @@ internal static class CapabilityDescriptors
 
     internal static CapabilityDescriptor Choice(string id, CapabilityRole role, CapabilityDisplay display,
         IReadOnlyList<CapabilityChoice> choices, bool read, bool write,
-        CapabilityPersistence persistence = CapabilityPersistence.Volatile)
+        CapabilityPersistence persistence = CapabilityPersistence.Volatile, string? instance = null)
     {
         return new CapabilityDescriptor
         {
-            CapabilityId = id, Role = role, Display = display, ValueKind = CapabilityValueKind.Choice,
-            Choices = choices, SupportsRead = read, SupportsWrite = write, Persistence = persistence
+            CapabilityId = id, InstanceId = instance, Role = role, Display = display,
+            ValueKind = CapabilityValueKind.Choice, Choices = choices, SupportsRead = read, SupportsWrite = write,
+            Persistence = persistence
         };
+    }
+
+    /// <summary>An on/off control or reading.</summary>
+    internal static CapabilityDescriptor Boolean(string id, CapabilityRole role, CapabilityDisplay display, bool read,
+        bool write = true, CapabilityPersistence persistence = CapabilityPersistence.Volatile, string? instance = null)
+    {
+        return new CapabilityDescriptor
+        {
+            CapabilityId = id, InstanceId = instance, Role = role, Display = display,
+            ValueKind = CapabilityValueKind.Boolean, SupportsRead = read, SupportsWrite = write,
+            Persistence = persistence
+        };
+    }
+
+    /// <summary>A read-only text reading of at most <paramref name="maximumLength" /> characters.</summary>
+    internal static CapabilityDescriptor Text(string id, CapabilityRole role, CapabilityDisplay display,
+        int maximumLength, CapabilityPersistence persistence = CapabilityPersistence.Volatile)
+    {
+        return new CapabilityDescriptor
+        {
+            CapabilityId = id, Role = role, Display = display, ValueKind = CapabilityValueKind.Text,
+            MaximumLength = maximumLength, SupportsRead = true, Persistence = persistence
+        };
+    }
+
+    /// <summary>
+    ///     Who holds a controller or motion source: a read-only choice of <see cref="SourceOwnership.Choices" />,
+    ///     labelled Device, Plugin and Unavailable on every family.
+    /// </summary>
+    internal static CapabilityDescriptor Ownership(string id, CapabilityRole role, CapabilityDisplay display)
+    {
+        return Choice(id, role, display, Choices(SourceOwnership.Choices), read: true, write: false);
     }
 
     /// <summary>Choices labelled by <see cref="ChoiceLabel" />; each value stays the id the protocol and profiles use.</summary>

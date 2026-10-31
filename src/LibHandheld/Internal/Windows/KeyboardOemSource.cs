@@ -1,98 +1,49 @@
-using System.Threading.Channels;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
 
 namespace LibHandheld.Internal.Windows;
 
 /// <summary>Recognizes complete OEM chords; ordinary keys are passed on and repeats emit no extra press.</summary>
-internal sealed class KeyboardOemSource(IReadOnlyList<KeyboardOemChord> chords) : IProfiledOemSource
+internal sealed class KeyboardOemSource : IProfiledOemSource
 {
-    private readonly LowLevelHook _hook = new(13, "LibHandheld OEM keyboard");
+    private readonly IReadOnlyList<KeyboardOemChord> _chords;
     private readonly bool[] _keys = new bool[256];
-    private readonly bool[] _pressed = new bool[chords.Count];
-    private Channel<(int Index, bool Down)>? _events;
-    private volatile bool _failed;
-    private Task? _pump;
-    private volatile bool _running;
-    public bool IsConnected => _running && !_failed;
+    private readonly bool[] _pressed;
+    private readonly LowLevelHookPump<(int Index, bool Down)> _pump;
 
-    public async ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish,
-        CancellationToken cancellationToken)
+    public KeyboardOemSource(IReadOnlyList<KeyboardOemChord> chords)
     {
-        if (chords.Count == 0)
-        {
-            _running = true;
-            _failed = false;
-            return true;
-        }
-
-        _failed = false;
-
-        _events = Channel.CreateUnbounded<(int, bool)>(new UnboundedChannelOptions
-            { SingleReader = true, SingleWriter = true });
-        var events = _events;
-        _pump = Task.Run(async () =>
-        {
-            await foreach (var item in events.Reader.ReadAllAsync().ConfigureAwait(false))
-            {
-                var chord = chords[item.Index];
-                publish(chord.Id, chord.Button, item.Down);
-            }
-        }, CancellationToken.None);
-        try
-        {
-            _running = await _hook.StartAsync(Handle, exception =>
-            {
-                _failed = true;
-                ReleaseHeld();
-                events.Writer.TryComplete(exception);
-            }, cancellationToken, stopped: ReleaseHeld).ConfigureAwait(false);
-            if (!_running)
-            {
-                await StopAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-
-            return _running;
-        }
-        catch
-        {
-            await StopAsync(CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
+        _chords = chords;
+        _pressed = new bool[chords.Count];
+        _pump = new LowLevelHookPump<(int Index, bool Down)>("LibHandheld OEM keyboard", Handle, ReleaseHeld, Reset);
     }
 
-    public async ValueTask StopAsync(CancellationToken cancellationToken)
+    public bool IsConnected => _pump.IsConnected;
+
+    public ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish,
+        CancellationToken cancellationToken)
     {
-        await _hook.StopAsync(cancellationToken).ConfigureAwait(false);
-        _running = false;
-        _events?.Writer.TryComplete();
-        try
+        // With no chord to recognize the source is connected without installing a hook.
+        return _pump.StartAsync(item =>
         {
-            if (_pump is not null)
-            {
-                await _pump.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-        finally
-        {
-            if (_pump is null || _pump.IsCompleted)
-            {
-                _events = null;
-                _pump = null;
-                Array.Clear(_keys);
-                Array.Clear(_pressed);
-            }
-        }
+            var chord = _chords[item.Index];
+            publish(chord.Id, chord.Button, item.Down);
+        }, install: _chords.Count > 0, cancellationToken);
+    }
+
+    public ValueTask StopAsync(CancellationToken cancellationToken)
+    {
+        return _pump.StopAsync(cancellationToken);
     }
 
     public ValueTask DisposeAsync()
     {
-        return StopAsync(CancellationToken.None);
+        return _pump.DisposeAsync();
     }
 
     private bool Handle(in KeyboardHookEvent key)
     {
-        if (_failed || key.Injected || key.VirtualKey >= 256)
+        if (_pump.Failed || key.Injected || key.VirtualKey >= 256)
         {
             return false;
         }
@@ -104,9 +55,9 @@ internal sealed class KeyboardOemSource(IReadOnlyList<KeyboardOemChord> chords) 
         }
 
         _keys[key.VirtualKey] = key.Down;
-        for (var index = 0; index < chords.Count; index++)
+        for (var index = 0; index < _chords.Count; index++)
         {
-            var chord = chords[index];
+            var chord = _chords[index];
             var contains = false;
             var down = true;
             for (var keyIndex = 0; keyIndex < chord.Keys.Count; keyIndex++)
@@ -127,16 +78,16 @@ internal sealed class KeyboardOemSource(IReadOnlyList<KeyboardOemChord> chords) 
             }
 
             var wasHeld = false;
-            for (var other = 0; other < chords.Count; other++)
+            for (var other = 0; other < _chords.Count; other++)
             {
-                wasHeld |= chords[other].Id == chord.Id && _pressed[other];
+                wasHeld |= _chords[other].Id == chord.Id && _pressed[other];
             }
 
             _pressed[index] = down;
             var nowHeld = false;
-            for (var other = 0; other < chords.Count; other++)
+            for (var other = 0; other < _chords.Count; other++)
             {
-                nowHeld |= chords[other].Id == chord.Id && _pressed[other];
+                nowHeld |= _chords[other].Id == chord.Id && _pressed[other];
             }
 
             if (wasHeld == nowHeld)
@@ -144,7 +95,7 @@ internal sealed class KeyboardOemSource(IReadOnlyList<KeyboardOemChord> chords) 
                 continue;
             }
 
-            _events?.Writer.TryWrite((index, nowHeld));
+            _pump.Write((index, nowHeld));
         }
 
         // HC observes these manufacturer chords with silenced:false. Passing both edges also
@@ -155,7 +106,7 @@ internal sealed class KeyboardOemSource(IReadOnlyList<KeyboardOemChord> chords) 
     private void ReleaseHeld()
     {
         HashSet<string> released = [];
-        for (var index = 0; index < chords.Count; index++)
+        for (var index = 0; index < _chords.Count; index++)
         {
             if (!_pressed[index])
             {
@@ -163,10 +114,16 @@ internal sealed class KeyboardOemSource(IReadOnlyList<KeyboardOemChord> chords) 
             }
 
             _pressed[index] = false;
-            if (released.Add(chords[index].Id))
+            if (released.Add(_chords[index].Id))
             {
-                _events?.Writer.TryWrite((index, false));
+                _pump.Write((index, false));
             }
         }
+    }
+
+    private void Reset()
+    {
+        Array.Clear(_keys);
+        Array.Clear(_pressed);
     }
 }

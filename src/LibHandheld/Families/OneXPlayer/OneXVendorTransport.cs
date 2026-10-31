@@ -55,11 +55,20 @@ internal sealed class OneXVendorTransport : IDisposable
             return port is null ? null : new OneXVendorTransport(port);
         }
 
-        var old = kind is OneXLightingKind.HidV2 or OneXLightingKind.HidV1G1;
-        var collection = HidDevices.Unique(HidDevices.Enumerate(old ? (ushort)0x1A2C : (ushort)0x1A86,
-            old ? [0xB001] : [0xFE00, 0x1305]), item =>
-            item.UsagePage == (old ? 0xFF01 : 0xFF00) && item.Usage == 1 && item.OutputLength is 64 or 65);
+        var collection = FindCollection(kind is OneXLightingKind.HidV2 or OneXLightingKind.HidV1G1,
+            static item => item.OutputLength);
         return collection is null ? null : new OneXVendorTransport(collection);
+    }
+
+    /// <summary>Selects the one vendor HID collection of a protocol generation.</summary>
+    /// <param name="v2">True for 1A2C:B001 on page FF01, false for 1A86:FE00/1305 on page FF00.</param>
+    /// <param name="reportLength">The report length the caller uses, input or output, which must be 64 or 65.</param>
+    /// <returns>The collection, or null when it is absent or ambiguous.</returns>
+    internal static HidCollection? FindCollection(bool v2, Func<HidCollection, int> reportLength)
+    {
+        return HidDevices.Unique(HidDevices.Enumerate(v2 ? (ushort)0x1A2C : (ushort)0x1A86,
+            v2 ? [0xB001] : [0xFE00, 0x1305]), item =>
+            item.UsagePage == (v2 ? 0xFF01 : 0xFF00) && item.Usage == 1 && reportLength(item) is 64 or 65);
     }
 
     internal void Write(ReadOnlySpan<byte> frame, CancellationToken token)

@@ -69,7 +69,7 @@ internal static class GenericModels
         {
             Definition = Definition("tecno-pocket-go", "TECNO Pocket Go", controller: true),
             Controller = new StandardControllerProfile([new ControllerUsbId(0x2993, 0x2001)]),
-            CreateOemSource = () => new TecnoButtonSource(), NativeOemReplacesChords = [],
+            CreateOemSource = TecnoButtonSource.Create, NativeOemReplacesChords = [],
             OemControls = TecnoButtonSource.Controls,
             KeyboardChords =
             [new KeyboardOemChord("center", "Center", [0xA0, 0xA4, 0xA2, 0x70], CanonicalButtons.QuickAccess)]

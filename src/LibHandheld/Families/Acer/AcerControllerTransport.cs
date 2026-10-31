@@ -155,7 +155,7 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
                                && reply[8] == count;
                     }, timeout: TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            catch (TimeoutException)
             {
                 throw new IOException($"No correlated Atlas lighting reply at {address}; header {Convert.ToHexString(candidateHeader)}.");
             }

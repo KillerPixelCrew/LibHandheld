@@ -26,10 +26,21 @@ internal static class AuraProtocol
         return report;
     }
 
+    /// <summary>The native brightness level, 0 to 3, that a percentage is written as.</summary>
+    internal static byte BrightnessLevel(int percent)
+    {
+        return (byte)Math.Round(Math.Clamp(percent, 0, 100) * 3d / 100);
+    }
+
+    /// <summary>The percentage a written brightness actually lands on, for publishing what was written.</summary>
+    internal static int BrightnessPercent(int percent)
+    {
+        return (int)Math.Round(BrightnessLevel(percent) * 100d / 3);
+    }
+
     internal static byte[] Brightness(byte reportId, int length, int percent)
     {
-        return Packet(reportId, length,
-            0xBA, 0xC5, 0xC4, checked((byte)Math.Clamp((int)Math.Round(Math.Clamp(percent, 0, 100) * 3d / 100), 0, 3)));
+        return Packet(reportId, length, 0xBA, 0xC5, 0xC4, BrightnessLevel(percent));
     }
 
     internal static byte[] Color(byte reportId, int length, byte mode, byte zone, int primary, int secondary,

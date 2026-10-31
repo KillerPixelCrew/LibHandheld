@@ -36,7 +36,7 @@ internal sealed class AsusAuraTransport : IAsusAuraTransport
     }
 
     internal static IReadOnlyCollection<ushort> Products { get; } =
-        [AsusAuraProtocol.Lightbar, AsusAuraProtocol.Keyboard, 0x1970, 0x1A9A, AsusAuraProtocol.Xg2025];
+        [AsusAuraProtocol.Lightbar, AsusAuraProtocol.Keyboard, .. AsusAuraProtocol.XgMobile];
 
     public void Send(byte[] packet)
     {

@@ -1,5 +1,6 @@
 using LibHandheld.Families.Asus;
 using LibHandheld.Families.Generic;
+using LibHandheld.Families.RogAlly.Tests.Fakes;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Testing;
@@ -90,6 +91,57 @@ public sealed class GenericAsusControlStateTests
         Assert.Equal(1, acpi.Reads);
         await service.ReleaseAsync(cycle, CancellationToken.None);
         Assert.Equal(1, acpi.Reads);
+    }
+
+    [Fact]
+    public async Task AFanWrittenAgainAfterAutomaticRestoreIsStillRestoredOnRelease()
+    {
+        // Automatic restores and retires the fan's entry mid-cycle. The next curve write must enlist the
+        // first original again, or release would leave the second curve in force and report Idle.
+        using var directory = new TemporaryDirectory();
+        var acpi = new FakeAsusAcpi();
+        var original = acpi.Curve(AsusAcpiId.CpuFanCurve).ToArray();
+        var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        var service = new GenericAsusService(
+            new ProfiledFeatureContext(directory.Root, "firmware", new TestPluginHostAdapter(1))
+            {
+                Journal = journal
+            }, openAcpi: () => acpi);
+        var cycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
+            new ProfiledCycleIdentity("firmware"));
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, (await service.ExecuteAsync(Curve(40), "firmware",
+            CancellationToken.None)).Outcome);
+        Assert.Equal(CommandOutcome.Applied, (await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = CapabilityIds.FanMode, Deadline = Deadline.Never,
+            RequestedValue = CapabilityValue.Choice("automatic")
+        }, "firmware", CancellationToken.None)).Outcome);
+        Assert.False(journal.HasUnrestoredMutation("fan-cpu"));
+        Assert.Equal(original, acpi.Curve(AsusAcpiId.CpuFanCurve));
+
+        Assert.Equal(CommandOutcome.Applied, (await service.ExecuteAsync(Curve(60), "firmware",
+            CancellationToken.None)).Outcome);
+        Assert.True(journal.HasUnrestoredMutation("fan-cpu"));
+        Assert.NotEqual(original, acpi.Curve(AsusAcpiId.CpuFanCurve));
+
+        var released = await service.ReleaseAsync(cycle, CancellationToken.None);
+
+        Assert.Equal(DeviceServiceState.Idle, released.State);
+        Assert.Equal(original, acpi.Curve(AsusAcpiId.CpuFanCurve));
+        Assert.False(journal.HasUnrestoredMutation("fan-cpu"));
+
+        static CapabilityCommand Curve(int duty)
+        {
+            return new CapabilityCommand
+            {
+                CommandId = Guid.NewGuid(), CapabilityId = CapabilityIds.FanCurve, InstanceId = "cpu",
+                Deadline = Deadline.Never,
+                RequestedValue = CapabilityValue.Curve(Enumerable.Range(0, 8)
+                    .Select(index => new CurvePoint(30 + (index * 10), duty)).ToArray())
+            };
+        }
     }
 
     private sealed class WriteOnlyAcpi : IAsusAcpi

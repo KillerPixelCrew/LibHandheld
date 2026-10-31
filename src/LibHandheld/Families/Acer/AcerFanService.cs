@@ -507,13 +507,11 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
             Write("SetGamingFanSpeed", fan.PackSpeed(speed), token);
         }
 
-        var restored = Capture(fan);
-        var verified = original.Behavior == restored.Behavior
-                       && (behavior != 3 || original.Speed == restored.Speed)
-                       && exact;
-        _inexactRestore |= !verified;
-
-        await context.Journal.MarkRestoredAsync(RecoveryId(fan), CancellationToken.None).ConfigureAwait(false);
+        await context.Journal.CompleteRestoreAsync(RecoveryId(fan), () =>
+        {
+            var restored = Capture(fan);
+            return restored.Behavior == behavior && (behavior != 3 || restored.Speed == original.Speed);
+        }).ConfigureAwait(false);
     }
 
     /// <summary>Stops the hold loop, reconciles every fan, then disposes both native providers.</summary>

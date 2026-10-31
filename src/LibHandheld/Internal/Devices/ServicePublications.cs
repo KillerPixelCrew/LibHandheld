@@ -4,10 +4,26 @@ using LibHandheld.Internal.Runtime;
 namespace LibHandheld.Internal.Devices;
 
 /// <summary>A provider's control publications are merged by the shared engine; input goes directly to its consumer.</summary>
+/// <remarks>
+///     A provider may publish a state from a transport callback while the engine reads the merged states, so
+///     the store is locked.
+/// </remarks>
 internal sealed class ServicePublications(IDeviceSink sink) : IDeviceSink
 {
+    private readonly Lock _gate = new();
     private readonly Dictionary<(string, string?), CapabilityState> _states = [];
-    internal IReadOnlyList<CapabilityState> States => _states.Values.ToArray();
+
+    internal IReadOnlyList<CapabilityState> States
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _states.Values.ToArray();
+            }
+        }
+    }
+
     internal IReadOnlyList<OemControlDescriptor> OemControls { get; private set; } = [];
     internal bool DescriptorsChanged { get; private set; }
 
@@ -16,9 +32,12 @@ internal sealed class ServicePublications(IDeviceSink sink) : IDeviceSink
         DescriptorsChanged = true;
         var ids = descriptors.Descriptors.Select(descriptor => (descriptor.CapabilityId, descriptor.InstanceId))
             .ToHashSet();
-        foreach (var id in _states.Keys.Where(id => !ids.Contains(id)).ToArray())
+        lock (_gate)
         {
-            _states.Remove(id);
+            foreach (var id in _states.Keys.Where(id => !ids.Contains(id)).ToArray())
+            {
+                _states.Remove(id);
+            }
         }
 
         return ValueTask.CompletedTask;
@@ -26,7 +45,7 @@ internal sealed class ServicePublications(IDeviceSink sink) : IDeviceSink
 
     public ValueTask PublishCapabilityStateAsync(CapabilityState state, CancellationToken token)
     {
-        _states[(state.CapabilityId, state.InstanceId)] = state;
+        Publish(state);
         return ValueTask.CompletedTask;
     }
 
@@ -55,6 +74,15 @@ internal sealed class ServicePublications(IDeviceSink sink) : IDeviceSink
     public void ReportFault(string scope, string message)
     {
         sink.ReportFault(scope, message);
+    }
+
+    /// <summary>Stores a state synchronously, for a provider publishing from outside its serialized turn.</summary>
+    internal void Publish(CapabilityState state)
+    {
+        lock (_gate)
+        {
+            _states[(state.CapabilityId, state.InstanceId)] = state;
+        }
     }
 
     internal void AcknowledgeDescriptors()

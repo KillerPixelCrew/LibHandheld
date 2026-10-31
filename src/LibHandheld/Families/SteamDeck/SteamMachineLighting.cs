@@ -28,28 +28,15 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors { get; } = Array.AsReadOnly<CapabilityDescriptor>(
     [
-        new CapabilityDescriptor
-        {
-            CapabilityId = PowerId, Role = CapabilityRole.LightingPower, ValueKind = CapabilityValueKind.Boolean,
-            Display = CapabilityDescriptors.Label("Lighting"), SupportsRead = true, SupportsWrite = true,
-            Persistence = CapabilityPersistence.Volatile
-        },
-        new CapabilityDescriptor
-        {
-            CapabilityId = BrightnessId, Role = CapabilityRole.LightingBrightness,
-            ValueKind = CapabilityValueKind.Integer,
-            Display = CapabilityDescriptors.Label("Brightness"), Minimum = 0, Maximum = 100, Step = 1,
-            Unit = CapabilityUnit.Percent,
-            SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
-        },
+        CapabilityDescriptors.Boolean(PowerId, CapabilityRole.LightingPower, CapabilityDescriptors.Label("Lighting"),
+            read: true),
+        CapabilityDescriptors.Integer(BrightnessId, CapabilityRole.LightingBrightness,
+            CapabilityDescriptors.Label("Brightness"), minimum: 0, maximum: 100, CapabilityUnit.Percent, read: true,
+            write: true),
         Color("left", "Left colour"), Color("right", "Right colour"),
-        new CapabilityDescriptor
-        {
-            CapabilityId = EffectId, Role = CapabilityRole.LightingEffect, ValueKind = CapabilityValueKind.Choice,
-            Display = CapabilityDescriptors.Label("Lighting effect"), SupportsRead = true, SupportsWrite = true,
-            Persistence = CapabilityPersistence.Volatile,
-            Choices = CapabilityDescriptors.Choices(Effects)
-        }
+        CapabilityDescriptors.Choice(EffectId, CapabilityRole.LightingEffect,
+            CapabilityDescriptors.Label("Lighting effect"), CapabilityDescriptors.Choices(Effects), read: true,
+            write: true)
     ]);
 
     internal override IReadOnlyList<CapabilityState> States => Descriptors.Select(descriptor =>
@@ -175,9 +162,7 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
+            return CommandResults.TransportFailure(command, dispatched, exception);
         }
     }
 

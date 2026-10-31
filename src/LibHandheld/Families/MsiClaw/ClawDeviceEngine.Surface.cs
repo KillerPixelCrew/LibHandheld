@@ -41,15 +41,9 @@ internal sealed partial class ClawDeviceEngine
                     // HC's BatteryBypassStep: the limit is 60, 80 or 100 percent.
                     Step = ClawChargeLimitCapability.StepPercent
                 },
-            new CapabilityDescriptor
-            {
-                CapabilityId = CapabilityIds.ChargeProtection,
-                Role = CapabilityRole.ChargeProtectionMode,
-                ValueKind = CapabilityValueKind.Boolean,
-                Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "Battery Master" },
-                SupportsWrite = true,
-                Persistence = CapabilityPersistence.DevicePersistent
-            },
+            CapabilityDescriptors.Boolean(CapabilityIds.ChargeProtection, CapabilityRole.ChargeProtectionMode,
+                CapabilityDescriptors.Label("Battery Master"), read: false,
+                persistence: CapabilityPersistence.DevicePersistent),
             ChoiceDescriptor(
                 CapabilityIds.Scenario,
                 CapabilityRole.ScenarioMode,
@@ -83,18 +77,10 @@ internal sealed partial class ClawDeviceEngine
             // Declaring them as booleans made the descriptor set fail the SDK's role/value-kind
             // check, and a rejected SET means every capability is rejected, so the whole device
             // published nothing at all because of these three lines.
-            ChoiceDescriptor(
-                CapabilityIds.Controller,
-                CapabilityRole.ControllerSource,
-                DisplayKey.Controller,
-                RawOwnershipChoices(),
-                false),
-            ChoiceDescriptor(
-                CapabilityIds.Motion,
-                CapabilityRole.MotionSource,
-                DisplayKey.Motion,
-                RawOwnershipChoices(),
-                false),
+            CapabilityDescriptors.Ownership(CapabilityIds.Controller, CapabilityRole.ControllerSource,
+                new CapabilityDisplay { Key = DisplayKey.Controller }),
+            CapabilityDescriptors.Ownership(CapabilityIds.Motion, CapabilityRole.MotionSource,
+                new CapabilityDisplay { Key = DisplayKey.Motion }),
             // A sink offers the invoke as its one operation: rumble is written to it, never read back.
             CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
                 new CapabilityDisplay { Key = DisplayKey.Rumble }),
@@ -341,16 +327,6 @@ internal sealed partial class ClawDeviceEngine
     {
         return CapabilityDescriptors.Choice(id, role, new CapabilityDisplay { Key = display }, choices, read: true,
             writable);
-    }
-
-    /// <summary>The ownership choices, each labelled with its own id, as this family has always published them.</summary>
-    private static IReadOnlyList<CapabilityChoice> RawOwnershipChoices()
-    {
-        return
-        [
-            .. SourceOwnership.Choices.Select(choice =>
-                new CapabilityChoice(choice, CapabilityDescriptors.Label(choice)))
-        ];
     }
 
     internal static CapabilityValue? Scenario(byte raw, ClawModel model)

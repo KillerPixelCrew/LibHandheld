@@ -3,6 +3,16 @@ using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Internal.Windows;
 
+/// <summary>A <c>DEVPROPKEY</c> or <c>PROPERTYKEY</c>: both are a format GUID followed by a property id.</summary>
+/// <param name="formatId">The property category.</param>
+/// <param name="propertyId">The property within it.</param>
+[StructLayout(LayoutKind.Sequential)]
+internal struct PropertyKey(Guid formatId, uint propertyId)
+{
+    public Guid FormatId = formatId;
+    public uint PropertyId = propertyId;
+}
+
 /// <summary>Shared Windows device-handle and device-node ABI; transports retain their paths, flags and ownership.</summary>
 internal static partial class NativeDevice
 {
@@ -40,13 +50,6 @@ internal static partial class NativeDevice
     internal static partial int CM_Get_Parent(out uint parent, uint deviceInstance, uint flags);
 
     [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_DevNode_PropertyW")]
-    internal static partial int CM_Get_DevNode_Property(uint deviceInstance, ref DevPropKey propertyKey,
+    internal static partial int CM_Get_DevNode_Property(uint deviceInstance, ref PropertyKey propertyKey,
         out uint propertyType, [Out] byte[] buffer, ref uint bufferLength, uint flags);
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct DevPropKey
-    {
-        public Guid FormatId;
-        public uint PropertyId;
-    }
 }

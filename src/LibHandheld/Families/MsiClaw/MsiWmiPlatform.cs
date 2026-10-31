@@ -88,7 +88,15 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
         ObjectDisposedException.ThrowIf(_disposed, this);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(OperationTimeout);
-        await _serializer.WaitAsync(deadline.Token).ConfigureAwait(false);
+        try
+        {
+            await _serializer.WaitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw Timeout();
+        }
+
         Task<T>? operationTask = null;
         try
         {
@@ -102,6 +110,11 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
         {
             InvalidateProvider();
             throw;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The transport's own timeout is a transport fault, not the caller cancelling.
+            throw Timeout();
         }
         finally
         {
@@ -119,6 +132,12 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
                 _ = ReleaseSerializerWhenCompleteAsync(operationTask);
             }
         }
+    }
+
+    private static TimeoutException Timeout()
+    {
+        return new TimeoutException(
+            $"The MSI_ACPI call did not complete within {OperationTimeout.TotalSeconds:0} s; its effect is unknown.");
     }
 
     private async Task ReleaseSerializerWhenCompleteAsync(Task operation)

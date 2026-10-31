@@ -123,7 +123,9 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
         new("AMD Radeon RX 670 Graphics", 0x80300000, [0x043F3900, 0x043F3C05, 0x043F3E00])
     ];
 
-    private readonly Lock _gate = new();
+    // The machine has one SMU mailbox. The clock service and the profile power transport each hold a
+    // VangoghPower, so one gate for every instance keeps their command sequences from interleaving.
+    private static readonly Lock Mailbox = new();
 
     public CpuPowerLimits ReadLimits()
     {
@@ -159,7 +161,7 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
 
     public void Dispose()
     {
-        lock (_gate)
+        lock (Mailbox)
         {
             memory.Dispose();
         }
@@ -247,7 +249,7 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
 
     private T Transaction<T>(Func<T> action)
     {
-        lock (_gate)
+        lock (Mailbox)
         {
             return action();
         }

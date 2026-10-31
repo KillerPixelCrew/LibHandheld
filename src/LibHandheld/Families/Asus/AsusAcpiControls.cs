@@ -45,8 +45,7 @@ internal sealed class AllyChargeLimitCapability(IAsusAcpi acpi)
         catch (Exception ex) when (ex is IOException or Win32Exception)
         {
             DeviceTrace.Failure("charge-limit", "Charge limit write failed", ex);
-            return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                "The charge limit write failed.");
+            return CommandResults.TransportFailure(command, dispatched: true, ex);
         }
     }
 }

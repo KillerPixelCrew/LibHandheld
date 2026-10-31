@@ -325,12 +325,8 @@ internal sealed class ProfiledProcessorService(
                 CapabilityUnit.Megahertz, _amd.WriteGpuClock);
             if (_amd.SupportsAutomaticGpuClock)
             {
-                _automaticGpu = new CapabilityDescriptor
-                {
-                    CapabilityId = CapabilityIds.ProcessorGpuClockAutomatic, Role = CapabilityRole.GenericAction,
-                    Display = CapabilityDescriptors.Label("Automatic GPU clock"), ValueKind = CapabilityValueKind.None,
-                    SupportsAction = true, Persistence = CapabilityPersistence.Volatile
-                };
+                _automaticGpu = CapabilityDescriptors.Action(CapabilityIds.ProcessorGpuClockAutomatic,
+                    CapabilityRole.GenericAction, CapabilityDescriptors.Label("Automatic GPU clock"));
             }
         }
 
@@ -394,18 +390,13 @@ internal sealed class ProfiledProcessorService(
             .Concat(_automaticGpu is { } automatic ? new[] { automatic } : Array.Empty<CapabilityDescriptor>())
             .Concat(_settings.Count > 0 ? new[]
             {
-                new CapabilityDescriptor
-                {
-                    CapabilityId = CapabilityIds.ProcessorReset, Role = CapabilityRole.GenericAction,
-                    Display = CapabilityDescriptors.Label("Reset processor tuning") with
+                CapabilityDescriptors.Action(CapabilityIds.ProcessorReset, CapabilityRole.GenericAction,
+                    CapabilityDescriptors.Label("Reset processor tuning") with
                     {
                         Description = "Clears processor tuning for this device in Global and every game. "
                                       + "Restores supported values; a Windows restart may be needed for "
                                       + "firmware defaults."
-                    },
-                    ValueKind = CapabilityValueKind.None, SupportsAction = true,
-                    Persistence = CapabilityPersistence.Volatile
-                }
+                    })
             } : Array.Empty<CapabilityDescriptor>())
             .ToArray();
         _descriptorsChanged = true;

@@ -30,26 +30,25 @@ internal sealed partial class LegionGoDeviceEngine
                 ["quiet", "balanced", "performance", "custom"], true, true),
             Choice(CapabilityIds.FanMode, "Fan mode", CapabilityRole.FanMode,
                 ["automatic", "custom", "full-speed"], false, true),
-            // WriteFanTable consumes the ten points at 10, 20, ... 100 degrees Celsius.
-            CapabilityDescriptors.Curve(CapabilityIds.FanCurve, CapabilityDescriptors.Label("Fan curve"),
-                Enumerable.Range(1, 10).Select(index => index * 10).ToArray(), read: !model.EcFan),
-            new()
-            {
-                CapabilityId = CapabilityIds.ChargeLimit, Role = CapabilityRole.ChargeProtectionMode,
-                ValueKind = CapabilityValueKind.Boolean, Display = CapabilityDescriptors.Label("80% charge protection"),
-                SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
-            },
+            // WriteFanTable consumes the ten points at 10, 20, ... 100 degrees Celsius. EC-fan models
+            // drive one target RPM and have no table, so they publish no curve.
+            .. model.EcFan
+                ? []
+                : new[]
+                {
+                    CapabilityDescriptors.Curve(CapabilityIds.FanCurve, CapabilityDescriptors.Label("Fan curve"),
+                        Enumerable.Range(1, 10).Select(index => index * 10).ToArray(), read: true)
+                },
+            CapabilityDescriptors.Boolean(CapabilityIds.ChargeLimit, CapabilityRole.ChargeProtectionMode,
+                CapabilityDescriptors.Label("80% charge protection"), read: true,
+                persistence: CapabilityPersistence.DevicePersistent),
             Number(CapabilityIds.FanRpm, "Fan speed", CapabilityRole.FanMeasuredRpm, 0, 20000,
                 CapabilityUnit.Rpm, false),
             Number(CapabilityIds.Temperature, "CPU temperature", CapabilityRole.Telemetry, 0, 150,
                 CapabilityUnit.Celsius, false),
-            new()
-            {
-                CapabilityId = LightingPower, Role = CapabilityRole.LightingPower,
-                ValueKind = CapabilityValueKind.Boolean,
-                Display = CapabilityDescriptors.Label("Lighting"), SupportsWrite = true,
-                Persistence = CapabilityPersistence.DevicePersistent
-            },
+            CapabilityDescriptors.Boolean(LightingPower, CapabilityRole.LightingPower,
+                CapabilityDescriptors.Label("Lighting"), read: false,
+                persistence: CapabilityPersistence.DevicePersistent),
             Number(CapabilityIds.LightingBrightness, "Brightness", CapabilityRole.LightingBrightness, 0, 100,
                     CapabilityUnit.Percent, true) with
                 {
@@ -66,27 +65,17 @@ internal sealed partial class LegionGoDeviceEngine
                     Persistence = CapabilityPersistence.DevicePersistent
                 },
             Color("left", model.Slim ? "Stick rings" : "Left stick ring"),
-            Choice(CapabilityIds.Controller, "Physical controller", CapabilityRole.ControllerSource,
-                SourceOwnership.Choices, true, false),
-            Choice(CapabilityIds.Motion, "Motion sensors", CapabilityRole.MotionSource, SourceOwnership.Choices,
-                true, false),
+            CapabilityDescriptors.Ownership(CapabilityIds.Controller, CapabilityRole.ControllerSource,
+                CapabilityDescriptors.Label("Physical controller")),
+            CapabilityDescriptors.Ownership(CapabilityIds.Motion, CapabilityRole.MotionSource,
+                CapabilityDescriptors.Label("Motion sensors")),
             CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
                 CapabilityDescriptors.Label("Rumble")),
-            new()
-            {
-                CapabilityId = NativeTouchpad, Role = CapabilityRole.GenericToggle,
-                ValueKind = CapabilityValueKind.Boolean,
-                Display = CapabilityDescriptors.Label("Native mouse touchpad"), SupportsWrite = true,
-                Persistence = CapabilityPersistence.Volatile
-            },
+            CapabilityDescriptors.Boolean(NativeTouchpad, CapabilityRole.GenericToggle,
+                CapabilityDescriptors.Label("Native mouse touchpad"), read: false),
             CapabilityDescriptors.Action(ControllerReset, CapabilityRole.GenericAction,
                 CapabilityDescriptors.Label("Reset controller mappings"), CapabilityPersistence.DevicePersistent)
         ];
-        if (model.EcFan)
-        {
-            values.RemoveAll(descriptor => descriptor.Role == CapabilityRole.FanCurve);
-        }
-
         values.Add(Number(CapabilityIds.FanDuty, "Fan duty", CapabilityRole.FanDuty, 0, 100, CapabilityUnit.Percent,
             true) with
         {
@@ -181,16 +170,9 @@ internal sealed partial class LegionGoDeviceEngine
                 available = _wmi?.ModesAvailable == true;
             }
 
-            if (!_model!.EcFan
-                && descriptor.CapabilityId is CapabilityIds.FanCurve or CapabilityIds.FanMode or CapabilityIds.FanDuty)
+            if (IsFanControl(descriptor.CapabilityId))
             {
-                available &= _wmi?.FansAvailable == true;
-            }
-
-            if (_model!.EcFan
-                && descriptor.CapabilityId is CapabilityIds.FanDuty or CapabilityIds.FanCurve or CapabilityIds.FanMode)
-            {
-                available = _ec is not null && !_ecFaulted;
+                available = FanTransportAvailable;
             }
 
             if (descriptor.CapabilityId is CapabilityIds.Controller or CapabilityIds.Motion)
@@ -218,6 +200,19 @@ internal sealed partial class LegionGoDeviceEngine
         }
     }
 
+    /// <summary>
+    ///     Whether the transport that drives the fan controls is open: the signed EC on EC-fan models, otherwise
+    ///     the WMI feature and fan-table providers. Command admission and state publication both read it.
+    /// </summary>
+    private bool FanTransportAvailable => _model!.EcFan
+        ? _ec is not null
+        : _wmi?.FeaturesAvailable == true && _wmi.FansAvailable;
+
+    private static bool IsFanControl(string id)
+    {
+        return id is CapabilityIds.FanCurve or CapabilityIds.FanMode or CapabilityIds.FanDuty;
+    }
+
     /// <summary>Lighting and native controller controls use the HID command collection; the rest use WMI or the EC.</summary>
     private static bool UsesHid(CapabilityDescriptor descriptor)
     {
@@ -234,7 +229,7 @@ internal sealed partial class LegionGoDeviceEngine
 
     private int? ReadEcRpm()
     {
-        if (_ec is null || _ecFaulted)
+        if (_ec is null)
         {
             return null;
         }

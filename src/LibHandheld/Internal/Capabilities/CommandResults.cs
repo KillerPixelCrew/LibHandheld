@@ -7,6 +7,16 @@ namespace LibHandheld.Internal.Capabilities;
 /// <remarks>Each result is stamped with the time it is built, which is when the command finished.</remarks>
 internal static class CommandResults
 {
+    /// <summary>The result of a command whose native write path threw.</summary>
+    /// <param name="command">The command the result answers.</param>
+    /// <param name="dispatched">Whether a write had begun, which makes its effect unknown.</param>
+    /// <param name="exception">What the write path threw.</param>
+    /// <returns>
+    ///     <see cref="CommandOutcome.Indeterminate" /> once a write began, otherwise <see cref="CommandOutcome.Rejected" />.
+    ///     Cancellation and an exhausted write budget are <see cref="CapabilityReasonCode.Quiescing" />, and such a
+    ///     rejection may be retried because nothing was written; every other exception is
+    ///     <see cref="CapabilityReasonCode.TransportFaulted" />.
+    /// </returns>
     internal static CapabilityCommandResult TransportFailure(CapabilityCommand command, bool dispatched,
         Exception exception)
     {
@@ -15,7 +25,7 @@ internal static class CommandResults
             : CapabilityReasonCode.TransportFaulted;
         return dispatched
             ? Indeterminate(command, code, exception.Message)
-            : Rejected(command, code, exception.Message);
+            : Rejected(command, code, exception.Message, retryable: code == CapabilityReasonCode.Quiescing);
     }
 
     /// <summary>A write acknowledged by its native transport, independent of optional readback.</summary>
@@ -79,7 +89,6 @@ internal static class CommandResults
             CommandId = command.CommandId,
             Outcome = CommandOutcome.Indeterminate,
             Reason = new CapabilityReason(code, detail),
-
             CompletedAt = DateTimeOffset.UtcNow
         };
     }

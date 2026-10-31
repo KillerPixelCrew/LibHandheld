@@ -93,46 +93,6 @@ internal static class DevicePowerPair
         return true;
     }
 
-    /// <summary>Validates every declared pair against the complete descriptor set.</summary>
-    /// <param name="descriptors">The current capability descriptors.</param>
-    /// <param name="error">The invalid declaration, or null on success.</param>
-    /// <returns>True when every declared pair has unique, distinct writable integer watt controls with valid bounds.</returns>
-    /// <remarks>
-    ///     An empty set or a set without declared pairs is valid. Read support is not required.
-    ///     This validates pair structure only, not each descriptor's complete shape or current availability.
-    /// </remarks>
-    public static bool TryValidate(IReadOnlyList<CapabilityDescriptor> descriptors, out string? error)
-    {
-        ArgumentNullException.ThrowIfNull(descriptors);
-        error =
-            "A power pair requires unique readable and writable sustained/boost watt controls with valid bounds and step.";
-        foreach (var primary in descriptors)
-        {
-            if (primary.PairedPowerLimitId is null)
-            {
-                continue;
-            }
-
-            if (primary.Role != CapabilityRole.PowerSustainedLimit || !IsLimit(primary)
-                                                                   || string.IsNullOrWhiteSpace(
-                                                                       primary.PairedPowerLimitId))
-            {
-                return false;
-            }
-
-            var peers = descriptors.Where(d => d.CapabilityId == primary.PairedPowerLimitId).ToArray();
-            if (peers.Length != 1 || !IsLimit(peers[0]) || peers[0].Role != CapabilityRole.PowerSlowLimit
-                || peers[0].PairedPowerLimitId is not null || peers[0].CapabilityId == primary.CapabilityId
-                || descriptors.Count(d => d.PairedPowerLimitId == primary.PairedPowerLimitId) != 1)
-            {
-                return false;
-            }
-        }
-
-        error = null;
-        return true;
-    }
-
     /// <summary>Whether a descriptor is a single-instance writable integer watt limit with a range and step.</summary>
     /// <param name="descriptor">Capability declaration to check without reading hardware.</param>
     /// <returns>True for an uninstanced writable integer-watt control with positive minimum/step and ordered bounds.</returns>

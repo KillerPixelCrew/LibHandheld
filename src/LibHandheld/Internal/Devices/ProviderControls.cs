@@ -12,16 +12,6 @@ internal static class ProviderControls
             read, write);
     }
 
-    internal static CapabilityDescriptor Ownership(string id, CapabilityRole role, DisplayKey label)
-    {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, Display = new CapabilityDisplay { Key = label },
-            ValueKind = CapabilityValueKind.Choice, SupportsRead = true, Persistence = CapabilityPersistence.Volatile,
-            Choices = CapabilityDescriptors.Choices(SourceOwnership.Choices)
-        };
-    }
-
     /// <summary>A state whose quality follows its value: observed with a value, unknown and untimed without one.</summary>
     internal static CapabilityState State(string id, bool available, CapabilityValue? value,
         DateTimeOffset? observedAt, CapabilityReason? reason = null, string? instance = null)

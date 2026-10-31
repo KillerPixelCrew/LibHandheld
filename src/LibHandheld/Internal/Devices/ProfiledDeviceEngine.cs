@@ -213,10 +213,10 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                     "This model has no writable capability with that identity.");
             }
 
-            if (!DeviceWriteBudget.IsAvailable(command.Deadline) || cancellation.IsCancellationRequested)
+            if (cancellation.IsCancellationRequested)
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
-                    "The device command has expired.", true);
+                    "The device command was cancelled before dispatch.", true);
             }
 
             if (CommandAdmission.Validate(command, owner.Descriptor, _surface.Descriptors) is { } invalid)
@@ -547,13 +547,12 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     {
         token.ThrowIfCancellationRequested();
         await ObserveAccessoriesAsync(token).ConfigureAwait(false);
-        foreach (var service in _services)
+        // One capability refreshes the services that own its instances on the published surface, each once.
+        var targets = id is null
+            ? _services.ToArray()
+            : _controlOwners.Where(pair => pair.Key.Id == id).Select(pair => pair.Value.Service).Distinct().ToArray();
+        foreach (var service in targets)
         {
-            if (id is not null && !service.Descriptors.Any(descriptor => descriptor.CapabilityId == id))
-            {
-                continue;
-            }
-
             if (service is ProfiledFeatureService feature)
             {
                 await feature.RefreshAsync(id, token).ConfigureAwait(false);

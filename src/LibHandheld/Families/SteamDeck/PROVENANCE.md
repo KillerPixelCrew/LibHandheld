@@ -71,6 +71,9 @@ and `ZwMapViewOfSection`; no 2 GiB address rejection or truncation was found for
 x64 arguments used here. The DLL's void port export drops IOCTL failures, so the shared
 `Internal/Transports/InpOutTransport` sends the verified three-byte `0x9C402008` port/value request
 through the existing driver handle and checks its completion; the Deck adapter admits the addresses.
+The EC memory, the clock mailbox and the profile power transport each hold their own handle on one
+shared load of the DLL, which is freed with the last handle, so an unsupported EC still leaves the
+clocks and power limits working. Both SMU mailbox users share one command gate.
 Static evidence is in WSGM's local `artifacts/steamdeck-inpout-exports.log` and
 `artifacts/steamdeck-inpout-driver.log`; no native target or driver was executed. The embedded x64
 PE bytes reviewed hash to `CA4B055ADE3A751AAD0C3CE49C89E2A715582A5BCED9A09A46D63FA8FC307056`.

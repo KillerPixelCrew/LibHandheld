@@ -389,8 +389,7 @@ internal sealed class LightingService(IAllyAuraHid aura) : DeviceService<AllyIde
         {
             DeviceTrace.Failure("lighting", "Aura write failed", ex);
             // The previous intent is kept: nothing reads Aura back, so the device state is unknown.
-            return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                DiagnosticText.FromException("The Aura write failed", ex));
+            return CommandResults.TransportFailure(command, dispatched: true, ex);
         }
 
         Desired = wanted;

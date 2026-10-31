@@ -45,7 +45,7 @@ internal sealed class AsusXgTransport : IDisposable
         }
 
         var lights = (collections ?? AsusAuraTransport.DiscoverCollections()).Where(collection =>
-            collection.ProductId is 0x1970 or 0x1A9A or AsusAuraProtocol.Xg2025
+            AsusAuraProtocol.IsXgMobile(collection.ProductId)
             && collection.FeatureLength == 300
             && (collection.ProductId != AsusAuraProtocol.Xg2025 ||
                 AsusAuraProtocol.Application(collection.UsagePage, collection.Usage))

@@ -20,20 +20,15 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
 {
     private static readonly IReadOnlyList<CapabilityDescriptor> Controls =
     [
-        new()
-        {
-            CapabilityId = CapabilityIds.ChargeProtection, Role = CapabilityRole.ChargeProtectionMode,
-            Display = CapabilityDescriptors.Label("Optimized battery charging"),
-            ValueKind = CapabilityValueKind.Boolean, SupportsRead = true, SupportsWrite = true,
-            Persistence = CapabilityPersistence.DevicePersistent
-        }
+        CapabilityDescriptors.Boolean(CapabilityIds.ChargeProtection, CapabilityRole.ChargeProtectionMode,
+            CapabilityDescriptors.Label("Optimized battery charging"), read: true,
+            persistence: CapabilityPersistence.DevicePersistent)
     ];
     private readonly ObservedValues _observed = new();
     private ManagementObject? _wmi;
     private bool _supported = true;
     private bool _unknownOriginalChanged;
     private bool _visibilityDecided;
-    private bool _restoreUnverified;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _supported ? Controls : [];
     internal override IReadOnlyList<CapabilityState> States => _supported
@@ -161,25 +156,12 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         }
     }
 
-    /// <summary>Writes the retained protection bit once and records matched, mismatched or unavailable readback.</summary>
+    /// <summary>Writes the retained protection bit once; the accepted write completes the restore.</summary>
     private async ValueTask RestoreAsync(AcerBatteryOriginal original, CancellationToken token)
     {
         Write(original.Enabled, token);
-        bool? verified = null;
-        try
-        {
-            verified = Read().Enabled is { } enabled ? enabled == original.Enabled : null;
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            DeviceTrace.Warn(ServiceId, $"Restored protection observation unavailable: {exception.Message}");
-        }
-
-        _restoreUnverified |= verified != true;
-        if (verified != false)
-        {
-            await context.Journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
-        }
+        await context.Journal.CompleteRestoreAsync(ServiceId,
+            () => Read().Enabled is { } enabled ? enabled == original.Enabled : null).ConfigureAwait(false);
     }
 
     /// <summary>Restores a captured original before closing WMI; unknown originals remain ReleasedUnverified.</summary>
@@ -194,7 +176,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
                     RestoreAsync, token).ConfigureAwait(false);
             }
 
-            return Set(_unknownOriginalChanged || _restoreUnverified || context.Journal.HasUnrestoredMutation(ServiceId)
+            return Set(_unknownOriginalChanged || context.Journal.HasUnrestoredMutation(ServiceId)
                 ? DeviceServiceState.ReleasedUnverified : DeviceServiceState.Idle);
         }
         finally

@@ -3,6 +3,11 @@ using LibHandheld.Internal.Lifecycle;
 
 namespace LibHandheld.Internal.Capabilities;
 
+/// <summary>The checks every native command passes before its family touches hardware.</summary>
+/// <remarks>
+///     This is the one write-budget check a command gets before dispatch: a deadline that leaves less than
+///     <see cref="DeviceWriteBudget.Minimum" /> is refused here as a retryable <see cref="CapabilityReasonCode.Quiescing" />.
+/// </remarks>
 internal static class CommandAdmission
 {
     internal static CapabilityReason? Validate(CapabilityCommand command, CapabilityDescriptor descriptor,
@@ -11,7 +16,7 @@ internal static class CommandAdmission
         if (!DeviceWriteBudget.IsAvailable(command.Deadline))
         {
             return new CapabilityReason(CapabilityReasonCode.Quiescing,
-                "The command deadline leaves too little time for a native write.");
+                "The command deadline leaves too little time for a native write.", true);
         }
 
         if (onAcPower is { } ac && (ac ? !descriptor.AvailableOnAc : !descriptor.AvailableOnDc))

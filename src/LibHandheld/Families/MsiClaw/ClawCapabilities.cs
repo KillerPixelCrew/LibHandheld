@@ -13,26 +13,11 @@ namespace LibHandheld.Families.MsiClaw;
 /// </remarks>
 internal static class ClawApplied
 {
-    public static CapabilityCommandResult Failed(CapabilityCommand command, string operation, Exception exception,
-        CancellationToken cancellationToken)
+    /// <summary>Traces a write that failed after it began and reports its effect as unknown.</summary>
+    public static CapabilityCommandResult Failed(CapabilityCommand command, string operation, Exception exception)
     {
         DeviceTrace.Failure(operation, $"The {operation} write failed", exception);
-        return CommandResults.Indeterminate(
-            command,
-            exception is OperationCanceledException && cancellationToken.IsCancellationRequested
-                ? CapabilityReasonCode.Quiescing
-                : CapabilityReasonCode.TransportFaulted,
-            $"The {operation} write failed after it began: {exception.GetType().Name}.");
-    }
-
-    public static CapabilityCommandResult Refused(CapabilityCommand command, string operation, Exception exception,
-        CancellationToken cancellationToken)
-    {
-        return CommandResults.Rejected(command,
-            exception is OperationCanceledException && cancellationToken.IsCancellationRequested
-                ? CapabilityReasonCode.Quiescing
-                : CapabilityReasonCode.TransportFaulted,
-            $"The {operation} preparation failed before any write: {exception.GetType().Name}.");
+        return CommandResults.TransportFailure(command, dispatched: true, exception);
     }
 
     /// <summary>Byte 1 of a getter response: HC's <c>WMI.Get</c> strips the status byte, then reads index 0.</summary>
@@ -234,7 +219,7 @@ internal sealed class ClawPowerCapability(
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return ClawApplied.Failed(command, "scenario", exception, cancellationToken);
+            return ClawApplied.Failed(command, "scenario", exception);
         }
 
         WrittenScenario = (byte)value;
@@ -287,7 +272,7 @@ internal sealed class ClawPowerCapability(
         {
             WrittenLimits = null;
             LimitsWrittenAt = null;
-            return ClawApplied.Failed(command, "power", exception, cancellationToken);
+            return ClawApplied.Failed(command, "power", exception);
         }
 
         WrittenLimits = (sustainedWatts, boostWatts);
@@ -361,7 +346,7 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return ClawApplied.Failed(command, "charge-limit", exception, cancellationToken);
+            return ClawApplied.Failed(command, "charge-limit", exception);
         }
 
         Written = new ChargeLimitState(percent, wanted);
@@ -398,13 +383,10 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
 
         var percentage = (byte)((_chargeEnvelope ?? MaximumPercent) & 0x7F);
         var wanted = (byte)(percentage | (enabled ? BatteryMaster : 0));
-        try
+        if (cancellationToken.IsCancellationRequested)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-        }
-        catch (OperationCanceledException exception)
-        {
-            return ClawApplied.Refused(command, "charge-protection", exception, cancellationToken);
+            return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
+                "The charge-protection write was cancelled before dispatch.", true);
         }
 
         try
@@ -414,7 +396,7 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return ClawApplied.Failed(command, "charge-protection", exception, cancellationToken);
+            return ClawApplied.Failed(command, "charge-protection", exception);
         }
 
         _chargeEnvelope = wanted;
@@ -538,8 +520,8 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return dispatched
-                ? ClawApplied.Failed(command, "fan duty", exception, token)
-                : ClawApplied.Refused(command, "fan duty", exception, token);
+                ? ClawApplied.Failed(command, "fan duty", exception)
+                : CommandResults.TransportFailure(command, dispatched: false, exception);
         }
     }
 
@@ -571,7 +553,7 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return ClawApplied.Failed(command, "fan mode", exception, cancellationToken);
+            return ClawApplied.Failed(command, "fan mode", exception);
         }
 
         _writtenMode = (custom, full);
@@ -618,7 +600,7 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return ClawApplied.Failed(command, "fan curve", exception, cancellationToken);
+            return ClawApplied.Failed(command, "fan curve", exception);
         }
 
         WrittenCurve = [.. curve];
@@ -818,7 +800,7 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
             }
             catch (OperationCanceledException exception)
             {
-                return ClawApplied.Refused(command, "lighting", exception, cancellationToken);
+                return CommandResults.TransportFailure(command, dispatched: false, exception);
             }
         }
 
@@ -831,7 +813,7 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return ClawApplied.Failed(command, "lighting", exception, cancellationToken);
+            return ClawApplied.Failed(command, "lighting", exception);
         }
 
         _profile = payload;

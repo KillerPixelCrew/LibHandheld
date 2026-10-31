@@ -86,10 +86,7 @@ internal sealed class GpdNativeService()
         {
             _protocol?.Dispose();
             _protocol = null;
-            return ValueTask.FromResult(dispatched
-                ? CommandResults.Indeterminate(command,
-                    CapabilityReasonCode.TransportFaulted, exception.Message)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message));
+            return ValueTask.FromResult(CommandResults.TransportFailure(command, dispatched, exception));
         }
     }
 

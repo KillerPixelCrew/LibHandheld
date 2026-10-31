@@ -1,4 +1,3 @@
-using System.Threading.Channels;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
 
@@ -7,87 +6,36 @@ namespace LibHandheld.Internal.Windows;
 /// <summary>Older KUN and Loki firmware emits Guide as the left-button + XButton2 mouse chord.</summary>
 internal sealed class OemMouseChordSource : IProfiledOemSource
 {
-    private readonly LowLevelHook _hook = new(14, "LibHandheld OEM mouse chord");
-    private Channel<bool>? _edges;
-    private volatile bool _failed;
+    private readonly LowLevelHookPump<bool> _pump;
     private bool _left;
     private bool _pressed;
-    private Task? _pump;
-    private volatile bool _running;
     private bool _x2;
-    public bool IsConnected => _running && !_failed;
 
-    public async ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish, CancellationToken token)
+    public OemMouseChordSource()
     {
-        token.ThrowIfCancellationRequested();
-        _failed = false;
-        _edges = Channel.CreateUnbounded<bool>(new UnboundedChannelOptions
-            { SingleReader = true, SingleWriter = true });
-        var events = _edges;
-        _pump = Task.Run(async () =>
-        {
-            await foreach (var down in events.Reader.ReadAllAsync().ConfigureAwait(false))
-            {
-                publish("guide-mouse", CanonicalButtons.Guide, down);
-            }
-        }, CancellationToken.None);
-        try
-        {
-            var started = await _hook.StartMouseAsync(Handle, exception =>
-                {
-                    _failed = true;
-                    ReleaseHeld();
-                    events.Writer.TryComplete(exception);
-                },
-                token, ReleaseHeld).ConfigureAwait(false);
-            _running = started;
-            if (!started)
-            {
-                await StopAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-
-            return started;
-        }
-        catch
-        {
-            await StopAsync(CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
+        _pump = new LowLevelHookPump<bool>("LibHandheld OEM mouse chord", Handle, ReleaseHeld, Reset);
     }
 
-    public async ValueTask StopAsync(CancellationToken token)
+    public bool IsConnected => _pump.IsConnected;
+
+    public ValueTask<bool> StartAsync(Action<string, CanonicalButtons, bool> publish, CancellationToken token)
     {
-        await _hook.StopAsync(token).ConfigureAwait(false);
-        _running = false;
-        _edges?.Writer.TryComplete();
-        try
-        {
-            if (_pump is not null)
-            {
-                await _pump.WaitAsync(token).ConfigureAwait(false);
-            }
-        }
-        finally
-        {
-            if (_pump is null || _pump.IsCompleted)
-            {
-                _pump = null;
-                _edges = null;
-                _left = false;
-                _x2 = false;
-                _pressed = false;
-            }
-        }
+        return _pump.StartAsync(down => publish("guide-mouse", CanonicalButtons.Guide, down), install: true, token);
+    }
+
+    public ValueTask StopAsync(CancellationToken token)
+    {
+        return _pump.StopAsync(token);
     }
 
     public ValueTask DisposeAsync()
     {
-        return StopAsync(CancellationToken.None);
+        return _pump.DisposeAsync();
     }
 
     private bool Handle(in MouseHookEvent mouse)
     {
-        if (_failed || mouse.Injected)
+        if (_pump.Failed || mouse.Injected)
         {
             return false;
         }
@@ -105,7 +53,7 @@ internal sealed class OemMouseChordSource : IProfiledOemSource
         if (down != _pressed)
         {
             _pressed = down;
-            _edges?.Writer.TryWrite(down);
+            _pump.Write(down);
         }
 
         // HC uses silenced:false. Both physical edges must reach Windows.
@@ -117,7 +65,14 @@ internal sealed class OemMouseChordSource : IProfiledOemSource
         if (_pressed)
         {
             _pressed = false;
-            _edges?.Writer.TryWrite(false);
+            _pump.Write(false);
         }
+    }
+
+    private void Reset()
+    {
+        _left = false;
+        _x2 = false;
+        _pressed = false;
     }
 }

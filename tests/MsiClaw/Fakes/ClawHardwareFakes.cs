@@ -110,7 +110,7 @@ internal sealed class FakeWmiTransport : IMsiWmiTransport
         Reads++;
         if (GetterTimeout)
         {
-            throw new OperationCanceledException("Synthetic WMI transport timeout.");
+            throw new TimeoutException("Synthetic WMI transport timeout.");
         }
 
         return ValueTask.FromResult((byte[])[.. _responses[(methodName, selector)]]);
@@ -124,7 +124,7 @@ internal sealed class FakeWmiTransport : IMsiWmiTransport
         cancellationToken.ThrowIfCancellationRequested();
         if (SetterTimeout)
         {
-            throw new OperationCanceledException("Synthetic WMI transport timeout.");
+            throw new TimeoutException("Synthetic WMI transport timeout.");
         }
 
         if (FailNextSetter)

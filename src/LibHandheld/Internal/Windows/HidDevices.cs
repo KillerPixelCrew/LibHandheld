@@ -83,11 +83,7 @@ internal static partial class HidDevices
 
     private static readonly nint InvalidHandleValue = new(-1);
 
-    private static readonly NativeDevice.DevPropKey LocationPathsKey = new()
-    {
-        FormatId = NativeDevice.DevicePropertyCategory,
-        PropertyId = 37
-    };
+    private static readonly PropertyKey LocationPathsKey = new(NativeDevice.DevicePropertyCategory, propertyId: 37);
 
     internal static HidCollection? Unique(IEnumerable<HidCollection> collections, Func<HidCollection, bool> matches)
     {
@@ -173,15 +169,23 @@ internal static partial class HidDevices
     {
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(token);
         bounded.CancelAfter(timeout);
-        // Submit once. Unrelated queued reports are read without resending the command.
-        await stream.WriteAsync(request, bounded.Token).ConfigureAwait(false);
-        await stream.FlushAsync(bounded.Token).ConfigureAwait(false);
-        if (settle > TimeSpan.Zero)
+        try
         {
-            await Task.Delay(settle, bounded.Token).ConfigureAwait(false);
-        }
+            // Submit once. Unrelated queued reports are read without resending the command.
+            await stream.WriteAsync(request, bounded.Token).ConfigureAwait(false);
+            await stream.FlushAsync(bounded.Token).ConfigureAwait(false);
+            if (settle > TimeSpan.Zero)
+            {
+                await Task.Delay(settle, bounded.Token).ConfigureAwait(false);
+            }
 
-        return await ReadMatchingAsync(stream, responseLength, matches, bounded.Token).ConfigureAwait(false);
+            return await ReadMatchingAsync(stream, responseLength, matches, bounded.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            // The exchange's own bound elapsing is a transport fault, not the caller cancelling.
+            throw new TimeoutException($"No matching HID reply arrived within {timeout.TotalMilliseconds:0} ms.");
+        }
     }
 
     /// <summary>Whether an interface or instance path belongs to one of the given products.</summary>
@@ -590,24 +594,14 @@ internal static partial class HidDevices
             return null;
         }
 
-        if (!NativeHid.HidD_GetPreparsedData(handle, out var preparsed))
+        var status = NativeHid.ReadCaps(handle, out var preparsed, out var caps);
+        preparsed?.Dispose();
+        if (status != HidCapsStatus.Ok)
         {
-            problem = "no report descriptor";
+            problem = status == HidCapsStatus.NoDescriptor
+                ? "no report descriptor"
+                : "its capabilities could not be read";
             return null;
-        }
-
-        NativeHid.HidCaps caps;
-        try
-        {
-            if (NativeHid.HidP_GetCaps(preparsed, out caps) != NativeHid.HIDP_STATUS_SUCCESS)
-            {
-                problem = "its capabilities could not be read";
-                return null;
-            }
-        }
-        finally
-        {
-            _ = NativeHid.HidD_FreePreparsedData(preparsed);
         }
 
         return new HidCollection

@@ -50,9 +50,12 @@ public sealed class GenericModelsTests
     public void TecnoUsesMsbNumberedHhdBitsAndLokiDutyUsesIts128StepScale()
     {
         byte[] report = [0x74, 0, 0, 0, 0, 3, 0, 32];
-        Assert.Equal((byte)7, TecnoButtonSource.Decode(report));
+        var source = TecnoButtonSource.Create();
+        Assert.True(source.TryDecode(report, out var state));
+        Assert.Equal(7u, state);
         report[0] = 0x75;
-        Assert.Equal((byte)0, TecnoButtonSource.Decode(report));
+        Assert.False(source.TryDecode(report, out state));
+        Assert.Equal(0u, state);
         Assert.Equal((byte)128, AynNativeService.EncodeDuty(100));
         Assert.Equal((byte)64, AynNativeService.EncodeDuty(50));
     }

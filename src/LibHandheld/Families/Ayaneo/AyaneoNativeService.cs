@@ -199,7 +199,7 @@ internal sealed class AyaneoNativeService(
             }
 
             PublishStates();
-            return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message);
+            return CommandResults.TransportFailure(command, dispatched: true, exception);
         }
     }
 
@@ -628,104 +628,68 @@ internal sealed class AyaneoNativeService(
 
     internal static IReadOnlyList<CapabilityDescriptor> Describe(AyaneoModel model)
     {
+        const CapabilityPersistence persistent = CapabilityPersistence.DevicePersistent;
         var descriptors = new List<CapabilityDescriptor>
         {
-            Value(BypassId, CapabilityRole.ChargeBypass, "Bypass charging", CapabilityValueKind.Boolean) with
-            {
-                SupportsRead = true
-            }
+            CapabilityDescriptors.Boolean(BypassId, CapabilityRole.ChargeBypass,
+                CapabilityDescriptors.Label("Bypass charging"), read: true, persistence: persistent)
         };
         if (model.Lighting != AyaneoLighting.None)
         {
-            descriptors.Add(Value(LightPowerId, CapabilityRole.LightingPower, "Lighting", CapabilityValueKind.Boolean));
-            descriptors.Add(Value(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness,
-                    "Lighting brightness", CapabilityValueKind.Integer)
-                with
-                {
-                    Minimum = 0, Maximum = 100, Step = 1, Unit = CapabilityUnit.Percent
-                });
-            descriptors.Add(Value(CapabilityIds.LightingColor, CapabilityRole.LightingZoneColor, "Left stick colour",
-                    CapabilityValueKind.Color) with
-                {
-                    InstanceId = "left"
-                });
-            descriptors.Add(Value(CapabilityIds.LightingColor, CapabilityRole.LightingZoneColor, "Right stick colour",
-                    CapabilityValueKind.Color) with
-                {
-                    InstanceId = "right"
-                });
+            descriptors.Add(CapabilityDescriptors.Boolean(LightPowerId, CapabilityRole.LightingPower,
+                CapabilityDescriptors.Label("Lighting"), read: false, persistence: persistent));
+            descriptors.Add(CapabilityDescriptors.Integer(CapabilityIds.LightingBrightness,
+                CapabilityRole.LightingBrightness, CapabilityDescriptors.Label("Lighting brightness"), minimum: 0,
+                maximum: 100, CapabilityUnit.Percent, read: false, write: true, persistent));
+            descriptors.Add(CapabilityDescriptors.Color(CapabilityIds.LightingColor, "left",
+                CapabilityDescriptors.Label("Left stick colour"), read: false, persistent));
+            descriptors.Add(CapabilityDescriptors.Color(CapabilityIds.LightingColor, "right",
+                CapabilityDescriptors.Label("Right stick colour"), read: false, persistent));
             if (model.Lighting == AyaneoLighting.SuperJoy)
             {
-                descriptors.Add(Value(CapabilityIds.LightingEffect, CapabilityRole.LightingEffect, "Lighting effect",
-                        CapabilityValueKind.Choice)
-                    with
-                    {
-                        Choices = CapabilityDescriptors.Choices(new[] { "solid", "pulse", "rainbow" })
-                    });
+                descriptors.Add(CapabilityDescriptors.Choice(CapabilityIds.LightingEffect,
+                    CapabilityRole.LightingEffect, CapabilityDescriptors.Label("Lighting effect"),
+                    CapabilityDescriptors.Choices(["solid", "pulse", "rainbow"]), read: false, write: true,
+                    persistent));
             }
         }
 
         if (model.SecondaryDisplay)
         {
-            descriptors.Add(Value(SecondaryId, CapabilityRole.GenericRange, "Secondary display brightness",
-                    CapabilityValueKind.Integer)
-                with
-                {
-                    Minimum = 0, Maximum = 100, Step = 1, Unit = CapabilityUnit.Percent, SupportsRead = true
-                });
+            descriptors.Add(CapabilityDescriptors.Integer(SecondaryId, CapabilityRole.GenericRange,
+                CapabilityDescriptors.Label("Secondary display brightness"), minimum: 0, maximum: 100,
+                CapabilityUnit.Percent, read: true, write: true, persistent));
         }
 
         if (model.ModularController)
         {
-            descriptors.Add(Value(VibrationId, CapabilityRole.GenericChoice, "Controller vibration strength",
-                    CapabilityValueKind.Choice)
-                with
-                {
-                    Choices = CapabilityDescriptors.Choices(new[] { "disabled", "low", "medium", "high" })
-                });
-            descriptors.Add(Value("controller.modules", CapabilityRole.GenericReadOnly, "Connected modules",
-                    CapabilityValueKind.Choice)
-                with
-                {
-                    SupportsRead = true, SupportsWrite = false,
-                    Choices = CapabilityDescriptors.Choices(new[] { "both", "left", "right", "none" })
-                });
+            descriptors.Add(CapabilityDescriptors.Choice(VibrationId, CapabilityRole.GenericChoice,
+                CapabilityDescriptors.Label("Controller vibration strength"),
+                CapabilityDescriptors.Choices(["disabled", "low", "medium", "high"]), read: false, write: true,
+                persistent));
+            descriptors.Add(CapabilityDescriptors.Choice("controller.modules", CapabilityRole.GenericReadOnly,
+                CapabilityDescriptors.Label("Connected modules"),
+                CapabilityDescriptors.Choices(["both", "left", "right", "none"]), read: true, write: false,
+                persistent));
             foreach (var side in new[] { (ModuleLeftId, "Left module"), (ModuleRightId, "Right module") })
             {
-                descriptors.Add(Value(side.Item1, CapabilityRole.GenericReadOnly, side.Item2, CapabilityValueKind.Text)
-                    with
-                    {
-                        SupportsRead = true, SupportsWrite = false, MaximumLength = 80
-                    });
+                descriptors.Add(CapabilityDescriptors.Text(side.Item1, CapabilityRole.GenericReadOnly,
+                    CapabilityDescriptors.Label(side.Item2), maximumLength: 80, persistent));
             }
 
-            descriptors.Add(Value(MappingId, CapabilityRole.GenericAction, "Configure OEM controller keys",
-                    CapabilityValueKind.None)
-                with
-                {
-                    SupportsWrite = false, SupportsAction = true
-                });
+            descriptors.Add(CapabilityDescriptors.Action(MappingId, CapabilityRole.GenericAction,
+                CapabilityDescriptors.Label("Configure OEM controller keys"), persistent));
             foreach (var side in new[] { "left", "right", "both" })
             {
-                descriptors.Add(Value(EjectId, CapabilityRole.GenericAction, "Eject " + side + " module",
-                        CapabilityValueKind.None)
-                    with
-                    {
-                        InstanceId = side, SupportsWrite = false, SupportsAction = true
-                    });
+                descriptors.Add(CapabilityDescriptors.Action(EjectId, CapabilityRole.GenericAction,
+                    CapabilityDescriptors.Label("Eject " + side + " module"), persistent) with
+                {
+                    InstanceId = side
+                });
             }
         }
 
         return Array.AsReadOnly(descriptors.ToArray());
-    }
-
-    private static CapabilityDescriptor Value(string id, CapabilityRole role, string label, CapabilityValueKind kind)
-    {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, Display = CapabilityDescriptors.Label(label), ValueKind = kind,
-            SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
-        };
     }
 }
 

@@ -106,12 +106,9 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
 
         DeviceWriteBudget.Require(deadline, "controller re-enumeration");
 
-        await Serializer.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        ControllerTopology? switched = null;
+        await AdmitAsync(async endpoint =>
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            var endpoint = FindMcu()
-                           ?? throw new FileNotFoundException("The Claw MCU HID collection was not present.");
             if (!HidDevices.SamePhysicalLocation(endpoint.PhysicalLocation, physicalLocation))
             {
                 throw new InvalidOperationException("The MCU endpoint moved to another physical USB location.");
@@ -149,7 +146,8 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
                         topology.PhysicalLocation,
                         physicalLocation))
                 {
-                    return topology;
+                    switched = topology;
+                    return;
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken).ConfigureAwait(false);
@@ -157,11 +155,8 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
 
             throw new TimeoutException(
                 "The controller did not re-enumerate in the requested mode at its physical location.");
-        }
-        finally
-        {
-            Serializer.Release();
-        }
+        }, cancellationToken).ConfigureAwait(false);
+        return switched!;
     }
 
     /// <inheritdoc />
@@ -174,21 +169,29 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
     }
 
     /// <summary>Runs one profile exchange on a fresh MCU stream while holding the transport gate.</summary>
+    private ValueTask ExchangeAsync(Func<FileStream, ValueTask> exchange, CancellationToken cancellationToken)
+    {
+        return AdmitAsync(async endpoint =>
+        {
+            await using var stream = HidDevices.OpenStream(endpoint);
+            await exchange(stream).ConfigureAwait(false);
+        }, cancellationToken);
+    }
+
+    /// <summary>Holds the transport gate, rejects a disposed transport and finds the MCU for one operation.</summary>
     /// <remarks>
-    ///     <see cref="SwitchModeAsync" /> keeps its own copy of this admission: it checks the location and
-    ///     closes the stream before it waits for re-enumeration.
+    ///     The operation opens its own stream: a profile exchange keeps it for the exchange, while
+    ///     <see cref="SwitchModeAsync" /> checks the location and closes it before it waits for re-enumeration.
     /// </remarks>
-    private async ValueTask ExchangeAsync(Func<FileStream, ValueTask> exchange, CancellationToken cancellationToken)
+    private async ValueTask AdmitAsync(Func<HidCollection, ValueTask> operation, CancellationToken cancellationToken)
     {
         await Serializer.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             var endpoint = FindMcu()
-                           ?? throw new FileNotFoundException(
-                               "The Claw MCU HID collection was not present.");
-            await using var stream = HidDevices.OpenStream(endpoint);
-            await exchange(stream).ConfigureAwait(false);
+                           ?? throw new FileNotFoundException("The Claw MCU HID collection was not present.");
+            await operation(endpoint).ConfigureAwait(false);
         }
         finally
         {
@@ -210,7 +213,7 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
                 TimeSpan.FromSeconds(1),
                 cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (TimeoutException)
         {
             DeviceTrace.Change("mcu", "ack", "The MCU sent no acknowledgement within 1 s; the write stands, as in HC.");
         }
@@ -260,8 +263,16 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
-        return await HidDevices.ReadMatchingAsync(stream, ClawHardwareFacts.McuReportLength, predicate,
-            deadline.Token).ConfigureAwait(false);
+        try
+        {
+            return await HidDevices.ReadMatchingAsync(stream, ClawHardwareFacts.McuReportLength, predicate,
+                deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The read's own bound elapsing is a transport fault, not the caller cancelling.
+            throw new TimeoutException($"No matching MCU report arrived within {timeout.TotalMilliseconds:0} ms.");
+        }
     }
 }
 

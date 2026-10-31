@@ -60,9 +60,9 @@ firmware-bound journal, then sends one mode selection. It does not rewrite profi
 calibration, lighting, ROM or the other feature fields. An already managed controller needs no
 write. There is no automatic retry of an uncertain selection.
 
-Release, controller-management disable and suspend restore the original mode and observe it.
-Verified restore returns Idle; unavailable observation is unverified, and a mismatched readback
-retains a failed recovery entry. The CLI trial and attended rear capture verified 1/0 -> 1/1 -> 1/0,
+Release, controller-management disable and suspend restore the original mode. The accepted write
+completes the restore and retires the recovery entry; the mode read afterwards only goes to the log,
+so neither a mismatch nor an unavailable observation keeps the entry or repeats the write. The CLI trial and attended rear capture verified 1/0 -> 1/1 -> 1/0,
 independent left/right presses, simultaneous presses and clean releases. This mechanism is
 implemented in LibHandheld; users need no Predator Sense preparation.
 

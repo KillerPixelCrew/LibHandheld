@@ -10,6 +10,19 @@ internal static class AsusAuraProtocol
     internal const ushort Keyboard = 0x1A30;
     internal const ushort Xg2025 = 0x1BC1;
 
+    /// <summary>The earlier XG Mobile docks; like the 2025 dock they carry a 300-byte 5E collection.</summary>
+    internal const ushort Xg1970 = 0x1970;
+
+    internal const ushort Xg1A9A = 0x1A9A;
+
+    /// <summary>Every XG Mobile dock product id.</summary>
+    internal static IReadOnlyList<ushort> XgMobile { get; } = [Xg1970, Xg1A9A, Xg2025];
+
+    internal static bool IsXgMobile(ushort product)
+    {
+        return XgMobile.Contains(product);
+    }
+
     internal static byte ReportId(ushort product)
     {
         return product == Xg2025 ? (byte)0x5E : (byte)0x5D;

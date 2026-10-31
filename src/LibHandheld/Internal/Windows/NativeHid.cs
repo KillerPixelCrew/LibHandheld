@@ -3,21 +3,61 @@ using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Internal.Windows;
 
+/// <summary>The step at which reading a HID collection's capabilities stopped.</summary>
+internal enum HidCapsStatus
+{
+    /// <summary>The descriptor and capabilities were read.</summary>
+    Ok,
+
+    /// <summary>The collection returned no report descriptor.</summary>
+    NoDescriptor,
+
+    /// <summary>The descriptor was read but its capabilities were not.</summary>
+    CapsFailed
+}
+
 /// <summary>Windows HID report descriptors shared by family decoders.</summary>
 internal static unsafe partial class NativeHid
 {
     public const int HIDP_STATUS_SUCCESS = 0x00110000;
 
-    [LibraryImport("hid.dll")]
-    [return: MarshalAs(UnmanagedType.U1)]
-    public static partial bool HidD_GetPreparsedData(SafeFileHandle device, out nint preparsedData);
+    /// <summary>Reads a collection's report descriptor and top-level capabilities.</summary>
+    /// <param name="device">An open collection handle; no access is needed.</param>
+    /// <param name="preparsed">The descriptor on success, owned and disposed by the caller; otherwise null.</param>
+    /// <param name="capabilities">The capabilities on success; otherwise default.</param>
+    /// <returns>Which step failed, so each caller keeps its own message.</returns>
+    public static HidCapsStatus ReadCaps(SafeFileHandle device, out PreparsedData? preparsed,
+        out HidCaps capabilities)
+    {
+        preparsed = null;
+        capabilities = default;
+        if (!HidD_GetPreparsedData(device, out var data))
+        {
+            return HidCapsStatus.NoDescriptor;
+        }
+
+        PreparsedData owned = new(data);
+        if (HidP_GetCaps(data, out capabilities) != HIDP_STATUS_SUCCESS)
+        {
+            owned.Dispose();
+            capabilities = default;
+            return HidCapsStatus.CapsFailed;
+        }
+
+        preparsed = owned;
+        return HidCapsStatus.Ok;
+    }
 
     [LibraryImport("hid.dll")]
     [return: MarshalAs(UnmanagedType.U1)]
-    public static partial bool HidD_FreePreparsedData(nint preparsedData);
+    private static partial bool HidD_GetPreparsedData(SafeFileHandle device, out nint preparsedData);
+
+    [LibraryImport("hid.dll")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    private static partial bool HidD_FreePreparsedData(nint preparsedData);
 
     [DllImport("hid.dll")]
-    public static extern int HidP_GetCaps(nint preparsedData, out HidCaps capabilities);
+    private static extern int HidP_GetCaps(nint preparsedData, out HidCaps capabilities);
 
     [DllImport("hid.dll")]
     public static extern int HidP_GetUsageValue(int kind, ushort page, ushort link, ushort usage, out uint value,
@@ -68,6 +108,23 @@ internal static unsafe partial class NativeHid
     [LibraryImport("hid.dll")]
     public static partial int HidP_GetValueCaps(int reportType, [Out] HidpCapsEntry[] capabilities,
         ref ushort length, nint preparsedData);
+
+    /// <summary>Owns one collection's preparsed report descriptor and frees it on dispose.</summary>
+    public sealed class PreparsedData : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        internal PreparsedData(nint data) : base(ownsHandle: true)
+        {
+            SetHandle(data);
+        }
+
+        /// <summary>The descriptor pointer the HidP functions take; valid until dispose.</summary>
+        public nint Value => handle;
+
+        protected override bool ReleaseHandle()
+        {
+            return HidD_FreePreparsedData(handle);
+        }
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct HidCaps

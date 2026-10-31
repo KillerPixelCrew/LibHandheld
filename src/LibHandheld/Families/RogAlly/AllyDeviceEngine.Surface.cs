@@ -64,12 +64,10 @@ internal sealed partial class AllyDeviceEngine
                 CapabilityDescriptors.Label("Left stick ring"), read: false, CapabilityPersistence.Unknown),
             CapabilityDescriptors.Color(CapabilityIds.LightingColor, CapabilityInstances.Right,
                 CapabilityDescriptors.Label("Right stick ring"), read: false, CapabilityPersistence.Unknown),
-            CapabilityDescriptors.Choice(CapabilityIds.Controller, CapabilityRole.ControllerSource,
-                new CapabilityDisplay { Key = DisplayKey.Controller },
-                CapabilityDescriptors.Choices(SourceOwnership.Choices), read: true, write: false),
-            CapabilityDescriptors.Choice(CapabilityIds.Motion, CapabilityRole.MotionSource,
-                new CapabilityDisplay { Key = DisplayKey.Motion }, CapabilityDescriptors.Choices(SourceOwnership.Choices),
-                read: true, write: false),
+            CapabilityDescriptors.Ownership(CapabilityIds.Controller, CapabilityRole.ControllerSource,
+                new CapabilityDisplay { Key = DisplayKey.Controller }),
+            CapabilityDescriptors.Ownership(CapabilityIds.Motion, CapabilityRole.MotionSource,
+                new CapabilityDisplay { Key = DisplayKey.Motion }),
             CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
                 new CapabilityDisplay { Key = DisplayKey.Rumble })
         ];
@@ -80,41 +78,66 @@ internal sealed partial class AllyDeviceEngine
         };
     }
 
-    private async ValueTask PublishStatesAsync(CancellationToken cancellationToken)
+    private ValueTask PublishStatesAsync(CancellationToken cancellationToken)
     {
-        if (_descriptorSet is null)
-        {
-            return;
-        }
-
-        foreach (var descriptor in _descriptorSet.Descriptors)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (ServiceFor(descriptor.CapabilityId) is not { } service)
-            {
-                continue;
-            }
-
-            if (descriptor.CapabilityId == CapabilityIds.FanReading)
-            {
-                _observedValues.Read(descriptor.CapabilityId, CurrentState(descriptor), descriptor.InstanceId);
-            }
-
-            var ownership = descriptor.CapabilityId is CapabilityIds.Controller or CapabilityIds.Motion;
-            var value = ownership
-                ? CurrentState(descriptor)
-                : _observedValues.Value(descriptor.CapabilityId, descriptor.InstanceId);
-            var owned = service.State is DeviceServiceState.Owned;
-            await _publications.PublishCapabilityStateAsync(ProviderControls.State(descriptor.CapabilityId, owned,
-                value,
-                descriptor.CapabilityId == CapabilityIds.FanReading ? _fans?.TelemetryObservedAt
-                : ownership ? service.ChangedAt
-                : _observedValues.Time(descriptor.CapabilityId, descriptor.InstanceId),
-                owned ? null : service.Reason ?? DeviceServiceLifecycle.ReasonFor(service.State),
-                descriptor.InstanceId), cancellationToken).ConfigureAwait(false);
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        PublishStates(null, null);
+        return ValueTask.CompletedTask;
     }
 
+    /// <summary>Publishes the states a service owns after its state changed outside a serialized turn.</summary>
+    /// <param name="service">The service whose fault or reconnection callback changed its state.</param>
+    /// <remarks>
+    ///     A reader fault, a failed reconnection or a returned pad changes the controller's state on a transport
+    ///     thread; publishing it there keeps the telemetry tick to the fan readings it samples.
+    /// </remarks>
+    private void PublishServiceStates(DeviceServiceStatus service)
+    {
+        PublishStates(null, service);
+    }
+
+    /// <summary>Publishes every state, or only one capability's or one service's.</summary>
+    /// <remarks>
+    ///     Locked so a state computed on a transport callback and one computed in a serialized turn are stored in
+    ///     the order they were read; the later read always wins.
+    /// </remarks>
+    private void PublishStates(string? capabilityId, DeviceServiceStatus? owner)
+    {
+        lock (_publishGate)
+        {
+            if (_descriptorSet is not { } descriptors)
+            {
+                return;
+            }
+
+            foreach (var descriptor in descriptors.Descriptors)
+            {
+                if ((capabilityId is not null && descriptor.CapabilityId != capabilityId)
+                    || ServiceFor(descriptor.CapabilityId) is not { } service
+                    || (owner is not null && service != owner))
+                {
+                    continue;
+                }
+
+                if (descriptor.CapabilityId == CapabilityIds.FanReading)
+                {
+                    _observedValues.Read(descriptor.CapabilityId, CurrentState(descriptor), descriptor.InstanceId);
+                }
+
+                var ownership = descriptor.CapabilityId is CapabilityIds.Controller or CapabilityIds.Motion;
+                var value = ownership
+                    ? CurrentState(descriptor)
+                    : _observedValues.Value(descriptor.CapabilityId, descriptor.InstanceId);
+                var owned = service.State is DeviceServiceState.Owned;
+                _publications.Publish(ProviderControls.State(descriptor.CapabilityId, owned, value,
+                    descriptor.CapabilityId == CapabilityIds.FanReading ? _fans?.TelemetryObservedAt
+                    : ownership ? service.ChangedAt
+                    : _observedValues.Time(descriptor.CapabilityId, descriptor.InstanceId),
+                    owned ? null : service.Reason ?? DeviceServiceLifecycle.ReasonFor(service.State),
+                    descriptor.InstanceId));
+            }
+        }
+    }
     private CapabilityValue? CurrentState(CapabilityDescriptor descriptor)
     {
         switch (descriptor.CapabilityId)

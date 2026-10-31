@@ -8,22 +8,23 @@ internal sealed unsafe class HidUsageReader : IDisposable
 {
     private readonly ushort[] _usages;
     private readonly HidCapability[] _values;
+    private readonly NativeHid.PreparsedData _preparsed;
     private nint _data;
 
     internal HidUsageReader(SafeFileHandle handle)
     {
-        if (!NativeHid.HidD_GetPreparsedData(handle, out _data))
+        var status = NativeHid.ReadCaps(handle, out var preparsed, out var caps);
+        if (status != HidCapsStatus.Ok)
         {
-            throw new IOException("The HID report descriptor is unavailable.");
+            throw new IOException(status == HidCapsStatus.NoDescriptor
+                ? "The HID report descriptor is unavailable."
+                : "HID capabilities are unavailable.");
         }
 
+        _preparsed = preparsed!;
+        _data = _preparsed.Value;
         try
         {
-            if (NativeHid.HidP_GetCaps(_data, out var caps) != NativeHid.HIDP_STATUS_SUCCESS)
-            {
-                throw new IOException("HID capabilities are unavailable.");
-            }
-
             InputLength = caps.InputReportByteLength;
             _values = HidDevices.InputValues(_data, caps.NumberInputValueCaps);
             _usages = new ushort[Math.Max(1, (int)NativeHid.HidP_MaxUsageListLength(0, 0, _data))];
@@ -44,8 +45,8 @@ internal sealed unsafe class HidUsageReader : IDisposable
             return;
         }
 
-        _ = NativeHid.HidD_FreePreparsedData(_data);
         _data = 0;
+        _preparsed.Dispose();
     }
 
     internal bool HasValue(ushort usage, ushort page = 1)

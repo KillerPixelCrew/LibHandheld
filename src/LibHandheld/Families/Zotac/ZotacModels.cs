@@ -40,7 +40,7 @@ internal static class ZotacModels
             new KeyboardOemChord("m1", "M1", [0xA2, 0x5B, 0x7A], CanonicalButtons.RearPaddle1),
             new KeyboardOemChord("m2", "M2", [0xA2, 0x5B, 0x7B], CanonicalButtons.RearPaddle2)
         ],
-        CreateOemSource = () => new ZotacWheelSource(), NativeOemReplacesChords = [],
+        CreateOemSource = ZotacWheelSource.Create, NativeOemReplacesChords = [],
         OemControls = ZotacWheelSource.Controls,
         NativeRoles =
         [

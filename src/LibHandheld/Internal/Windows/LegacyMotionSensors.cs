@@ -800,13 +800,6 @@ internal sealed partial class LegacyMotionSensors : IDisposable
         PropertyKey[] AccelerometerAxes,
         bool HasCounter);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PropertyKey(Guid formatId, uint propertyId)
-    {
-        public Guid FormatId = formatId;
-        public uint PropertyId = propertyId;
-    }
-
     [StructLayout(LayoutKind.Explicit, Size = 24)]
     private struct PropVariant
     {

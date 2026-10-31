@@ -301,9 +301,7 @@ internal sealed class OneXNativeService(
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return sent
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
+            return CommandResults.TransportFailure(command, sent, exception);
         }
     }
 

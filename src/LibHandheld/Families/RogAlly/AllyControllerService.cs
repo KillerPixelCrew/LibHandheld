@@ -97,6 +97,10 @@ internal sealed class AllyMotionService(IAllyMotionSource source)
 /// <param name="buttons">Shared OEM-button holds and latches merged into controller samples.</param>
 /// <param name="host">Host callbacks for controller delivery, physical-device hiding and diagnostics.</param>
 /// <param name="journal">Durable restore obligation for the MCU controller tables.</param>
+/// <param name="stateChanged">
+///     Publishes this service's capability states after a reader fault, a failed reconnection or the pad's
+///     return changed its state outside a serialized turn.
+/// </param>
 internal sealed class ControllerService(
     IAllyControllerSource source,
     IAllyVendorHid vendor,
@@ -104,7 +108,8 @@ internal sealed class ControllerService(
     KeyboardOemService keyboard,
     AllyOemButtonState buttons,
     IDeviceSink host,
-    DeviceRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Controller)
+    DeviceRecoveryJournal journal,
+    Action<DeviceServiceStatus> stateChanged) : DeviceService<AllyIdentityState>(AllyServiceIds.Controller)
 {
     /// <summary>What the Ally's motors can do: two rumble motors, no trigger haptics.</summary>
     /// <remarks>
@@ -341,7 +346,7 @@ internal sealed class ControllerService(
                 _configured = true;
             }
 
-            var refused = await WriteTablesAsync(AllyProtocol.GameModeConfiguration, cancellationToken)
+            var refused = await WriteTablesAsync(vendor, AllyProtocol.GameModeConfiguration, cancellationToken)
                 .ConfigureAwait(false);
             rearWritten = !refused.Contains(AllyProtocol.RearKeyboardMapping);
             DeviceTrace.Write(rearWritten ? DeviceTraceLevel.Info : DeviceTraceLevel.Error, "controller", rearWritten
@@ -360,8 +365,13 @@ internal sealed class ControllerService(
     }
 
     /// <summary>Sends every table even when one is refused, as HC does; each is one write, never retried.</summary>
+    /// <param name="vendor">The vendor collection the tables go to.</param>
+    /// <param name="reports">The tables, in HC's order.</param>
+    /// <param name="cancellationToken">Cancels the remaining writes.</param>
     /// <returns>The tables the MCU refused, each already traced.</returns>
-    private async ValueTask<IReadOnlyList<byte[]>> WriteTablesAsync(
+    /// <remarks>Shared by acquisition, release and start-of-cycle recovery, so every path traces a refusal alike.</remarks>
+    internal static async ValueTask<IReadOnlyList<byte[]>> WriteTablesAsync(
+        IAllyVendorHid vendor,
         IReadOnlyList<byte[]> reports,
         CancellationToken cancellationToken)
     {
@@ -409,7 +419,7 @@ internal sealed class ControllerService(
                 "Not enough time to write the factory controller tables back; the next start writes them.");
         }
 
-        var refused = await WriteTablesAsync(AllyProtocol.DefaultConfiguration, CancellationToken.None)
+        var refused = await WriteTablesAsync(vendor, AllyProtocol.DefaultConfiguration, CancellationToken.None)
             .ConfigureAwait(false);
         if (refused.Count > 0)
         {
@@ -442,6 +452,7 @@ internal sealed class ControllerService(
 
         DeviceTrace.Write(DeviceTraceLevel.Warn, "controller", detail + "; waiting for the pad to come back.");
         _ = Set(DeviceServiceState.Degraded, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
+        stateChanged(this);
         if (_context is { } context)
         {
             _ = NeutralizeReaderAndReconnectAsync(context);
@@ -481,6 +492,7 @@ internal sealed class ControllerService(
         DeviceTrace.Write(DeviceTraceLevel.Error, "controller",
             detail + "; turn controller management off and on to try again.");
         Fault(new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
+        stateChanged(this);
     }
 
     /// <summary>Takes the pad once it is back: tables again, reader again, identities if they changed.</summary>
@@ -506,6 +518,7 @@ internal sealed class ControllerService(
         await StartReadingAsync(topology, cancellationToken).ConfigureAwait(false);
         DeviceTrace.Write(DeviceTraceLevel.Info, "controller", $"the pad is back: {topology.Observed}.");
         _ = Set(DeviceServiceState.Owned);
+        stateChanged(this);
         return true;
     }
 }

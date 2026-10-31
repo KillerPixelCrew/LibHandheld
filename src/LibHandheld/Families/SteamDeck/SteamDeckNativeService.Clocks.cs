@@ -143,9 +143,7 @@ internal sealed partial class SteamDeckNativeService
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message)
-                : CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message);
+            return CommandResults.TransportFailure(command, dispatched, exception);
         }
     }
 
@@ -181,25 +179,14 @@ internal sealed partial class SteamDeckNativeService
 
     private static CapabilityDescriptor Clock(string id, string? instance, string label, int min, int max)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, InstanceId = instance, Role = CapabilityRole.GenericRange,
-            ValueKind = CapabilityValueKind.Integer,
-            Display = CapabilityDescriptors.Label(label), Minimum = min, Maximum = max, Step = 1,
-            Unit = CapabilityUnit.Megahertz,
-
-            SupportsWrite = true, SupportsRead = false, Persistence = CapabilityPersistence.Volatile
-        };
+        return CapabilityDescriptors.Integer(id, CapabilityRole.GenericRange, CapabilityDescriptors.Label(label), min,
+            max, CapabilityUnit.Megahertz, read: false, write: true, instance: instance);
     }
 
     private static CapabilityDescriptor MeasuredClock(string id, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = CapabilityRole.Telemetry, ValueKind = CapabilityValueKind.Integer,
-            Display = CapabilityDescriptors.Label(label), Minimum = 0, Maximum = 10000, Step = 1,
-            Unit = CapabilityUnit.Megahertz, SupportsRead = true, Persistence = CapabilityPersistence.Volatile
-        };
+        return CapabilityDescriptors.Integer(id, CapabilityRole.Telemetry, CapabilityDescriptors.Label(label),
+            minimum: 0, maximum: 10000, CapabilityUnit.Megahertz, read: true, write: false);
     }
 
     private IEnumerable<CapabilityState> ClockStates()

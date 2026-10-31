@@ -77,7 +77,7 @@ public sealed class AcerControllerModeTests
     }
 
     [Fact]
-    public async Task AFailedRestoreReadbackIsNotReportedCleanOrRetried()
+    public async Task ARestoreReadbackMismatchIsOnlyLoggedAndTheAcceptedWriteRetiresTheEntryWithoutARetry()
     {
         using var directory = new TemporaryDirectory();
         var context = Context(directory.Root);
@@ -87,8 +87,8 @@ public sealed class AcerControllerModeTests
         await service.AcquireAsync(cycle, CancellationToken.None);
         transport.IgnoreWrites = true;
         var release = await service.ReleaseAsync(cycle, CancellationToken.None);
-        Assert.Equal(DeviceServiceState.ReleasedUnverified, release.State);
-        Assert.True(context.Journal.HasUnrestoredMutation(service.ServiceId));
+        Assert.Equal(DeviceServiceState.Idle, release.State);
+        Assert.False(context.Journal.HasUnrestoredMutation(service.ServiceId));
         Assert.Equal(2, transport.Writes);
     }
 

@@ -115,18 +115,20 @@ internal static partial class HidDevices
                 $"The HID collection {collection.Describe()} could not be opened.");
         }
 
-        if (!NativeHid.HidD_GetPreparsedData(handle, out var preparsed))
+        var status = NativeHid.ReadCaps(handle, out var owned, out var caps);
+        if (status == HidCapsStatus.NoDescriptor)
         {
             throw new IOException($"The HID collection {collection.Describe()} has no report descriptor.");
         }
 
-        try
+        if (status == HidCapsStatus.CapsFailed)
         {
-            if (NativeHid.HidP_GetCaps(preparsed, out var caps) != NativeHid.HIDP_STATUS_SUCCESS)
-            {
-                throw new IOException($"The capabilities of {collection.Describe()} could not be read.");
-            }
+            throw new IOException($"The capabilities of {collection.Describe()} could not be read.");
+        }
 
+        using (owned)
+        {
+            var preparsed = owned!.Value;
             List<HidCapability> capabilities = [];
             AddCapabilities(capabilities, preparsed, HidReportType.Input, true, caps.NumberInputButtonCaps);
             AddCapabilities(capabilities, preparsed, HidReportType.Input, false, caps.NumberInputValueCaps);
@@ -141,10 +143,6 @@ internal static partial class HidDevices
                 LinkCollections = caps.NumberLinkCollectionNodes,
                 Capabilities = capabilities
             };
-        }
-        finally
-        {
-            _ = NativeHid.HidD_FreePreparsedData(preparsed);
         }
     }
 

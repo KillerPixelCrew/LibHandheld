@@ -19,7 +19,6 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
 {
     private static readonly AcerControllerMode Managed = new(Gamepad: 1, RearKeys: 1);
     private IAcerControllerModeTransport? _transport;
-    private bool _restoreUnverified;
 
     /// <summary>Creates the service over its own command lane, for fixtures and standalone use.</summary>
     internal AcerControllerModeService(ProfiledFeatureContext context, Func<IAcerControllerModeTransport?> open)
@@ -42,7 +41,6 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _restoreUnverified = false;
         _transport = lane.Acquire();
         if (_transport is null)
         {
@@ -67,26 +65,13 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
         return Set(DeviceServiceState.Owned);
     }
 
-    /// <summary>Writes the retained gamepad/rear pair once and independently classifies query-based restoration.</summary>
-    /// <remarks>An absent observation still retires the entry; a differing pair remains journaled.</remarks>
+    /// <summary>Writes the retained gamepad/rear pair once; the accepted write completes the restore.</summary>
     private async ValueTask RestoreAsync(AcerControllerMode original, CancellationToken token)
     {
-        await _transport!.WriteModeAsync(original, token).ConfigureAwait(false);
-        bool? verified = null;
-        try
-        {
-            verified = await _transport.ReadModeAsync(token).ConfigureAwait(false) == original;
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            DeviceTrace.Warn(ServiceId, $"Restored controller mode observation unavailable: {exception.Message}");
-        }
-
-        _restoreUnverified |= verified != true;
-        if (verified != false)
-        {
-            await context.Journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
-        }
+        var transport = _transport!;
+        await transport.WriteModeAsync(original, token).ConfigureAwait(false);
+        await context.Journal.CompleteRestoreAsync(ServiceId,
+            async ct => await transport.ReadModeAsync(ct).ConfigureAwait(false) == original, token).ConfigureAwait(false);
     }
 
     /// <summary>Restores the captured pair before closing the lane; an incomplete restore cannot become Idle.</summary>
@@ -101,7 +86,7 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
                     .ConfigureAwait(false);
             }
 
-            return Set(_restoreUnverified || context.Journal.HasUnrestoredMutation(ServiceId)
+            return Set(context.Journal.HasUnrestoredMutation(ServiceId)
                 ? DeviceServiceState.ReleasedUnverified : DeviceServiceState.Idle);
         }
         finally

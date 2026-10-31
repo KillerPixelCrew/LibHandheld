@@ -245,12 +245,10 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
                 _hid = null;
             }
 
-            return dispatched
-                ? CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message)
-                : CommandResults.Rejected(command,
-                    exception is ArgumentOutOfRangeException
-                        ? CapabilityReasonCode.ValueOutOfRange
-                        : CapabilityReasonCode.TransportFaulted, exception.Message);
+            // An encoder range check throws before anything is sent; that is the value's fault, not the transport's.
+            return !dispatched && exception is ArgumentOutOfRangeException
+                ? CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, exception.Message)
+                : CommandResults.TransportFailure(command, dispatched, exception);
         }
     }
 

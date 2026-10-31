@@ -41,20 +41,11 @@ internal sealed partial class AllyDeviceEngine
         {
             result = await ApplyAsync(command, identity, cancellationToken).ConfigureAwait(false);
         }
-        catch (DeviceWriteBudgetException ex)
-        {
-            // Thrown before any write, so nothing needs restoring and the service stays healthy.
-            return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing, ex.Message, true);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return CommandResults.Indeterminate(command, CapabilityReasonCode.Quiescing,
-                "The command was cancelled after hardware application began.");
-        }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                DiagnosticText.FromException("The capability handler failed after admission", ex));
+            // A budget refusal is thrown before any write, so nothing needs restoring and the service stays
+            // healthy. Anything else failed after hardware application began.
+            return CommandResults.TransportFailure(command, dispatched: ex is not DeviceWriteBudgetException, ex);
         }
 
         if (result.Outcome is CommandOutcome.Applied
@@ -122,11 +113,7 @@ internal sealed partial class AllyDeviceEngine
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                return CommandResults.Rejected(command,
-                    ex is OperationCanceledException && cancellationToken.IsCancellationRequested
-                        ? CapabilityReasonCode.Quiescing
-                        : CapabilityReasonCode.TransportFaulted,
-                    DiagnosticText.FromException("Preparation failed before any write", ex));
+                return CommandResults.TransportFailure(command, dispatched: false, ex);
             }
         }
 

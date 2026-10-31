@@ -22,8 +22,10 @@ internal sealed partial class SteamDeckNativeService(
 
     private static readonly CapabilityDescriptor[] ControllerDescriptors =
     [
-        Source(CapabilityIds.Controller, CapabilityRole.ControllerSource, "Controller source"),
-        Source(CapabilityIds.Motion, CapabilityRole.MotionSource, "Motion sensors"),
+        CapabilityDescriptors.Ownership(CapabilityIds.Controller, CapabilityRole.ControllerSource,
+            CapabilityDescriptors.Label("Controller source")),
+        CapabilityDescriptors.Ownership(CapabilityIds.Motion, CapabilityRole.MotionSource,
+            CapabilityDescriptors.Label("Motion sensors")),
         CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
             CapabilityDescriptors.Label("Trackpad haptics"))
     ];
@@ -588,17 +590,5 @@ internal sealed partial class SteamDeckNativeService(
         return command.CapabilityId.StartsWith("steamdeck.", StringComparison.Ordinal)
             ? ExecuteClockAsync(command, token)
             : ExecuteHardwareAsync(command, token);
-    }
-
-
-    private static CapabilityDescriptor Source(string id, CapabilityRole role, string label)
-    {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice,
-            Display = CapabilityDescriptors.Label(label),
-            SupportsRead = true, Persistence = CapabilityPersistence.Volatile,
-            Choices = CapabilityDescriptors.Choices(SourceOwnership.Choices)
-        };
     }
 }

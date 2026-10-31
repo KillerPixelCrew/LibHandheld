@@ -256,7 +256,7 @@ public sealed class AcerPowerTests
     }
 
     [Fact]
-    public async Task FailedRestoreReadbackRetainsTheOriginalWithoutRepeatingTheWrite()
+    public async Task ARestoreReadbackMismatchIsOnlyLoggedAndRetiresTheOriginalWithoutRepeatingTheWrite()
     {
         using var directory = new TemporaryDirectory();
         var ec = new FixtureEc();
@@ -270,8 +270,8 @@ public sealed class AcerPowerTests
         ec.IgnoreProfileWrite = true;
         var release = await service.ReleaseAsync(cycle, CancellationToken.None);
 
-        Assert.Equal(DeviceServiceState.ReleasedUnverified, release.State);
-        Assert.True(context.Journal.HasUnrestoredMutation("acer.manual-profile"));
+        Assert.Equal(DeviceServiceState.Idle, release.State);
+        Assert.Empty(context.Journal.OutstandingEntries);
         Assert.Equal(new[] { "profile", "mode:3", "profile", "mode:0" }, ec.Writes);
     }
 
