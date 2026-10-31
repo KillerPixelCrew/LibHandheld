@@ -22,6 +22,12 @@ internal static class LegionGoModels
 {
     public const string PackageId = "legion-go";
 
+    /// <summary>Lenovo's own handheld manager, as HC 1.3.1.6's LegionSpaceWatcher names it.</summary>
+    public static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
+    [
+        new("legion-space", "Legion Space", ["LegionGoQuickSettings", "LegionSpace", "LSDaemon"], ["DAService"], [])
+    ];
+
     public static IReadOnlyList<LegionGoModel> All { get; } = Array.AsReadOnly<LegionGoModel>(
     [
         new LegionGoModel("lenovo.legion-go.83e1", "Lenovo Legion Go", "83E1", false, false, 5, 30),

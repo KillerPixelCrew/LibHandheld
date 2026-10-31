@@ -59,6 +59,15 @@ internal static class CapabilityIds
 
     /// <summary>The rumble sink.</summary>
     public const string Rumble = "haptic.rumble";
+
+    /// <summary>The action that returns every processor tuning value to its firmware default.</summary>
+    public const string ProcessorReset = "processor.reset";
+
+    /// <summary>The fixed GPU clock.</summary>
+    public const string ProcessorGpuClock = "processor.gpu-clock";
+
+    /// <summary>The action that hands the GPU clock back to automatic control.</summary>
+    public const string ProcessorGpuClockAutomatic = "processor.gpu-clock-automatic";
 }
 
 /// <summary>The choices of a controller or motion source-ownership capability.</summary>

@@ -27,6 +27,15 @@ public sealed record CapabilityDisplay
     public string? CustomText { get; init; }
 
     /// <summary>
+    ///     Optional ordinary text explaining what invoking or changing the control does, with any key.
+    /// </summary>
+    /// <remarks>
+    ///     For example, an action that clears several settings says which ones and what it cannot restore.
+    ///     Like <see cref="CustomText" />, it is never a format string, markup, or localization key.
+    /// </remarks>
+    public string? Description { get; init; }
+
+    /// <summary>
     ///     Whether this display metadata is usable.
     /// </summary>
     /// <param name="error">The reason it is not, when the result is <see langword="false" />.</param>
@@ -36,6 +45,12 @@ public sealed record CapabilityDisplay
         if (!Enum.IsDefined(Key))
         {
             error = $"display key '{Key}' is not defined.";
+            return false;
+        }
+
+        if (Description is not null && string.IsNullOrWhiteSpace(Description))
+        {
+            error = "description must not be blank when supplied.";
             return false;
         }
 

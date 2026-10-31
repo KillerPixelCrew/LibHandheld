@@ -20,7 +20,11 @@ internal sealed record DeviceFamily(
     string Id,
     IReadOnlyList<HandheldDefinition> Models,
     Func<NativeIdentity, string?> MatchModel,
-    Func<HandheldDefinition, NativeEngine> CreateEngine);
+    Func<HandheldDefinition, NativeEngine> CreateEngine)
+{
+    /// <summary>The maker's own manager apps for this family's models.</summary>
+    public IReadOnlyList<OemManagerApp> ManagerApps { get; init; } = [];
+}
 
 /// <summary>Routes model selection to a family without exposing protocols to consumers.</summary>
 internal static class DeviceFamilies
@@ -45,7 +49,10 @@ internal static class DeviceFamilies
             }).ToArray()),
             identity => ClawModels.Find(identity)?.DefinitionId,
             definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
-                [context => new ClawDeviceEngine(context)]))),
+                [context => new ClawDeviceEngine(context)])))
+        {
+            ManagerApps = ClawModels.ManagerApps
+        },
         new DeviceFamily(AllyModels.PackageId,
             Array.AsReadOnly(AllyModels.All.Select(model => new HandheldDefinition(model.DefinitionId,
                 AllyModels.PackageId, model.DisplayName, model.GlyphProfileId)
@@ -60,7 +67,10 @@ internal static class DeviceFamilies
             }).ToArray()),
             identity => AllyModels.Match(identity)?.DefinitionId,
             definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
-                [context => new AllyDeviceEngine(context)]))),
+                [context => new AllyDeviceEngine(context)])))
+        {
+            ManagerApps = AllyModels.ManagerApps
+        },
         new DeviceFamily(LegionGoModels.PackageId,
             Array.AsReadOnly(LegionGoModels.All.Select(model => new HandheldDefinition(model.DefinitionId,
                 LegionGoModels.PackageId, model.DisplayName, model.GlyphProfileId)
@@ -80,7 +90,10 @@ internal static class DeviceFamilies
             }).ToArray()),
             identity => LegionGoModels.Match(identity)?.DefinitionId,
             definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
-                [context => new LegionGoDeviceEngine(context)]))),
+                [context => new LegionGoDeviceEngine(context)])))
+        {
+            ManagerApps = LegionGoModels.ManagerApps
+        },
         new DeviceFamily(GpdModels.FamilyId, GpdModels.GetDefinitions(),
             identity => GpdModels.Match(identity)?.Definition.Id, GpdModels.CreateEngine),
         new DeviceFamily(AyaneoModels.FamilyId, AyaneoModels.Definitions, AyaneoModels.Match,
@@ -88,10 +101,16 @@ internal static class DeviceFamilies
         new DeviceFamily(OneXPlayerModels.FamilyId, OneXPlayerModels.Definitions,
             identity => OneXPlayerModels.Match(identity)?.Definition.Id, OneXPlayerModels.CreateEngine),
         new DeviceFamily(ZotacModels.FamilyId, ZotacModels.GetDefinitions(),
-            identity => ZotacModels.Match(identity)?.Definition.Id, ZotacModels.CreateEngine),
+            identity => ZotacModels.Match(identity)?.Definition.Id, ZotacModels.CreateEngine)
+        {
+            ManagerApps = ZotacModels.ManagerApps
+        },
         new DeviceFamily(SteamDeckModels.FamilyId, SteamDeckModels.Definitions,
             SteamDeckModels.Match, SteamDeckModels.CreateEngine),
-        new DeviceFamily(AcerModels.FamilyId, AcerModels.Definitions, AcerModels.Match, AcerModels.CreateEngine),
+        new DeviceFamily(AcerModels.FamilyId, AcerModels.Definitions, AcerModels.Match, AcerModels.CreateEngine)
+        {
+            ManagerApps = AcerModels.ManagerApps
+        },
         new DeviceFamily(GenericModels.FamilyId, GenericModels.GetDefinitions(),
             identity => GenericModels.Match(identity)?.Definition.Id, GenericModels.CreateEngine)
     ]).Select(family => family with
@@ -108,6 +127,9 @@ internal static class DeviceFamilies
 
     internal static IReadOnlyList<HandheldDefinition> Models { get; } = Array.AsReadOnly(
         Families.SelectMany(family => family.Models).ToArray());
+
+    internal static IReadOnlyList<OemManagerApp> ManagerApps { get; } = Array.AsReadOnly(
+        Families.SelectMany(family => family.ManagerApps).ToArray());
 
     internal static HandheldDefinition? Detect(NativeIdentity identity)
     {

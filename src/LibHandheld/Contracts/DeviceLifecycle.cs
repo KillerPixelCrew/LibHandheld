@@ -39,6 +39,12 @@ public sealed record HandheldDefinition(string Id, string FamilyId, string Name,
 
     /// <summary>Privileged Windows access used by the model's concrete native controls.</summary>
     public DeviceHardwareAccess HardwareAccess { get; init; }
+
+    /// <summary>
+    ///     Measured fan curve preset duties and temperature smoothing for this model, or null when the
+    ///     consumer's general shapes apply.
+    /// </summary>
+    public FanCurvePresetDuties? FanCurvePresets { get; init; }
 }
 
 /// <summary>Native dependencies required by a model, independently of application controller routing.</summary>

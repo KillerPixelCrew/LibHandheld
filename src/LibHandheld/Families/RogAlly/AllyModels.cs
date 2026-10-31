@@ -140,6 +140,19 @@ internal readonly record struct AllyVendorAction(
 internal static class AllyModels
 {
     public const string PackageId = "rog-ally";
+
+    /// <summary>ASUS's own handheld manager, as HC 1.3.1.6's RogAllySpaceWatcher names it.</summary>
+    /// <remarks>
+    ///     ArmouryCrateKeyControl is the helper the ArmouryCrateControlInterface service starts in the user
+    ///     session; without Armoury Crate installed it answers the Armoury Crate button with a dialog that
+    ///     asks to install it (seen on an Ally after Handheld Companion's uninstall put the service back).
+    /// </remarks>
+    public static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
+    [
+        new("armoury-crate", "Armoury Crate",
+            ["ArmouryCrate", "ArmourySocketServer", "ArmouryCrateUserSessionHelper", "ArmouryCrateKeyControl"],
+            ["ArmouryCrateSEService", "AsusAppService", "ArmouryCrateControlInterface"], [])
+    ];
     public const string Manufacturer = "ASUSTeK COMPUTER INC.";
     public const ushort AsusVendorId = 0x0B05;
 

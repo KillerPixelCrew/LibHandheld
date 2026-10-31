@@ -265,14 +265,15 @@ completed successfully; it is not an application/runtime feature. The operationa
 lists every target, proof limit and restoration step.
 
 The subsequent WSGM `OtherManagers` integration adds exact-Atlas Full-mode takeover of those ten
-services, three tasks, two MSIX families and the dedicated controller keyboard. It records changes
-before dispatch, propagates restart requirements to setup, rechecks accepted policy at startup and
-every five minutes, and restores recorded changes on uninstall. This is host application policy;
-LibHandheld continues to own rear-button mode and physical device protocols. The implementation is
-awaiting installation and live runtime acceptance; the historical local guard is not that proof.
-Runtime F22/long-press routing remains unsupported while the keyboard source is disabled. Recovery
-scripts and private captures remain local artifacts. The operational reference above distinguishes
-the two ownership/recovery paths.
+services, three tasks, two MSIX families and the dedicated controller keyboard. Those identities are
+recorded in `AcerModels.ManagerApps`, bound to the PA08-I51 definition, and reach the host through
+`HandheldDevice.ManagerApps`. It records changes before dispatch, propagates restart requirements to
+setup, rechecks accepted policy at startup and every five minutes, and restores recorded changes on
+uninstall. This is host application policy; LibHandheld continues to own rear-button mode and
+physical device protocols. The implementation is awaiting installation and live runtime acceptance;
+the historical local guard is not that proof. Runtime F22/long-press routing remains unsupported
+while the keyboard source is disabled. Recovery scripts and private captures remain local artifacts.
+The operational reference above distinguishes the two ownership/recovery paths.
 
 Recovery uses captured model/firmware identity; lighting also binds the controller release. Unknown
 observations remain unknown, writable controls do not require current-value readback, and uncertain
@@ -432,8 +433,8 @@ hid a collection on the keyboard's own USB interface: F901 MI_02/COL03..05 besid
 MI_02/COL01, and the F90A consumer collection MI_01/COL03 beside keyboard MI_01/COL01. The consumer
 collection is no longer a companion. The shared hide set now drops any identity whose USB interface
 also carries a present keyboard or mouse collection, so no profile can repeat this. The MI_00/COL02
-vendor collection shares an interface only with the gamepad and stays hidden; that remains
-attended acceptance after HidHide is reinstalled.
+vendor collection shares an interface only with the gamepad and stays hidden; that remains attended
+acceptance after HidHide is reinstalled.
 
 Lighting edits are no longer restored on release. Restoring the journaled original brought the
 firmware rainbow back every time WSGM stopped. Old lighting originals are retired unrestored.
@@ -445,8 +446,8 @@ follow them, so a stock selection changed only the EC's PL1 field and the TDP re
 what the maintainer measured. At the maintainer's direction the Quiet, Balanced and Turbo presets
 now write explicit PL1/PL2 through Manual 3: 20/20, 25/37 and 30/37 W, HandheldCompanion's Arc G3
 (ClawCG3EM) table after its 20 W floor. Full Power keeps the firmware maximum, 40/65 W. Manual
-limits were measured to bound package power (25 W requested, 24.6 W measured). The stock EC
-profiles remain selectable through the scenario control.
+limits were measured to bound package power (25 W requested, 24.6 W measured). The stock EC profiles
+remain selectable through the scenario control.
 
 ## Follow-up: KX removed (2026-10-28)
 
@@ -460,19 +461,19 @@ that generic transport. Intel GPU clock control is no longer offered on any mode
 A read-only attended capture of every 0502 collection, with Steam closed, measured the F90A gamepad
 report 01. Triggers are analog Rx (left) and Ry (right), 0..255. Buttons 7/8 switch on at value 2,
 so they no longer force a trigger to full. Rear-right is button 16 (M1) and rear-left button 17
-(M2). L3/R3 are 11/12. The front OEM keys send nothing in any gamepad, vendor or consumer report:
-a tap produces no event at all, a hold of front-left sends one Win+Tab pulse and a hold of
-front-right sends F22 (VK 0x85, scan 0x6D) with auto-repeat and a release, both on the keyboard
-interface. Predator Sense never selects DInput; its tap handling uses the XInput-topology vendor
-reports. Firmware mode 3 ("Special") keeps the F901 XInput topology, including the IG_00 collection
-and the auxiliary SDL identities: front-left tap 9E, front-right tap `37 81FF` on MI_02/COL04, rear
-9A. The probe restored the original mode 1/0 with verified readback.
+(M2). L3/R3 are 11/12. The front OEM keys send nothing in any gamepad, vendor or consumer report: a
+tap produces no event at all, a hold of front-left sends one Win+Tab pulse and a hold of front-right
+sends F22 (VK 0x85, scan 0x6D) with auto-repeat and a release, both on the keyboard interface.
+Predator Sense never selects DInput; its tap handling uses the XInput-topology vendor reports.
+Firmware mode 3 ("Special") keeps the F901 XInput topology, including the IG_00 collection and the
+auxiliary SDL identities: front-left tap 9E, front-right tap `37 81FF` on MI_02/COL04, rear 9A. The
+probe restored the original mode 1/0 with verified readback.
 
 Motion upload in Special mode: after mode 3/1 was selected, command 2F 01 was sent once and the
-device was held still, then pitched, yawed and rolled. No collection reported anything during
-those phases, including the FFA0 command lane. Predator Sense defines but never calls this
-command. Command 2F 00 and the original mode 1/0 were restored and verified. Windows sensors
-remain the motion source.
+device was held still, then pitched, yawed and rolled. No collection reported anything during those
+phases, including the FFA0 command lane. Predator Sense defines but never calls this command.
+Command 2F 00 and the original mode 1/0 were restored and verified. Windows sensors remain the
+motion source.
 
 ## Back to XInput with verified auxiliary hiding (2026-10-28)
 
@@ -482,8 +483,8 @@ an attended trial hid F901 MI_01/COL01, MI_02/COL05, MI_02/COL04 and MI_02/COL03
 After each step the maintainer typed a confirmation through the keyboard path, and again with all
 four hidden. Steam then enumerated exactly one controller, the XInput pad. The profile lists these
 four exact leaves as AuxiliaryHidCollections, the only identities allowed past the
-keyboard-interface guard. WSGM remains allowed to read them for the command lane and QAM report.
-The earlier keyboard losses are explained in the correction below.
+keyboard-interface guard. WSGM remains allowed to read them for the command lane and QAM report. The
+earlier keyboard losses are explained in the correction below.
 
 ## Correction: the keyboard losses were not caused by hiding (2026-10-28)
 
@@ -491,20 +492,20 @@ The maintainer traced both "no keyboard" incidents to outside causes. GTA V Enha
 RustDesk client PC blocked RustDesk keyboard input, and the physical keyboard's USB-C hub had
 failed. HidHide and the hidden HID leaves were not involved. The "Rejected auxiliary HID cloaking"
 and "Keyboard-interface hiding withdrawn" conclusions above rest on that misattribution; the
-attended trial in "Back to XInput with verified auxiliary hiding" is the valid evidence.
-The keyboard-interface guard added on that premise has been removed; the profile's four
+attended trial in "Back to XInput with verified auxiliary hiding" is the valid evidence. The
+keyboard-interface guard added on that premise has been removed; the profile's four
 AuxiliaryHidCollections are now hidden with the pad like any other declared identity.
 
 ## Hardware verified (2026-10-28)
 
 The maintainer accepted the integration on the PA08-I51 used for every session above, and the
-definition is now marked hardware verified. Accepted in use on the device: the explicit power presets
-and manual PL1/PL2 with AutoTDP, both fans in firmware, software-curve and manual control, battery
-charge protection, shared and per-segment ring lighting, the managed XInput controller with front
-buttons, triggers, Task/Predator as Guide/Quick Access and the M1/M2 rear buttons on their printed
-sides, Windows motion, calibrated rumble, auxiliary-interface hiding without keyboard loss, the
-Predator Sense takeover and the Game Mode boot. The DInput path remains a fallback used only when the
-mode lane is unavailable; its button mapping has no separate attended acceptance.
+definition is now marked hardware verified. Accepted in use on the device: the explicit power
+presets and manual PL1/PL2 with AutoTDP, both fans in firmware, software-curve and manual control,
+battery charge protection, shared and per-segment ring lighting, the managed XInput controller with
+front buttons, triggers, Task/Predator as Guide/Quick Access and the M1/M2 rear buttons on their
+printed sides, Windows motion, calibrated rumble, auxiliary-interface hiding without keyboard loss,
+the Predator Sense takeover and the Game Mode boot. The DInput path remains a fallback used only
+when the mode lane is unavailable; its button mapping has no separate attended acceptance.
 
 ## Attended fan speed calibration (2026-10-29)
 
@@ -536,7 +537,39 @@ reads time out while Windows' EC driver shares that channel, and the signed modu
 second channel at 0x68/0x6C. ACPI exposes no fan output field, only RPM (`CPUF`, `GPUF`) and `FANT`.
 No EC write was attempted.
 
-Rewriting `SetGamingFanBehavior` 3 every second keeps a manual fan at the absolute command indefinitely: both fans held about 1750 RPM at command 25 for 25 s, including while the CPU read 95 degrees C, and a 25 -> 60 -> 25 step settled within about 8 s. A 3 s cadence oscillated between 1700 and 2650 RPM, and rewriting only the speed did not hold. Each manual fan needs its own re-arm; holding only the left fan let the right fan drift back to about 3900 RPM. Held speeds were linear at about 70 RPM per percent (10: 780, 15: 1040, 25: 1750, 35: 2500, 100: 7000). Commands 5 and 0 stalled and restarted the fan repeatedly, so 10 is the lowest usable duty. Twenty consecutive behavior writes took 48 ms each including the 30 ms vendor pacing and produced no measurable all-core stall (2.5 ms maximum gap against a 4.1 ms idle baseline). The runtime now re-arms every held fan at 1 Hz. The firmware's own thermal protection did not intervene within the tested window, so the software curve is the only guard while a fan is held.
+Rewriting `SetGamingFanBehavior` 3 every second keeps a manual fan at the absolute command
+indefinitely: both fans held about 1750 RPM at command 25 for 25 s, including while the CPU read 95
+degrees C, and a 25 -> 60 -> 25 step settled within about 8 s. A 3 s cadence oscillated between 1700
+and 2650 RPM, and rewriting only the speed did not hold. Each manual fan needs its own re-arm;
+holding only the left fan let the right fan drift back to about 3900 RPM. Held speeds were linear at
+about 70 RPM per percent (10: 780, 15: 1040, 25: 1750, 35: 2500, 100: 7000). Commands 5 and 0
+stalled and restarted the fan repeatedly, so 10 is the lowest usable duty. Twenty consecutive
+behavior writes took 48 ms each including the 30 ms vendor pacing and produced no measurable
+all-core stall (2.5 ms maximum gap against a 4.1 ms idle baseline). The runtime now re-arms every
+held fan at 1 Hz. The firmware's own thermal protection did not intervene within the tested window,
+so the software curve is the only guard while a fan is held.
+
+## Fan curve presets (2026-10-29)
+
+The host's Quiet, Default and Aggressive software-curve presets for the Atlas are the definition's
+`FanCurvePresets`, set in `AcerModels`. They were derived from the calibration above rather than
+measured as shapes of their own: duty is an absolute share of full speed at about 70 RPM per percent
+and 10 is the lowest duty that keeps a fan spinning, while firmware Auto holds about 3600 RPM (51%)
+at the 52..66 degrees C idle. The shapes therefore rest at 10, 15 and 20 through 40 degrees C, stay
+near inaudible until 60 degrees C and reach 100 at the processor's 100 degrees C limit:
+
+| Preset     | 0..100 degrees C in 10 degree steps          |
+| ---------- | -------------------------------------------- |
+| Quiet      | 10, 10, 10, 10, 10, 10, 15, 25, 45, 75, 100  |
+| Default    | 15, 15, 15, 15, 15, 20, 30, 45, 65, 85, 100  |
+| Aggressive | 20, 20, 20, 20, 25, 35, 45, 60, 80, 100, 100 |
+
+The EC package temperature swings ten or twenty degrees within a second or two at idle, and a held
+fan accelerates by about six points a second, so the curve reads a ten-second average, recomputes
+only after a 3 degree change and moves at most 5 points up or 2 down per second. The host's general
+smoothing is a three-second average, 2 degrees and 10 up or 3 down. The shapes and smoothing are in
+use on the hardware-verified definition; no separate thermal-load acceptance of each preset is
+recorded.
 
 ## Lower power tiers (2026-10-29)
 
@@ -546,5 +579,5 @@ range test, Intel's Arc G3 configurable TDP starts at 8 W, and the maintainer co
 PA08-I51 that 8 W works. Both limits now accept the lower of selector 1 and 8 W; the maxima still
 come from selectors 2 and 4. Three tiers sit below Quiet, all through Manual 3 with Windows Better
 battery: Battery Saver 8/8, Efficiency 12/15 and Light 15/20 W. Quiet 20/20, Balanced 25/37, Turbo
-30/37 and Full Power 40/65 W keep their ids and values. No instrumented package-power sweep below
-25 W has been recorded.
+30/37 and Full Power 40/65 W keep their ids and values. No instrumented package-power sweep below 25
+W has been recorded.

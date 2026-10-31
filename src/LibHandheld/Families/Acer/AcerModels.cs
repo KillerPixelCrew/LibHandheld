@@ -15,15 +15,60 @@ internal static class AcerModels
 {
     internal const string FamilyId = "acer";
 
+    private const string AtlasDefinitionId = "acer-predator-atlas-8-pa08-i51";
+
+    /// <summary>The Atlas fan presets, from the 2026-10-29 calibration in PROVENANCE.md.</summary>
+    /// <remarks>
+    ///     Duty is an absolute share of full speed, about 70 RPM per percent, and 10 is the lowest speed that
+    ///     spins reliably. The firmware's own automatic mode holds about 3600 RPM (51%) at any idle
+    ///     temperature, while the SoC idles at 52..66 °C with the fans far slower, so these shapes keep the
+    ///     fans near inaudible until 60 °C and reach full speed at the processor's 100 °C limit.
+    ///     <para>
+    ///         Its EC package temperature swings ten or twenty degrees within a second or two at idle, so the
+    ///         curve reads a ten-second average, waits for 3 °C and ramps 5 points up or 2 down per second, a
+    ///         gentle slope against a fan that itself accelerates by about six points a second.
+    ///     </para>
+    /// </remarks>
+    private static FanCurvePresetDuties AtlasFanCurvePresets { get; } = new()
+    {
+        Quiet = [10, 10, 10, 10, 10, 10, 15, 25, 45, 75, 100],
+        Default = [15, 15, 15, 15, 15, 20, 30, 45, 65, 85, 100],
+        Aggressive = [20, 20, 20, 20, 25, 35, 45, 60, 80, 100, 100],
+        HysteresisCelsius = 3,
+        MaximumRisePerTick = 5,
+        MaximumFallPerTick = 2,
+        AverageSamples = 10
+    };
+
+    /// <summary>Predator Sense for Handheld, as the attended 2026-10-27 disable measured it.</summary>
+    /// <remarks>
+    ///     The ten services, three tasks, two exact MSIX families and dedicated controller keyboard leaf of
+    ///     OEM_INPUT_AND_DISABLE.md. They are exact PA08-I51 findings, so they apply to this definition only.
+    /// </remarks>
+    internal static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
+    [
+        new("acer-predator-handheld", "Predator Sense for Handheld", ["Handheld.Desktop", "Handheld.Widget"],
+            ["AASHHSvc", "AcerCCAgentSvis", "AcerDeviceEnablingServiceV2", "AcerHandheld.Service",
+                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "AFZsvc", "ALSSvc", "UEIPSvc"],
+            ["PredatorHandheldLauncher", "UEIPInvitation", "UbtFrameworkService"])
+        {
+            PackageFamilies = ["ULICTekInc.PredatorSenseforHandHeld_nt9dgb7efx6bt",
+                "ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"],
+            DedicatedKeyboardDeviceId = @"HID\VID_0502&PID_F901&MI_02&COL01",
+            DefinitionId = AtlasDefinitionId
+        }
+    ];
+
     /// <summary>The Acer system/PTL board model; marketing name or controller VID/PID alone never selects it.</summary>
     internal static ProfiledDeviceModel Atlas8 { get; } = new()
     {
-        Definition = new HandheldDefinition("acer-predator-atlas-8-pa08-i51", FamilyId,
+        Definition = new HandheldDefinition(AtlasDefinitionId, FamilyId,
             "Acer Predator Atlas 8 (PA08-I51)", "acer-predator-atlas-8")
         {
             // Power, fans, battery, lighting, controller, rear buttons, motion and rumble were accepted on
             // a PA08-I51 in attended sessions; see PROVENANCE.md.
-            HardwareVerified = true
+            HardwareVerified = true,
+            FanCurvePresets = AtlasFanCurvePresets
         },
         SourceFamilyId = "PredatorAtlas8",
         IdentitySource = ProfileIdentitySource.System,

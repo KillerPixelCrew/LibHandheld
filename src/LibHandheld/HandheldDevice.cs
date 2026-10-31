@@ -39,6 +39,13 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
     /// <summary>Every supported exact model.</summary>
     public static IReadOnlyList<HandheldDefinition> Definitions => DeviceFamilies.Models;
 
+    /// <summary>Every family's own manager apps, in family order, whether or not this machine is supported.</summary>
+    /// <remarks>
+    ///     Static facts for a consumer that replaces those apps, available before and without detection. An
+    ///     entry with an <see cref="OemManagerApp.DefinitionId" /> belongs to that exact model only.
+    /// </remarks>
+    public static IReadOnlyList<OemManagerApp> ManagerApps => DeviceFamilies.ManagerApps;
+
     /// <summary>The exact model selected from the supplied identity.</summary>
     public HandheldDefinition Definition { get; }
 

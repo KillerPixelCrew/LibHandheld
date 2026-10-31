@@ -10,6 +10,13 @@ internal static class ZotacModels
 {
     internal const string FamilyId = "zotac";
 
+    /// <summary>ZOTAC's own handheld manager, as HC 1.3.1.6's ZotacLauncherWatcher names it.</summary>
+    internal static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
+    [
+        new("zotac-launcher", "Zotac Gaming Zone", ["ZotacHandheldQuickSetting"],
+            ["ZotacHandheldDatabaseService", "ZotacHandheldService"], [])
+    ];
+
     private static readonly ProfiledDeviceModel Zone = new()
     {
         Definition = new HandheldDefinition("zotac-zone", FamilyId, "ZOTAC GAMING ZONE", "zotac-zone")

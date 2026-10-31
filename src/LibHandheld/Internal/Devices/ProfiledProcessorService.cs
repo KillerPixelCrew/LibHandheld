@@ -35,7 +35,7 @@ internal sealed class ProfiledProcessorService(
         var observed = _observed.GetValueOrDefault(descriptor.CapabilityId);
         return ProviderControls.State(descriptor.CapabilityId, State == DeviceServiceState.Owned,
             _observed.ContainsKey(descriptor.CapabilityId) ? CapabilityValue.Integer(observed.Value) : null,
-            observed.At, descriptor.CapabilityId == "processor.reset" ? _resetReason ?? Reason : Reason);
+            observed.At, descriptor.CapabilityId == CapabilityIds.ProcessorReset ? _resetReason ?? Reason : Reason);
     }).ToArray();
 
     internal override void AcknowledgeDescriptors()
@@ -122,13 +122,13 @@ internal sealed class ProfiledProcessorService(
                 "Processor settings access is unavailable.");
         }
 
-        if (command.CapabilityId == "processor.reset" && command.RequestedValue is null)
+        if (command.CapabilityId == CapabilityIds.ProcessorReset && command.RequestedValue is null)
         {
             return await ResetAsync(command, token).ConfigureAwait(false);
         }
 
         var automaticGpu = command.CapabilityId == _automaticGpu?.CapabilityId;
-        var settingId = automaticGpu ? "processor.gpu-clock" : command.CapabilityId;
+        var settingId = automaticGpu ? CapabilityIds.ProcessorGpuClock : command.CapabilityId;
         if (!_settings.TryGetValue(settingId, out var setting))
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
@@ -211,7 +211,7 @@ internal sealed class ProfiledProcessorService(
                 var neutralOffset = id.Contains("-curve-", StringComparison.Ordinal)
                                     || id == "processor.gpu-curve"
                                     || id.EndsWith("-undervolt", StringComparison.Ordinal);
-                var automaticClock = id == "processor.gpu-clock" && _automaticGpu is not null;
+                var automaticClock = id == CapabilityIds.ProcessorGpuClock && _automaticGpu is not null;
                 if (original is null && !_changedWithoutOriginal.Contains(id)
                     && !neutralOffset && !automaticClock && setting.Read is not null)
                 {
@@ -344,13 +344,13 @@ internal sealed class ProfiledProcessorService(
     {
         if (_amd!.SupportsGpuClock && minimumGpuClock > 0 && maximumGpuClock >= minimumGpuClock)
         {
-            Add("processor.gpu-clock", "GPU clock", minimumGpuClock, maximumGpuClock, CapabilityUnit.Megahertz,
-                _amd.WriteGpuClock);
+            Add(CapabilityIds.ProcessorGpuClock, "GPU clock", minimumGpuClock, maximumGpuClock,
+                CapabilityUnit.Megahertz, _amd.WriteGpuClock);
             if (_amd.SupportsAutomaticGpuClock)
             {
                 _automaticGpu = new CapabilityDescriptor
                 {
-                    CapabilityId = "processor.gpu-clock-automatic", Role = CapabilityRole.GenericAction,
+                    CapabilityId = CapabilityIds.ProcessorGpuClockAutomatic, Role = CapabilityRole.GenericAction,
                     Display = CapabilityDescriptors.Label("Automatic GPU clock"), ValueKind = CapabilityValueKind.None,
                     SupportsAction = true, Persistence = CapabilityPersistence.Volatile
                 };
@@ -419,8 +419,13 @@ internal sealed class ProfiledProcessorService(
             {
                 new CapabilityDescriptor
                 {
-                    CapabilityId = "processor.reset", Role = CapabilityRole.GenericAction,
-                    Display = CapabilityDescriptors.Label("Reset processor tuning"),
+                    CapabilityId = CapabilityIds.ProcessorReset, Role = CapabilityRole.GenericAction,
+                    Display = CapabilityDescriptors.Label("Reset processor tuning") with
+                    {
+                        Description = "Clears processor tuning for this device in Global and every game. "
+                                      + "Restores supported values; a Windows restart may be needed for "
+                                      + "firmware defaults."
+                    },
                     ValueKind = CapabilityValueKind.None, SupportsAction = true,
                     Persistence = CapabilityPersistence.Volatile
                 }
@@ -434,7 +439,7 @@ internal sealed class ProfiledProcessorService(
         _settings.Remove(id);
         _observed.Remove(id);
         _changedWithoutOriginal.Remove(id);
-        if (id == "processor.gpu-clock")
+        if (id == CapabilityIds.ProcessorGpuClock)
         {
             // The automatic range goes through the same clock commands.
             _automaticGpu = null;

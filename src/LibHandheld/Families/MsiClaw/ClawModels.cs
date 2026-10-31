@@ -96,6 +96,14 @@ internal readonly record struct ClawMcuLayout(
 
 internal static class ClawModels
 {
+    /// <summary>MSI's own handheld manager, as HC 1.3.1.6's ClawCenterWatcher names it.</summary>
+    public static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
+    [
+        new("msi-center-m", "MSI Center M",
+            ["MSI_Center_M_Server", "MSI Center M", "MCMOSDInfo", "MSI Center OSD Info"],
+            ["MSI Foundation Service"], ["MSI_Center_M_Server", "MSI_Center_M_Updater"])
+    ];
+
     /// <summary>HC's ClawA1M rumble level, written for any nonzero motor value on that model.</summary>
     public const byte BinaryRumbleLevel = 193;
 

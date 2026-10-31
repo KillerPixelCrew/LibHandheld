@@ -19,10 +19,20 @@ families may read changing AC power or native firmware observations without repe
 selection.
 
 `HandheldDefinition` contains `Id`, `FamilyId`, `Name`, `GlyphProfileId`, `HasController`,
-`HardwareAccess`, `HardwareVerified` and a read-only `DeclaredRoles` snapshot. Family IDs are plain
-identities such as `msi-claw`, `rog-ally`, `legion-go`, `gpd`, `ayaneo`, `onexplayer`, `valve` and
-`zotac`. Exact remaining manufacturers keep their own family IDs. There are no CPU-only fallback
-profiles or legacy identity migrations.
+`HardwareAccess`, `HardwareVerified`, a read-only `DeclaredRoles` snapshot and optional
+`FanCurvePresets`. A model whose fans need their own Quiet, Default and Aggressive shapes carries
+`FanCurvePresetDuties`: duty samples at 0, 10, 20 … °C and the smoothing a software curve applies to
+its temperature (hysteresis, rise and fall per one-second tick, averaged samples). Every other model
+leaves it null and the consumer's general shapes apply. Family IDs are plain identities such as
+`msi-claw`, `rog-ally`, `legion-go`, `gpd`, `ayaneo`, `onexplayer`, `valve` and `zotac`. Exact
+remaining manufacturers keep their own family IDs. There are no CPU-only fallback profiles or legacy
+identity migrations.
+
+`HandheldDevice.ManagerApps` lists each family's own manager app as an `OemManagerApp`: `Id`,
+`Name`, process, service and scheduled-task names, exact MSIX package families, a dedicated keyboard
+identity and, for an app that belongs to one exact model, its `DefinitionId`. The catalog is static
+and needs no detection. The library neither detects nor changes these apps; the consumer owns
+takeover, its records and restoration.
 
 ```csharp
 var definition = HandheldDevice.Detect(identity);
@@ -74,9 +84,11 @@ accepted write time across unrelated sensor publications. Ownership timestamps c
 service transitions. Motion rejects obsolete or out-of-order reports before calibration and
 preserves valid delayed measurements without replaying expired angle history.
 
-Descriptors carry `CapabilityDisplay` through `Display`; its fields are `Key` and `CustomText`.
-`CapabilityChoice` has `Value` and `Display`. The consumer owns page placement, localization,
-profiles, desired state, AutoTDP, virtual-controller routing, HidHide and OEM actions.
+Descriptors carry `CapabilityDisplay` through `Display`; its fields are `Key`, `CustomText` and an
+optional `Description` explaining what invoking or changing the control does, such as the processor
+reset's note about Windows restarts. `CapabilityChoice` has `Value` and `Display`. The consumer owns
+page placement, localization, profiles, desired state, AutoTDP, virtual-controller routing, HidHide
+and OEM actions.
 
 `Observer` is a borrowed `IHandheldObserver`, never disposed by the device. Callbacks publish
 complete descriptor replacements, control observations, physical interfaces/haptic capabilities,
@@ -94,9 +106,9 @@ artwork; the Avalonia adapter parses compact SVG paths with its own rendering ba
 
 Default AMD transports expose independent fast PPT alongside the existing sustained/slow pair.
 `SetTdpAsync` updates every declared limit; explicit paired changes retain independently authored
-fast values. Presets and saved custom profiles carry the optional fast target. AMD processor GPU clocks,
-supported curve/thermal controls and Intel undervolting are ordinary typed descriptor commands, with
-exact model bounds and command availability.
+fast values. Presets and saved custom profiles carry the optional fast target. AMD processor GPU
+clocks, supported curve/thermal controls and Intel undervolting are ordinary typed descriptor
+commands, with exact model bounds and command availability.
 
 `CurveInputs` supplies legal starting breakpoints for an editor when a native curve is unknown; it
 is neither an observation nor a write. Explicit native measurements stay separate from accepted

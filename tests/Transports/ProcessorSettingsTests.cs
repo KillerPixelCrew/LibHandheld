@@ -96,6 +96,8 @@ public sealed class ProcessorSettingsTests
         }, "bios", CancellationToken.None);
         Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
         Assert.Single(module.Calls);
+        Assert.Contains("a Windows restart may be needed", service.Descriptors
+            .Single(descriptor => descriptor.CapabilityId == "processor.reset").Display.Description);
         Assert.Contains("Restart Windows", service.States.Single(state => state.CapabilityId == "processor.reset")
             .Reason?.Detail);
         await service.DisposeAsync();

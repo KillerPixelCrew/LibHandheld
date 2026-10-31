@@ -116,10 +116,10 @@ check.
 
 The task runs the admin-protected script
 `C:\ProgramData\WSGM\AtlasOemControl\Keep-Acer-OemDisabled.ps1`; its source is tracked in WSGM as
-`eng/atlas-oem-disabled-state.ps1`. `C:\ProgramData\WSGM\AtlasOemControl\last-check.json` records health and any changes. The first
-elevated run completed successfully with no changes needed. This is an explicitly authorized local
-maintenance task, separate from WSGM's subsequent manager-takeover integration and from
-LibHandheld's device lifecycle.
+`eng/atlas-oem-disabled-state.ps1`. `C:\ProgramData\WSGM\AtlasOemControl\last-check.json` records
+health and any changes. The first elevated run completed successfully with no changes needed. This
+is an explicitly authorized local maintenance task, separate from WSGM's subsequent manager-takeover
+integration and from LibHandheld's device lifecycle.
 
 ## Exact keyboard disable and reboot result
 
@@ -164,8 +164,9 @@ reboot requirement. The local `artifacts/Enable-Acer-OemKeyboard.cmd` contains t
 instance. Restoring software does not implicitly re-enable this keyboard or FSE.
 
 WSGM's subsequent `OtherManagers` integration extends its existing Full-mode/setup takeover and
-Settings > System takeover action to this exact LibHandheld definition. Its catalog includes the ten
-services and three tasks above, the two exact MSIX package families, and the dedicated
+Settings > System takeover action to this exact LibHandheld definition. Its catalog entry, published
+as `AcerModels.ManagerApps` through `HandheldDevice.ManagerApps`, includes the ten services and
+three tasks above, the two exact MSIX package families, and the dedicated
 `HID\VID_0502&PID_F901&MI_02&COL01` keyboard identity. It discovers the current keyboard instance
 instead of copying this machine's suffix, uses the targeted PnPUtil force-disable operation, and
 propagates restart-required outcomes into setup. It never disables a composite parent or a shared
