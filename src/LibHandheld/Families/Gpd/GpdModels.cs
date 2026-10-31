@@ -151,7 +151,7 @@ internal static class GpdModels
     {
         return new ProfiledDeviceModel
         {
-            Definition = new HandheldDefinition(id, FamilyId, name, id)
+            Definition = new HandheldDefinition(id, FamilyId, name, GlyphProfile(source))
             {
                 HardwareAccess = DeviceHardwareAccess.PawnIo
             },
@@ -176,6 +176,23 @@ internal static class GpdModels
             ServiceFactories = source is "GPDWin2" or "GPDWin3"
                 ? []
                 : [_ => new GpdNativeService()]
+        };
+    }
+
+    /// <summary>The glyph profile of a model's physical layout; processor variants of one body share it.</summary>
+    /// <remarks>The WIN 3 and WIN 4 carry the same controls and rear L4/R4, so they share one profile.</remarks>
+    private static string GlyphProfile(string source)
+    {
+        return source switch
+        {
+            "GPDWin2" => "gpd-win2",
+            "GPDWin3" => "gpd-win3-win4",
+            "GPDWin5" => "gpd-win5",
+            _ when source.StartsWith("GPDWin4", StringComparison.Ordinal) => "gpd-win3-win4",
+            _ when source.StartsWith("GPDWinMax2", StringComparison.Ordinal) => "gpd-win-max2",
+            _ when source.StartsWith("GPDWinMini", StringComparison.Ordinal) => "gpd-win-mini",
+            _ => throw new ArgumentOutOfRangeException(nameof(source), source,
+                "No GPD glyph profile covers this model.")
         };
     }
 }

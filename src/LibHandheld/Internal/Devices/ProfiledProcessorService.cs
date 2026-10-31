@@ -393,8 +393,7 @@ internal sealed class ProfiledProcessorService(
                 CapabilityDescriptors.Action(CapabilityIds.ProcessorReset, CapabilityRole.GenericAction,
                     CapabilityDescriptors.Label("Reset processor tuning") with
                     {
-                        Description = "Clears processor tuning for this device in Global and every game. "
-                                      + "Restores supported values; a Windows restart may be needed for "
+                        Description = "Restores supported values; a Windows restart may be needed for "
                                       + "firmware defaults."
                     })
             } : Array.Empty<CapabilityDescriptor>())

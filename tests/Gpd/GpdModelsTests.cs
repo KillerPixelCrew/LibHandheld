@@ -35,6 +35,19 @@ public sealed class GpdModelsTests
     }
 
     [Fact]
+    public void ProcessorVariantsOfOneBodyShareItsGlyphProfile()
+    {
+        var profiles = GpdModels.All.GroupBy(model => model.Definition.GlyphProfileId)
+            .ToDictionary(group => group.Key, group => group.Select(model => model.Definition.Id).ToArray());
+        Assert.Equal(["gpd-win-max2", "gpd-win-mini", "gpd-win2", "gpd-win3-win4", "gpd-win5"],
+            profiles.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal(7, profiles["gpd-win3-win4"].Length);
+        Assert.Contains("gpd-win3", profiles["gpd-win3-win4"]);
+        Assert.Equal(4, profiles["gpd-win-mini"].Length);
+        Assert.Equal(7, profiles["gpd-win-max2"].Length);
+    }
+
+    [Fact]
     public void Mini8840AndMaxIntelKeepTheirOwnPublishedSensorMatrices()
     {
         var raw = new Vector3(1, 2, 3);

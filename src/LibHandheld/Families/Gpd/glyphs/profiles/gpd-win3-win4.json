@@ -1,9 +1,17 @@
 {
   "schemaVersion": 1,
-  "profileId": "gpd-win-max2-8840u",
-  "displayName": "GPD WIN Max 2 (8840U)",
+  "profileId": "gpd-win3-win4",
+  "displayName": "GPD WIN 3 and WIN 4",
   "revision": 1,
-  "exactDeviceIds": ["gpd-win-max2-8840u"],
+  "exactDeviceIds": [
+    "gpd-win3",
+    "gpd-win4-6800u",
+    "gpd-win4-7640u",
+    "gpd-win4-7840u",
+    "gpd-win4-8640u",
+    "gpd-win4-8840u",
+    "gpd-win4-hx370"
+  ],
   "sourceRevision": "hc-a250b19a4b7e-promptfont-b190b52ef647",
   "noticePath": "THIRD_PARTY_NOTICES.md",
   "assets": [
@@ -314,39 +322,6 @@
         "width": 32,
         "height": 32
       }
-    },
-    {
-      "assetId": "pf-221a",
-      "format": "Svg",
-      "role": "Control",
-      "viewBox": {
-        "x": 0,
-        "y": 0,
-        "width": 32,
-        "height": 32
-      }
-    },
-    {
-      "assetId": "pf-2265",
-      "format": "Svg",
-      "role": "Control",
-      "viewBox": {
-        "x": 0,
-        "y": 0,
-        "width": 32,
-        "height": 32
-      }
-    },
-    {
-      "assetId": "pf-2267",
-      "format": "Svg",
-      "role": "Control",
-      "viewBox": {
-        "x": 0,
-        "y": 0,
-        "width": 32,
-        "height": 32
-      }
     }
   ],
   "controllerImages": {},
@@ -485,10 +460,7 @@
     },
     {
       "control": "Oem1",
-      "presence": "Present",
-      "assetId": "pf-221a",
-      "physicalLabel": "Menu",
-      "oemControlId": "menu"
+      "presence": "Absent"
     },
     {
       "control": "Oem2",
@@ -504,10 +476,7 @@
     },
     {
       "control": "RightTrackpad",
-      "presence": "Present",
-      "assetId": "pf-2265",
-      "physicalLabel": "Right trackpad",
-      "side": "Right"
+      "presence": "Absent"
     },
     {
       "control": "Oem3",
@@ -595,9 +564,7 @@
     },
     {
       "control": "RightTrackpadClick",
-      "presence": "Present",
-      "assetId": "pf-2267",
-      "side": "Right"
+      "presence": "Absent"
     },
     {
       "control": "LeftTrackpadUp",
@@ -676,10 +643,5 @@
       "presence": "Absent"
     }
   ],
-  "aliases": [
-    {
-      "logicalControl": "QuickAccess",
-      "physicalControl": "Oem1"
-    }
-  ]
+  "aliases": []
 }

@@ -97,8 +97,10 @@ public sealed class ProcessorSettingsTests
         }, "bios", CancellationToken.None);
         Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
         Assert.Single(module.Calls);
-        Assert.Contains("a Windows restart may be needed", service.Descriptors
-            .Single(descriptor => descriptor.CapabilityId == CapabilityIds.ProcessorReset).Display.Description);
+        // Clearing saved tuning is the host's job, so the library describes only what the reset itself does.
+        Assert.Equal("Restores supported values; a Windows restart may be needed for firmware defaults.",
+            service.Descriptors.Single(descriptor => descriptor.CapabilityId == CapabilityIds.ProcessorReset)
+                .Display.Description);
         Assert.Contains("Restart Windows", service.States
             .Single(state => state.CapabilityId == CapabilityIds.ProcessorReset).Reason?.Detail);
         await service.DisposeAsync();

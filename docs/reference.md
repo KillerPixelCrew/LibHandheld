@@ -1195,7 +1195,8 @@ Owns one exact handheld's native services and semantic controls.
 
 Selected devices with processor controls expose the `processor.reset` action. Call it without a
 value after removing the consumer's saved processor preferences. Its display carries a `Description`
-that says what the reset clears and that a Windows restart may be needed. The action restores
+that says the reset restores supported values and that a Windows restart may be needed. Clearing
+saved preferences is the consumer's own step, so the consumer describes it. The action restores
 supported automatic GPU clock modes, zero curve/undervolt offsets and readable captured originals.
 Its published state and result reason list settings requiring a Windows restart when no live restore
 protocol or original exists. No factory thermal values are guessed. A failed submitted write stops

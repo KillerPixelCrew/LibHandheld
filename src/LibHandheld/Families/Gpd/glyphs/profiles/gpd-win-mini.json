@@ -1,9 +1,14 @@
 {
   "schemaVersion": 1,
-  "profileId": "gpd-win-max2-7640u",
-  "displayName": "GPD WIN Max 2 (7640U)",
+  "profileId": "gpd-win-mini",
+  "displayName": "GPD WIN Mini",
   "revision": 1,
-  "exactDeviceIds": ["gpd-win-max2-7640u"],
+  "exactDeviceIds": [
+    "gpd-win-mini-7640u",
+    "gpd-win-mini-7840u",
+    "gpd-win-mini-8840u",
+    "gpd-win-mini-hx370"
+  ],
   "sourceRevision": "hc-a250b19a4b7e-promptfont-b190b52ef647",
   "noticePath": "THIRD_PARTY_NOTICES.md",
   "assets": [
@@ -294,39 +299,6 @@
       }
     },
     {
-      "assetId": "pf-220e",
-      "format": "Svg",
-      "role": "Control",
-      "viewBox": {
-        "x": 0,
-        "y": 0,
-        "width": 32,
-        "height": 32
-      }
-    },
-    {
-      "assetId": "pf-220f",
-      "format": "Svg",
-      "role": "Control",
-      "viewBox": {
-        "x": 0,
-        "y": 0,
-        "width": 32,
-        "height": 32
-      }
-    },
-    {
-      "assetId": "pf-221a",
-      "format": "Svg",
-      "role": "Control",
-      "viewBox": {
-        "x": 0,
-        "y": 0,
-        "width": 32,
-        "height": 32
-      }
-    },
-    {
       "assetId": "pf-2265",
       "format": "Svg",
       "role": "Control",
@@ -339,6 +311,28 @@
     },
     {
       "assetId": "pf-2267",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-2276",
+      "format": "Svg",
+      "role": "Control",
+      "viewBox": {
+        "x": 0,
+        "y": 0,
+        "width": 32,
+        "height": 32
+      }
+    },
+    {
+      "assetId": "pf-2277",
       "format": "Svg",
       "role": "Control",
       "viewBox": {
@@ -462,7 +456,7 @@
     {
       "control": "RearM1",
       "presence": "Present",
-      "assetId": "pf-220e",
+      "assetId": "pf-2276",
       "physicalLabel": "L4",
       "oemControlId": "l4",
       "side": "Left"
@@ -470,7 +464,7 @@
     {
       "control": "RearM2",
       "presence": "Present",
-      "assetId": "pf-220f",
+      "assetId": "pf-2277",
       "physicalLabel": "R4",
       "oemControlId": "r4",
       "side": "Right"
@@ -485,10 +479,7 @@
     },
     {
       "control": "Oem1",
-      "presence": "Present",
-      "assetId": "pf-221a",
-      "physicalLabel": "Menu",
-      "oemControlId": "menu"
+      "presence": "Absent"
     },
     {
       "control": "Oem2",
@@ -676,10 +667,5 @@
       "presence": "Absent"
     }
   ],
-  "aliases": [
-    {
-      "logicalControl": "QuickAccess",
-      "physicalControl": "Oem1"
-    }
-  ]
+  "aliases": []
 }
