@@ -67,11 +67,8 @@ internal sealed class ClawPowerCapability(
     private long? _lastPowerWrite;
     private byte? _scenarioEnvelope;
 
+    /// <summary>The pair the TDP watchdog writes again: the last one accepted, until a failed write or a restore.</summary>
     internal (int Sustained, int Boost)? WrittenLimits { get; private set; }
-    internal DateTimeOffset? LimitsWrittenAt { get; private set; }
-
-    internal byte? WrittenScenario { get; private set; }
-    internal DateTimeOffset? ScenarioWrittenAt { get; private set; }
 
     private int Minimum => _model.MinimumWatts;
 
@@ -123,7 +120,6 @@ internal sealed class ClawPowerCapability(
         catch
         {
             WrittenLimits = null;
-            LimitsWrittenAt = null;
             throw;
         }
     }
@@ -195,7 +191,7 @@ internal sealed class ClawPowerCapability(
         CancellationToken cancellationToken)
     {
         // Preserve an original captured envelope, or use HC's SHIFT flags; a read never gates this write.
-        var current = WrittenScenario ?? _scenarioEnvelope ?? 0xC0;
+        var current = _scenarioEnvelope ?? 0xC0;
 
         int? target = scenario switch
         {
@@ -222,8 +218,6 @@ internal sealed class ClawPowerCapability(
             return ClawApplied.Failed(command, "scenario", exception);
         }
 
-        WrittenScenario = (byte)value;
-        ScenarioWrittenAt = _time.GetUtcNow();
         _scenarioEnvelope = (byte)value;
         return CommandResults.Applied(command);
     }
@@ -247,9 +241,6 @@ internal sealed class ClawPowerCapability(
         }
 
         WrittenLimits = null;
-        LimitsWrittenAt = null;
-        WrittenScenario = null;
-        ScenarioWrittenAt = null;
     }
 
     private static int ShiftTarget(byte current, int mode)
@@ -271,12 +262,10 @@ internal sealed class ClawPowerCapability(
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             WrittenLimits = null;
-            LimitsWrittenAt = null;
             return ClawApplied.Failed(command, "power", exception);
         }
 
         WrittenLimits = (sustainedWatts, boostWatts);
-        LimitsWrittenAt = _time.GetUtcNow();
         _lastPowerWrite = _time.GetTimestamp();
         return CommandResults.Applied(command);
     }
@@ -317,11 +306,14 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
     internal const byte BatteryMaster = 0x80;
 
     private readonly IMsiWmiTransport _transport = transport ?? throw new ArgumentNullException(nameof(transport));
-    internal ChargeLimitState? Written { get; private set; }
-    internal DateTimeOffset? WrittenAt { get; private set; }
-    internal bool? WrittenProtection { get; private set; }
-    internal DateTimeOffset? ProtectionWrittenAt { get; private set; }
     private byte? _chargeEnvelope;
+
+    /// <summary>The supported limit in the low seven bits of the last 0xD7 byte written, or null.</summary>
+    /// <remarks>
+    ///     A Battery Master write carries the limit the register held; this is that limit when it is one of
+    ///     HC's steps, so the engine can publish it as written together with the flag.
+    /// </remarks>
+    internal int? WrittenPercent { get; private set; }
 
     public async ValueTask<CapabilityCommandResult> ApplyAsync(
         CapabilityCommand command,
@@ -349,11 +341,8 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
             return ClawApplied.Failed(command, "charge-limit", exception);
         }
 
-        Written = new ChargeLimitState(percent, wanted);
-        WrittenAt = DateTimeOffset.UtcNow;
         _chargeEnvelope = wanted;
-        WrittenProtection = true;
-        ProtectionWrittenAt = WrittenAt;
+        WrittenPercent = percent;
         return CommandResults.Applied(command);
     }
 
@@ -363,7 +352,7 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
         if (cancellationToken.IsCancellationRequested)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
-                "The Battery Master command was cancelled before dispatch.");
+                "The Battery Master command was cancelled before dispatch.", true);
         }
 
         if (_chargeEnvelope is null)
@@ -400,13 +389,9 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
         }
 
         _chargeEnvelope = wanted;
-        WrittenProtection = enabled;
-        ProtectionWrittenAt = DateTimeOffset.UtcNow;
-        if (percentage is >= MinimumPercent and <= MaximumPercent && percentage % StepPercent == 0)
-        {
-            Written = new ChargeLimitState(percentage, wanted);
-            WrittenAt = ProtectionWrittenAt;
-        }
+        WrittenPercent = percentage is >= MinimumPercent and <= MaximumPercent && percentage % StepPercent == 0
+            ? percentage
+            : null;
 
         return CommandResults.Applied(command);
     }
@@ -431,17 +416,6 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
 
     private readonly IMsiWmiTransport _transport = transport ?? throw new ArgumentNullException(nameof(transport));
     private FanSnapshot? _envelope;
-    private (bool Custom, bool Full)? _writtenMode;
-
-    internal int? WrittenDuty { get; private set; }
-    internal DateTimeOffset? DutyWrittenAt { get; private set; }
-    internal IReadOnlyList<CurvePoint>? WrittenCurve { get; private set; }
-    internal DateTimeOffset? CurveWrittenAt { get; private set; }
-    internal DateTimeOffset? ModeWrittenAt { get; private set; }
-
-    internal string? WrittenMode => _writtenMode is { } mode
-        ? mode.Custom ? "custom" : mode.Full ? "full-speed" : "automatic"
-        : null;
 
     /// <summary>Captures original tables/flags once for restoration and byte-preserving commands.</summary>
     public async ValueTask<FanSnapshot> ReadSnapshotAsync(CancellationToken cancellationToken)
@@ -510,11 +484,6 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
                 .ConfigureAwait(false);
             await WriteRawFlagAsync(ClawHardwareFacts.FanFullSpeedAddress, SetFlag(full, false), token)
                 .ConfigureAwait(false);
-            WrittenDuty = percent;
-            _writtenMode = (true, false);
-            DutyWrittenAt = ModeWrittenAt = DateTimeOffset.UtcNow;
-            WrittenCurve = null;
-            CurveWrittenAt = null;
             return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -556,8 +525,6 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
             return ClawApplied.Failed(command, "fan mode", exception);
         }
 
-        _writtenMode = (custom, full);
-        ModeWrittenAt = DateTimeOffset.UtcNow;
         return CommandResults.Applied(command);
     }
 
@@ -603,8 +570,6 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
             return ClawApplied.Failed(command, "fan curve", exception);
         }
 
-        WrittenCurve = [.. curve];
-        CurveWrittenAt = DateTimeOffset.UtcNow;
         return CommandResults.Applied(command);
     }
 
@@ -623,12 +588,6 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
             .ConfigureAwait(false);
         await WriteRawFlagAsync(ClawHardwareFacts.FanFullSpeedAddress, snapshot.FullSpeedFlag, cancellationToken)
             .ConfigureAwait(false);
-        WrittenCurve = null;
-        CurveWrittenAt = null;
-        _writtenMode = null;
-        ModeWrittenAt = null;
-        WrittenDuty = null;
-        DutyWrittenAt = null;
     }
 
     private static bool TryValidateCurve(IReadOnlyList<CurvePoint> curve, out string? error)
@@ -729,8 +688,6 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
     /// <summary>The last accepted lighting intent, never inferred from a device read.</summary>
     public LightingState? Current { get; private set; }
 
-    internal DateTimeOffset? WrittenAt { get; private set; }
-
     /// <summary>Captures the original payload once for byte-preserving writes, without publishing control state.</summary>
     /// <param name="cancellationToken">Cancels the MCU read; caller cancellation propagates.</param>
     public async ValueTask CaptureEnvelopeAsync(CancellationToken cancellationToken)
@@ -818,7 +775,6 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
 
         _profile = payload;
         Current = wanted;
-        WrittenAt = DateTimeOffset.UtcNow;
         return CommandResults.Applied(command);
     }
 

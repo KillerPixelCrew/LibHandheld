@@ -341,7 +341,7 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
 
     private bool OnAcPower()
     {
-        return _hardware.OnAcPower?.Invoke() ?? WindowsMachineIdentity.OnAcPower();
+        return WindowsMachineIdentity.OnAcPower(_hardware.OnAcPower);
     }
 
     private static AllyHardwareServices CreateWindowsServices()

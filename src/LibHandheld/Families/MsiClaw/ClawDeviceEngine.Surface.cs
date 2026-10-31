@@ -1,5 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -20,63 +21,42 @@ internal sealed partial class ClawDeviceEngine
 
         IReadOnlyList<CapabilityDescriptor> descriptors =
         [
-            IntegerDescriptor(CapabilityIds.PowerSustained, CapabilityRole.PowerSustainedLimit,
-                    // PL1 shares PL2's ceiling: on the A2VM that is 37 W, not the 30 W it ships at.
-                    DisplayKey.SustainedPowerLimit, Model.MinimumWatts, Model.MaximumWatts,
-                    CapabilityUnit.Watt, true) with
+            // PL1 shares PL2's ceiling: on the A2VM that is 37 W, not the 30 W it ships at.
+            CapabilityDescriptors.Integer(CapabilityIds.PowerSustained, CapabilityRole.PowerSustainedLimit,
+                    new CapabilityDisplay { Key = DisplayKey.SustainedPowerLimit }, Model.MinimumWatts,
+                    Model.MaximumWatts, CapabilityUnit.Watt, read: true, write: true) with
                 {
                     PowerPresets = Model.PowerPresets,
                     PairedPowerLimitId = CapabilityIds.PowerBoost
                 },
-            IntegerDescriptor(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
-                DisplayKey.BoostPowerLimit, Model.MinimumWatts, Model.MaximumWatts, CapabilityUnit.Watt, true),
-            IntegerDescriptor(CapabilityIds.ChargeLimit, CapabilityRole.ChargeLimit,
-                    DisplayKey.ChargeLimit,
-                    ClawChargeLimitCapability.MinimumPercent,
-                    ClawChargeLimitCapability.MaximumPercent,
-                    CapabilityUnit.Percent,
-                    true,
-                    persistence: CapabilityPersistence.DevicePersistent) with
-                {
-                    // HC's BatteryBypassStep: the limit is 60, 80 or 100 percent.
-                    Step = ClawChargeLimitCapability.StepPercent
-                },
+            CapabilityDescriptors.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
+                new CapabilityDisplay { Key = DisplayKey.BoostPowerLimit }, Model.MinimumWatts, Model.MaximumWatts,
+                CapabilityUnit.Watt, read: true, write: true),
+            // HC's BatteryBypassStep: the limit is 60, 80 or 100 percent.
+            CapabilityDescriptors.Integer(CapabilityIds.ChargeLimit, CapabilityRole.ChargeLimit,
+                new CapabilityDisplay { Key = DisplayKey.ChargeLimit }, ClawChargeLimitCapability.MinimumPercent,
+                ClawChargeLimitCapability.MaximumPercent, CapabilityUnit.Percent, read: true, write: true,
+                CapabilityPersistence.DevicePersistent, step: ClawChargeLimitCapability.StepPercent),
             CapabilityDescriptors.Boolean(CapabilityIds.ChargeProtection, CapabilityRole.ChargeProtectionMode,
                 CapabilityDescriptors.Label("Battery Master"), read: false,
                 persistence: CapabilityPersistence.DevicePersistent),
-            ChoiceDescriptor(
-                CapabilityIds.Scenario,
-                CapabilityRole.ScenarioMode,
-                DisplayKey.PerformanceProfile,
+            CapabilityDescriptors.Choice(CapabilityIds.Scenario, CapabilityRole.ScenarioMode,
+                new CapabilityDisplay { Key = DisplayKey.PerformanceProfile },
                 CapabilityDescriptors.Choices(["comfort", "green", "eco", "user", "sport", "inactive"]),
-                true),
-            ChoiceDescriptor(
-                CapabilityIds.FanMode,
-                CapabilityRole.FanMode,
-                DisplayKey.FanMode,
-                CapabilityDescriptors.Choices(["automatic", "custom", "full-speed"]),
-                true),
+                read: true, write: true),
+            CapabilityDescriptors.Choice(CapabilityIds.FanMode, CapabilityRole.FanMode,
+                new CapabilityDisplay { Key = DisplayKey.FanMode },
+                CapabilityDescriptors.Choices(["automatic", "custom", "full-speed"]), read: true, write: true),
             FanCurveDescriptor(),
-            IntegerDescriptor(CapabilityIds.FanDuty, CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100,
-                    CapabilityUnit.Percent, true) with
-                {
-                    SupportsRead = false
-                },
-            IntegerDescriptor(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness,
-                DisplayKey.Brightness, 0, 100, CapabilityUnit.Percent, true,
-                persistence: CapabilityPersistence.DevicePersistent),
+            CapabilityDescriptors.Integer(CapabilityIds.FanDuty, CapabilityRole.FanDuty,
+                new CapabilityDisplay { Key = DisplayKey.FanSpeed }, minimum: 0, maximum: 100,
+                CapabilityUnit.Percent, read: false, write: true),
+            CapabilityDescriptors.Integer(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness,
+                new CapabilityDisplay { Key = DisplayKey.Brightness }, minimum: 0, maximum: 100,
+                CapabilityUnit.Percent, read: true, write: true, CapabilityPersistence.DevicePersistent),
             LightingColorDescriptor(CapabilityInstances.LeftRing, "Left ring"),
             LightingColorDescriptor(CapabilityInstances.RightRing, "Right ring"),
             LightingColorDescriptor(CapabilityInstances.Buttons, "Buttons"),
-            // These three carry the value kinds their roles require. ControllerSource and
-            // MotionSource are choices because "who owns this source" has more than two answers:
-            // the plugin can hold it, the device can still have it, or acquisition can have failed,
-            // and a boolean flattened all three into "not owned". HapticSink carries no value at
-            // all: it is a target rumble is written to, not something with a readable state.
-            //
-            // Declaring them as booleans made the descriptor set fail the SDK's role/value-kind
-            // check, and a rejected SET means every capability is rejected, so the whole device
-            // published nothing at all because of these three lines.
             CapabilityDescriptors.Ownership(CapabilityIds.Controller, CapabilityRole.ControllerSource,
                 new CapabilityDisplay { Key = DisplayKey.Controller }),
             CapabilityDescriptors.Ownership(CapabilityIds.Motion, CapabilityRole.MotionSource,
@@ -87,43 +67,23 @@ internal sealed partial class ClawDeviceEngine
             // Readings, not controls. They left the Power page because a person opens it to change
             // how the device behaves, not to watch numbers; the CPU temperature stays published
             // because the fan-curve editor draws the live temperature against the curve.
-            IntegerDescriptor(CapabilityIds.Temperature, CapabilityRole.Telemetry,
-                DisplayKey.CpuTemperature, 0, 110, CapabilityUnit.Celsius, false),
+            CapabilityDescriptors.Integer(CapabilityIds.Temperature, CapabilityRole.Telemetry,
+                new CapabilityDisplay { Key = DisplayKey.CpuTemperature }, minimum: 0, maximum: 110,
+                CapabilityUnit.Celsius, read: true, write: false),
             // Both fans are still measured separately even though they are driven together: one
             // failing fan is exactly the fault this page exists to make visible.
-            IntegerDescriptor(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
-                DisplayKey.FanLeft, 0, 10_000, CapabilityUnit.Rpm, false,
-                CapabilityInstances.Left),
-            IntegerDescriptor(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
-                DisplayKey.FanRight, 0, 10_000, CapabilityUnit.Rpm, false,
-                CapabilityInstances.Right)
+            CapabilityDescriptors.Integer(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
+                new CapabilityDisplay { Key = DisplayKey.FanLeft }, minimum: 0, maximum: 10_000, CapabilityUnit.Rpm,
+                read: true, write: false, instance: CapabilityInstances.Left),
+            CapabilityDescriptors.Integer(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
+                new CapabilityDisplay { Key = DisplayKey.FanRight }, minimum: 0, maximum: 10_000, CapabilityUnit.Rpm,
+                read: true, write: false, instance: CapabilityInstances.Right)
         ];
 
-        EnsureUniqueCapabilityKeys(descriptors);
         _descriptorSet = new CapabilityDescriptorSet
         {
             Descriptors = descriptors
         };
-    }
-
-    private static void EnsureUniqueCapabilityKeys(IReadOnlyList<CapabilityDescriptor> descriptors)
-    {
-        HashSet<string> keys = new(StringComparer.Ordinal);
-        foreach (var descriptor in descriptors)
-        {
-            var key = CapabilityKey(
-                descriptor.CapabilityId,
-                descriptor.InstanceId);
-            if (!keys.Add(key))
-            {
-                throw new InvalidOperationException($"Capability '{key}' is registered more than once.");
-            }
-        }
-    }
-
-    private static string CapabilityKey(string capabilityId, string? instanceId)
-    {
-        return instanceId is null ? capabilityId : $"{capabilityId}/{instanceId}";
     }
 
     /// <summary>The one fan curve, applied to both channels.</summary>
@@ -152,140 +112,65 @@ internal sealed partial class ClawDeviceEngine
             read: true, CapabilityPersistence.DevicePersistent);
     }
 
-    private async ValueTask PublishCapabilityStatesAsync(CancellationToken cancellationToken)
+    private ValueTask PublishStatesAsync(CancellationToken cancellationToken)
     {
-        if (_descriptorSet is null)
-        {
-            return;
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        PublishStates(null);
+        return ValueTask.CompletedTask;
+    }
 
-        foreach (var descriptor in _descriptorSet.Descriptors)
+    /// <summary>Publishes the states a service owns after its state changed outside a serialized turn.</summary>
+    /// <param name="service">The service whose fault or reconnection callback changed its state.</param>
+    /// <remarks>
+    ///     A reader fault, a failed reconnection or a returned pad changes the controller's state on a transport
+    ///     thread; publishing it there keeps the telemetry tick to the readings it samples.
+    /// </remarks>
+    private void PublishServiceStates(DeviceServiceStatus service)
+    {
+        PublishStates(service);
+    }
+
+    /// <summary>Publishes every state, or only those of one service.</summary>
+    /// <remarks>
+    ///     Controls carry only accepted writes and sensors their last reading, both from
+    ///     <see cref="_observedValues" />; ownership is the owning service's state, timed when it last changed.
+    ///     Locked so a state computed on a transport callback and one computed in a serialized turn are stored in
+    ///     the order they were read.
+    /// </remarks>
+    private void PublishStates(DeviceServiceStatus? owner)
+    {
+        lock (_publishGate)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var service = ServiceForCapability(descriptor.CapabilityId);
-            if (service is null)
+            if (_descriptorSet is not { } descriptors)
             {
-                continue;
+                return;
             }
 
-            // Control intent comes only from accepted writes. Sensors carry actual readings; a haptic
-            // sink carries availability alone because its declared value shape is None.
-            var failed = _observationFailures.TryGetValue(service.ServiceId, out var observationFailure);
-            var value = descriptor.ValueKind != CapabilityValueKind.None && !failed ? CurrentState(descriptor) : null;
-            await _publications.PublishCapabilityStateAsync(
-                new CapabilityState
+            foreach (var descriptor in descriptors.Descriptors)
+            {
+                if (ServiceForCapability(descriptor.CapabilityId) is not { } service
+                    || (owner is not null && service != owner))
                 {
-                    CapabilityId = descriptor.CapabilityId,
-                    InstanceId = descriptor.InstanceId,
-                    Available = service.State is DeviceServiceState.Owned,
-                    Reason = observationFailure ?? service.Reason ?? DeviceServiceLifecycle.ReasonFor(service.State),
-                    ObservedValue = value,
-                    Quality = value is null
-                        ? HardwareStateQuality.Unknown
-                        : HardwareStateQuality.Observed,
-                    ObservedAt = descriptor.Role is CapabilityRole.ControllerSource or CapabilityRole.MotionSource
-                        or CapabilityRole.HapticSink
-                        ? service.ChangedAt
-                        : value is null
-                            ? null
-                            : StateTimestamp(descriptor.CapabilityId)
-                },
-                cancellationToken).AsTask().WaitAsync(cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var owned = service.State is DeviceServiceState.Owned;
+                var reason = owned ? null : service.Reason ?? DeviceServiceLifecycle.ReasonFor(service.State);
+                _publications.Publish(Ownership(descriptor) is { } ownership
+                    ? ProviderControls.State(descriptor.CapabilityId, owned, ownership, service.ChangedAt, reason,
+                        descriptor.InstanceId)
+                    : ProviderControls.Observed(descriptor, _observedValues, owned, reason));
+            }
         }
     }
 
-    private CapabilityValue? CurrentState(CapabilityDescriptor descriptor)
+    /// <summary>Who holds the controller or the motion sensors; null for every other capability.</summary>
+    private CapabilityValue? Ownership(CapabilityDescriptor descriptor)
     {
-        switch (descriptor.CapabilityId)
+        return descriptor.CapabilityId switch
         {
-            case CapabilityIds.PowerSustained:
-            {
-                return _powerCapability!.WrittenLimits is { } value ? CapabilityValue.Integer(value.Sustained) : null;
-            }
-            case CapabilityIds.PowerBoost:
-            {
-                return _powerCapability!.WrittenLimits is { } value ? CapabilityValue.Integer(value.Boost) : null;
-            }
-            case CapabilityIds.Scenario:
-            {
-                return _powerCapability!.WrittenScenario is { } value ? Scenario(value, Model) : null;
-            }
-            case CapabilityIds.ChargeLimit:
-            {
-                // Publish only accepted intent, never the firmware's reset/unsupported charge register.
-                return _chargeLimitCapability!.Written is { } value
-                    ? CapabilityValue.Integer(value.Percent)
-                    : null;
-            }
-            case CapabilityIds.ChargeProtection:
-                return _chargeLimitCapability!.WrittenProtection is { } enabled
-                    ? CapabilityValue.Boolean(enabled) : null;
-            case CapabilityIds.FanMode:
-            {
-                return _fanCapability!.WrittenMode is { } value ? CapabilityValue.Choice(value) : null;
-            }
-            case CapabilityIds.FanDuty:
-                return _fanCapability?.WrittenDuty is { } duty ? CapabilityValue.Integer(duty) : null;
-            case CapabilityIds.FanCurve:
-            {
-                // One accepted curve controls both channels; firmware tables are never polled for state.
-                var value = _fanCapability!.WrittenCurve;
-                return value is null ? null : CapabilityValue.Curve(value);
-            }
-            case CapabilityIds.FanRpm:
-            {
-                var value = _telemetry!.LastTelemetry;
-                return value is null
-                    ? null
-                    : CapabilityValue.Integer(
-                        descriptor.InstanceId == CapabilityInstances.Left ? value.LeftRpm : value.RightRpm);
-            }
-            case CapabilityIds.Temperature:
-            {
-                return _telemetry!.LastTelemetry is { } value
-                    ? CapabilityValue.Integer(value.TemperatureCelsius)
-                    : null;
-            }
-            case CapabilityIds.LightingBrightness:
-            {
-                return _lightingCapability!.Current is { } value ? CapabilityValue.Integer(value.Brightness) : null;
-            }
-            case CapabilityIds.LightingColor:
-            {
-                var value = _lightingCapability!.Current;
-                return value is null
-                    ? null
-                    : CapabilityValue.Color(descriptor.InstanceId switch
-                    {
-                        CapabilityInstances.RightRing => value.RightRingColor,
-                        CapabilityInstances.LeftRing => value.LeftRingColor,
-                        CapabilityInstances.Buttons => value.ButtonsColor,
-                        _ => 0
-                    });
-            }
-            case CapabilityIds.Rumble:
-                // A sink has no value to report. Its descriptor says so, and its state has to agree or
-                // the state is rejected for a kind mismatch the way the descriptor set was.
-                return CapabilityValue.None();
-        }
-
-        return CapabilityValue.Choice(DeviceServiceLifecycle.Ownership(
-            descriptor.CapabilityId == CapabilityIds.Motion ? _motion!.State : _controller!.State));
-    }
-
-    private DateTimeOffset? StateTimestamp(string capabilityId)
-    {
-        return capabilityId switch
-        {
-            CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => _powerCapability!.LimitsWrittenAt,
-            CapabilityIds.Scenario => _powerCapability!.ScenarioWrittenAt,
-            CapabilityIds.ChargeLimit => _chargeLimitCapability!.WrittenAt,
-            CapabilityIds.ChargeProtection => _chargeLimitCapability!.ProtectionWrittenAt,
-            CapabilityIds.FanMode => _fanCapability!.ModeWrittenAt,
-            CapabilityIds.FanDuty => _fanCapability!.DutyWrittenAt,
-            CapabilityIds.FanCurve => _fanCapability!.CurveWrittenAt,
-            CapabilityIds.LightingBrightness or CapabilityIds.LightingColor => _lightingCapability!.WrittenAt,
-            CapabilityIds.FanRpm or CapabilityIds.Temperature => _telemetry!.ObservedAt,
+            CapabilityIds.Controller => CapabilityValue.Choice(DeviceServiceLifecycle.Ownership(_controller?.State)),
+            CapabilityIds.Motion => CapabilityValue.Choice(DeviceServiceLifecycle.Ownership(_motion?.State)),
             _ => null
         };
     }
@@ -301,50 +186,5 @@ internal sealed partial class ClawDeviceEngine
             CapabilityDescriptors.OemControl("oem3", "M1", OemControlPlacement.Rear),
             CapabilityDescriptors.OemControl("oem4", "M2", OemControlPlacement.Rear)
         ];
-    }
-
-    private static CapabilityDescriptor IntegerDescriptor(
-        string id,
-        CapabilityRole role,
-        DisplayKey display,
-        int minimum,
-        int maximum,
-        CapabilityUnit unit,
-        bool writable,
-        string? instance = null,
-        CapabilityPersistence persistence = CapabilityPersistence.Volatile)
-    {
-        return CapabilityDescriptors.Integer(id, role, new CapabilityDisplay { Key = display }, minimum, maximum, unit,
-            read: true, writable, persistence, instance: instance);
-    }
-
-    private static CapabilityDescriptor ChoiceDescriptor(
-        string id,
-        CapabilityRole role,
-        DisplayKey display,
-        IReadOnlyList<CapabilityChoice> choices,
-        bool writable)
-    {
-        return CapabilityDescriptors.Choice(id, role, new CapabilityDisplay { Key = display }, choices, read: true,
-            writable);
-    }
-
-    internal static CapabilityValue? Scenario(byte raw, ClawModel model)
-    {
-        var mode = raw & 0x3F;
-        var choice =
-            (raw & 0xC0) != 0xC0
-                ? "inactive"
-                : mode == model.UserScenario
-                    ? "user"
-                    : mode switch
-                    {
-                        0 => "comfort",
-                        1 => "green",
-                        2 => "eco",
-                        4 => "sport",
-                        _ => null
-                    };
-        return choice is null ? null : CapabilityValue.Choice(choice);
     }
 }

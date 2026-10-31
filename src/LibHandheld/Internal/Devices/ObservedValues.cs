@@ -17,7 +17,12 @@ internal sealed class ObservedValues
         }
     }
 
-    internal void Read(string id, CapabilityValue? value, string? instance = null)
+    /// <summary>Records a reading; an unreadable value forgets a read one but never an acknowledged write.</summary>
+    /// <param name="id">The capability read.</param>
+    /// <param name="value">The reading, or null when the value could not be read.</param>
+    /// <param name="instance">The capability instance.</param>
+    /// <param name="at">When the reading was taken, so the values of one read share it; now when omitted.</param>
+    internal void Read(string id, CapabilityValue? value, string? instance = null, DateTimeOffset? at = null)
     {
         var key = (id, instance);
         lock (_gate)
@@ -37,7 +42,7 @@ internal sealed class ObservedValues
                 return;
             }
 
-            _values[key] = new Observation(value, DateTimeOffset.UtcNow, false);
+            _values[key] = new Observation(value, at ?? DateTimeOffset.UtcNow, false);
         }
     }
 

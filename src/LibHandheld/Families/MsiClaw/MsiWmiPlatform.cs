@@ -295,23 +295,6 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
     }
 }
 
-internal sealed class WindowsClawIdentityReader(Func<bool>? readOnAcPower = null) : IClawIdentityReader
-{
-    public bool ReadOnAcPower()
-    {
-        try
-        {
-            return (readOnAcPower ?? WindowsMachineIdentity.OnAcPower)();
-        }
-        catch (Exception ex) when (ex is ManagementException or IOException or InvalidDataException
-                                       or UnauthorizedAccessException or COMException or Win32Exception)
-        {
-            DeviceTrace.Failure("power", "AC-power observation failed", ex);
-            return false;
-        }
-    }
-}
-
 internal sealed class MsiOemEventSource : IMsiOemEventSource
 {
     private readonly Lock _gate = new();

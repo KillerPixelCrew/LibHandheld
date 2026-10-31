@@ -1,5 +1,7 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Lifecycle;
+using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Services;
 
@@ -102,6 +104,14 @@ internal abstract class DeviceServiceStatus(string serviceId)
     {
         return new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing, detail);
     }
+
+    /// <summary>A release refused for lack of time: nothing was written and the original stays pending.</summary>
+    /// <returns>A Quiescing reason saying the original remains recorded for the next start.</returns>
+    protected static CapabilityReason NoTimeToRestore()
+    {
+        return new CapabilityReason(CapabilityReasonCode.Quiescing,
+            "Not enough time to restore; the original stays recorded for the next start.");
+    }
 }
 
 /// <summary>A resource the plugin acquires for a device cycle and releases when the cycle ends.</summary>
@@ -159,6 +169,60 @@ internal abstract class DeviceService<TIdentity>(string serviceId) : DeviceServi
     public abstract ValueTask<DeviceServiceResult> ReleaseAsync(
         DeviceCycleContext<TIdentity> context,
         CancellationToken cancellationToken);
+
+    /// <summary>Writes a journalled original back on release, as the last step of undoing a temporary change.</summary>
+    /// <typeparam name="TOriginal">The service's typed original state.</typeparam>
+    /// <param name="journal">The recovery journal holding the original under <see cref="DeviceServiceStatus.ServiceId" />.</param>
+    /// <param name="original">The original to write, or null when nothing is held for this firmware.</param>
+    /// <param name="deadline">The release deadline; too little time leaves the original for the next start.</param>
+    /// <param name="restore">Writes the original once; completion means the transport accepted every write.</param>
+    /// <param name="cancellationToken">Cancels the restore; an interrupted one is left to the lifecycle as unverified.</param>
+    /// <returns>Idle once restored or with nothing to restore, ReleasedUnverified without time, Faulted on failure.</returns>
+    /// <remarks>
+    ///     Only an owned or faulted service restores: a faulted one may still hold captured state, and stop is its
+    ///     restore point. Accepted writes retire the entry without a confirming read; a failed restore keeps it
+    ///     pending and is not written again until the next release or start.
+    /// </remarks>
+    protected async ValueTask<DeviceServiceResult> RestoreOriginalAsync<TOriginal>(
+        DeviceRecoveryJournal journal,
+        TOriginal? original,
+        Deadline deadline,
+        Func<TOriginal, CancellationToken, ValueTask> restore,
+        CancellationToken cancellationToken)
+        where TOriginal : class
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        ArgumentNullException.ThrowIfNull(restore);
+        if (State is not (DeviceServiceState.Owned or DeviceServiceState.Faulted) || original is null)
+        {
+            return Set(DeviceServiceState.Idle);
+        }
+
+        if (!DeviceWriteBudget.IsAvailable(deadline))
+        {
+            return Set(DeviceServiceState.ReleasedUnverified, NoTimeToRestore());
+        }
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await restore(original, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            DeviceTrace.Failure(ServiceId, "Restoration failed; the recovery entry stays pending", ex);
+            return Set(DeviceServiceState.Faulted, new CapabilityReason(CapabilityReasonCode.TransportFaulted,
+                DiagnosticText.FromException($"Restoring '{ServiceId}' failed", ex)));
+        }
+
+        // The writes went through, so the entry is retired even when cancellation follows them.
+        await journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
+        return Set(DeviceServiceState.Idle);
+    }
 
     /// <summary>Stops a suspendable service for a suspend; by default the same as a release.</summary>
     /// <param name="context">The cycle being suspended.</param>

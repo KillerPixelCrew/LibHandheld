@@ -23,8 +23,8 @@ hardware; every fact is source evidence, and each per-model fact lives in one ro
   all of them.
 - Readback: HC's `WMI.Set` ignores the result and HC never reads a limit, fan table or RGB profile
   back (`HandheldCompanion/WMI.cs`; `_ref/HandheldCompanion/FINDINGS.md`). The plugin writes the
-  same way: a write the transport accepted is applied, a matching read upgrades it to verified, and
-  a mismatch publishes the written value without a rollback. A setter's response status is not
+  same way: a write the transport accepted is applied and its value published as observed for the
+  rest of the cycle, with nothing read back to confirm it. A setter's response status is not
   checked; a getter needs HC's success flag (`WMI.Get`'s `readSuccess`).
 - Provider and gates: HC binds `MSI_ACPI.InstanceName='ACPI\PNP0C14\0_0'` (`ClawA1M.WmiPath`); the
   plugin binds that path and falls back to the first active instance only when it does not resolve.
@@ -34,7 +34,7 @@ hardware; every fact is source evidence, and each per-model fact lives in one ro
   which reads the same on every start. Earlier builds bound to the EC and MSI_ACPI versions; the
   reference unit's read `ec:1T52EMS1.109;msi-acpi:8.0`. Such an entry is restored once when a start
   reads that binding again and dropped otherwise. An entry bound to another BIOS is dropped with a
-  warning; a failed restore is kept and written again only after an explicit command.
+  warning; a failed restore is kept and attempted once more at the next release or start.
 - MCU revision: HC reads the HID collection's `Attributes.Version`; the plugin takes the MCU
   collection's release number the same way, and records the PnP `REV_` field for diagnostics only.
 - Power: each class's `cTDP` and `TDPOverrideValues` (`{PL1, PL1, PL2}`), after

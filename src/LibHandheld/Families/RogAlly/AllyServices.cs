@@ -67,58 +67,31 @@ internal sealed class PowerService(
     /// <param name="identity">Current verified machine and firmware binding for the original state.</param>
     /// <param name="cancellationToken">Cancels journal persistence; no hardware mutation is performed here.</param>
     /// <returns>
-    ///     Completion after preserving the first readable original, or without a new entry when already held or
-    ///     unreadable.
+    ///     The journal operation holding the original, or null when it was unreadable. The command hands it to
+    ///     <see cref="DeviceRecoveryJournal.DiscardUnusedAsync{T}" /> once its result is known.
     /// </returns>
-    public async ValueTask PrepareWriteAsync(AllyIdentityState identity, CancellationToken cancellationToken)
+    public async ValueTask<DeviceRecoveryOperation<AllyRecoveryState>?> PrepareWriteAsync(AllyIdentityState identity,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
+        return await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
         {
             var original = Capability!.Read();
             return original.LimitsReadable && original.Mode is not null ? AllyRecoveryState.Power(original) : null;
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    public override async ValueTask<DeviceServiceResult> ReleaseAsync(
+    public override ValueTask<DeviceServiceResult> ReleaseAsync(
         DeviceCycleContext<AllyIdentityState> context,
         CancellationToken cancellationToken)
     {
-        // A faulted service may still hold captured state; stop is its restore point.
-        if (State is not (DeviceServiceState.Owned or DeviceServiceState.Faulted) || Capability is null)
+        if (Capability is not { } capability)
         {
-            return Set(DeviceServiceState.Idle);
+            return ValueTask.FromResult(Set(DeviceServiceState.Idle));
         }
 
-        if (journal.OriginalStateFor<AllyRecoveryState>(ServiceId)?.ToPower() is { } original)
-        {
-            if (!DeviceWriteBudget.IsAvailable(context.Deadline))
-            {
-                return Set(DeviceServiceState.ReleasedUnverified, NoTimeToRestore());
-            }
-
-            try
-            {
-                await Capability.RestoreAsync(original, cancellationToken).ConfigureAwait(false);
-                await journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                DeviceTrace.Failure("power", "Power restoration failed; the recovery entry stays pending", ex);
-                return Set(DeviceServiceState.Faulted, new CapabilityReason(CapabilityReasonCode.TransportFaulted,
-                    DiagnosticText.FromException("Power restoration failed", ex)));
-            }
-        }
-
-        return Set(DeviceServiceState.Idle);
-    }
-
-    /// <summary>A release refused for lack of time: nothing was written and the entry stays pending.</summary>
-    /// <returns>A Quiescing reason indicating that restore was not dispatched and its original remains pending.</returns>
-    internal static CapabilityReason NoTimeToRestore()
-    {
-        return new CapabilityReason(CapabilityReasonCode.Quiescing,
-            "Not enough time to restore; the original stays recorded for the next start.");
+        return RestoreOriginalAsync(journal, journal.OriginalStateFor<AllyRecoveryState>(ServiceId)?.ToPower(),
+            context.Deadline, capability.RestoreAsync, cancellationToken);
     }
 }
 
@@ -181,13 +154,14 @@ internal sealed class FanService(
     /// <param name="identity">Current verified machine and firmware binding for the original state.</param>
     /// <param name="cancellationToken">Cancels journal persistence; no hardware mutation is performed here.</param>
     /// <returns>
-    ///     Completion after preserving the first readable original, or without a new entry when already held or
-    ///     unreadable.
+    ///     The journal operation holding the original, or null when it was unreadable. The command hands it to
+    ///     <see cref="DeviceRecoveryJournal.DiscardUnusedAsync{T}" /> once its result is known.
     /// </returns>
-    public async ValueTask PrepareWriteAsync(AllyIdentityState identity, CancellationToken cancellationToken)
+    public async ValueTask<DeviceRecoveryOperation<AllyRecoveryState>?> PrepareWriteAsync(AllyIdentityState identity,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
+        return await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
         {
             Capability!.Probe();
             var original = Capability.Read();
@@ -206,29 +180,10 @@ internal sealed class FanService(
             return Set(DeviceServiceState.Idle);
         }
 
-        if (journal.OriginalStateFor<AllyRecoveryState>(ServiceId)?.ToFans() is not { } original)
-        {
-            return await ReleaseToFactoryAsync(context, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (!DeviceWriteBudget.IsAvailable(context.Deadline))
-        {
-            return Set(DeviceServiceState.ReleasedUnverified, PowerService.NoTimeToRestore());
-        }
-
-        try
-        {
-            await Capability.RestoreAsync(original, cancellationToken).ConfigureAwait(false);
-            await journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            DeviceTrace.Failure("fans", "Fan restoration failed; the recovery entry stays pending", ex);
-            return Set(DeviceServiceState.Faulted, new CapabilityReason(CapabilityReasonCode.TransportFaulted,
-                DiagnosticText.FromException("Fan restoration failed", ex)));
-        }
-
-        return Set(DeviceServiceState.Idle);
+        return journal.OriginalStateFor<AllyRecoveryState>(ServiceId)?.ToFans() is { } original
+            ? await RestoreOriginalAsync(journal, original, context.Deadline, Capability.RestoreAsync,
+                cancellationToken).ConfigureAwait(false)
+            : await ReleaseToFactoryAsync(context, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Without a captured original, a custom curve is replaced by HC's factory tables.</summary>

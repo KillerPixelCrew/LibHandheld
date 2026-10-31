@@ -324,6 +324,27 @@ internal static class DeviceServiceLifecycle
         };
     }
 
+    /// <summary>Why a service cannot take a command now, or null when it owns its hardware.</summary>
+    /// <param name="service">The service that owns the commanded capability.</param>
+    /// <returns>Null for an owned service, otherwise a refusal carrying the service's own detail where it has one.</returns>
+    public static CapabilityReason? CommandRefusal(DeviceServiceStatus service)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+        return service.State switch
+        {
+            DeviceServiceState.Owned => null,
+            DeviceServiceState.Passive => new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
+                service.Reason?.Detail ?? "The device service is unavailable."),
+            DeviceServiceState.Releasing => new CapabilityReason(CapabilityReasonCode.Quiescing,
+                "The device service is being released."),
+            DeviceServiceState.Degraded or DeviceServiceState.Faulted or DeviceServiceState.ReleasedUnverified =>
+                new CapabilityReason(CapabilityReasonCode.TransportFaulted,
+                    service.Reason?.Detail ?? "The device service is faulted."),
+            _ => new CapabilityReason(CapabilityReasonCode.ResourceReleased,
+                "The plugin does not currently own this device service.", true)
+        };
+    }
+
     /// <summary>
     ///     Projects a service's state onto the source-ownership choices <c>device</c>, <c>plugin</c> and
     ///     <c>unavailable</c>.

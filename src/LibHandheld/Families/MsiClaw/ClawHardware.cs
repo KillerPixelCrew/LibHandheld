@@ -1,6 +1,7 @@
 using System.Globalization;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
+using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
 
@@ -59,8 +60,20 @@ internal sealed record ClawIdentityState
     ///     change the binding guards, and SMBIOS reads the same on every start. Null when the BIOS version
     ///     is unknown: a command then writes without a restore point, and an entry waits.
     /// </summary>
-    public string? RecoveryBinding =>
-        Snapshot.BiosVersion is { Length: > 0 } bios ? ClawFirmwareIdentities.Bios(bios) : null;
+    public string? RecoveryBinding => Snapshot.BiosVersion is { Length: > 0 } bios ? "bios:" + bios : null;
+
+    /// <summary>The original a power or fan entry holds, when it was captured under this cycle's BIOS.</summary>
+    /// <param name="journal">The device's recovery journal.</param>
+    /// <param name="serviceId">The power or fan service.</param>
+    /// <returns>The recorded original, or null when there is none or this start cannot compare its binding.</returns>
+    public ClawRecoveryState? OriginalFor(DeviceRecoveryJournal journal, string serviceId)
+    {
+        return journal.EntryFor<ClawRecoveryState>(serviceId) is { } entry
+               && RecoveryBinding is { } binding
+               && string.Equals(entry.FirmwareIdentity, binding, StringComparison.Ordinal)
+            ? entry.OriginalState
+            : null;
+    }
 
     /// <summary>Whether the current power source is AC.</summary>
     public required bool OnAcPower { get; init; }
@@ -75,11 +88,6 @@ internal sealed record ClawIdentityState
 ///     unreadable register is null rather than a failure.
 /// </param>
 internal sealed record PowerPair(int SustainedWatts, int BoostWatts, byte Scenario, int? FastWatts = null);
-
-/// <summary>A decoded battery charge ceiling with its original EC encoding.</summary>
-/// <param name="Percent">Charge ceiling in percent: 60, 80 or 100 for writable Claw controls.</param>
-/// <param name="RawValue">Original 0xD7 register byte, retained for diagnostics and conversion.</param>
-internal sealed record ChargeLimitState(int Percent, byte RawValue);
 
 /// <summary>Raw fan-table packages whose unknown bytes must survive read-modify-write operations.</summary>
 /// <param name="DutyBuffer">Duty package including opaque firmware bytes; the owner must clone before modification.</param>
@@ -130,14 +138,6 @@ internal sealed record ControllerTopology(
     string PhysicalLocation,
     IReadOnlyList<PhysicalDeviceIdentity> PhysicalDevices,
     string ObservedEndpoints = "");
-
-/// <summary>Reads the changing AC-line status; immutable identity comes from the caller.</summary>
-internal interface IClawIdentityReader
-{
-    /// <summary>Reads the current power source without replacing the cycle identity.</summary>
-    /// <returns>True on AC or when the power source is unknown; false on known battery power.</returns>
-    bool ReadOnAcPower();
-}
 
 /// <summary>Serializes reviewed MSI_ACPI getter and setter calls against the fixed provider instance.</summary>
 /// <remarks>Cancellation bounds waiting; an in-flight native call retains the lane until it actually exits.</remarks>
@@ -305,7 +305,6 @@ internal interface IFirmwareChordSuppressor : IAsyncDisposable
 }
 
 /// <summary>Instance-owned hardware dependencies composed by ClawDeviceEngine and replaced by fakes in tests.</summary>
-/// <param name="Identity">AC-line observation.</param>
 /// <param name="Wmi">Serialized power, fan, charge and telemetry transport.</param>
 /// <param name="OemEvents">Attributed MSI firmware event source.</param>
 /// <param name="Mcu">MCU profiles and controller mode transport.</param>
@@ -314,8 +313,9 @@ internal interface IFirmwareChordSuppressor : IAsyncDisposable
 /// <param name="ChordSuppressor">Known firmware chord suppression owner.</param>
 /// <param name="OemButtons">Shared latch merging OEM presses into controller samples.</param>
 /// <param name="Delay">Cancelable firmware pacing delay; tests may replace wall-time waiting.</param>
+/// <param name="OnAcPower">Optional read-only power-source callback for an injected hardware fixture.</param>
+/// <param name="Time">Optional clock for the TDP watchdog's ten-second window; the system clock by default.</param>
 internal sealed record ClawHardwareServices(
-    IClawIdentityReader Identity,
     IMsiWmiTransport Wmi,
     IMsiOemEventSource OemEvents,
     IClawMcuTransport Mcu,
@@ -323,4 +323,6 @@ internal sealed record ClawHardwareServices(
     IClawMotionSource Motion,
     IFirmwareChordSuppressor ChordSuppressor,
     OemButtonLatch OemButtons,
-    Func<TimeSpan, CancellationToken, Task> Delay);
+    Func<TimeSpan, CancellationToken, Task> Delay,
+    Func<bool>? OnAcPower = null,
+    TimeProvider? Time = null);

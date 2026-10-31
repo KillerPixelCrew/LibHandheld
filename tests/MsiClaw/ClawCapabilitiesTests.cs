@@ -396,8 +396,7 @@ public sealed class ClawCapabilitiesTests
             80,
             CancellationToken.None);
 
-        Assert.Equal(80, chargeLimit.Written?.Percent);
-        Assert.Equal((byte)(0x80 | 80), chargeLimit.Written?.RawValue);
+        Assert.Equal(80, chargeLimit.WrittenPercent);
         Assert.Equal(0, wmi.Reads);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Equal(0x80 | 80, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
@@ -414,7 +413,7 @@ public sealed class ClawCapabilitiesTests
         Assert.Equal(CommandOutcome.Applied,
             (await charge.ApplyProtectionAsync(command, false, CancellationToken.None)).Outcome);
         Assert.Equal(80, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
-        Assert.False(charge.WrittenProtection);
+        Assert.Equal(80, charge.WrittenPercent);
         Assert.Equal(CommandOutcome.Applied,
             (await charge.ApplyProtectionAsync(command with { RequestedValue = CapabilityValue.Boolean(true) }, true,
                 CancellationToken.None)).Outcome);
@@ -543,8 +542,8 @@ public sealed class ClawCapabilitiesTests
             CapabilityValue.Choice("sport")), "sport", CancellationToken.None);
 
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
-        Assert.Single(wmi.Writes);
-        Assert.Equal((byte)0xC4, capability.WrittenScenario);
+        var write = Assert.Single(wmi.Writes);
+        Assert.Equal(0xC4, write.Package[1]);
     }
 
     [Fact]
@@ -657,21 +656,5 @@ public sealed class ClawCapabilitiesTests
         return Assert.Single(
             wmi.Writes,
             write => write.Method == method && write.Package[0] == channel).Package;
-    }
-
-    private sealed class ManualClock : TimeProvider
-    {
-        private long _timestamp;
-        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-
-        public override long GetTimestamp()
-        {
-            return _timestamp;
-        }
-
-        internal void Advance(TimeSpan elapsed)
-        {
-            _timestamp += elapsed.Ticks;
-        }
     }
 }

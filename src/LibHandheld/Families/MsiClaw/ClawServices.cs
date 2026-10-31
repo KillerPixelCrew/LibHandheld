@@ -6,10 +6,30 @@ using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
 
+internal static class ClawServiceIds
+{
+    public const string OemEvents = "msi-oem-events";
+    public const string Power = "msi-power";
+    public const string ChargeLimit = "msi-charge-limit";
+    public const string Fans = "msi-fans";
+    public const string Telemetry = "msi-telemetry";
+    public const string Lighting = "claw-lighting";
+    public const string Motion = "claw-motion";
+    public const string Controller = "physical-controller";
+    public const string ChordSuppressor = "firmware-chord-suppressor";
+
+    /// <summary>
+    ///     The controller entry's binding. It deliberately carries no revision: the entry only records the
+    ///     mode to put back, and that write is valid on any MCU firmware the exact machine ships with; a
+    ///     revision here would strand the entry, and with it the controller, after every firmware update.
+    /// </summary>
+    public const string McuFirmware = "mcu";
+}
+
 internal sealed class OemEventService(
     IMsiOemEventSource source,
     IDeviceSink host,
-    OemButtonLatch oemButtons) : DeviceService<ClawIdentityState>(ServiceIds.OemEvents)
+    OemButtonLatch oemButtons) : DeviceService<ClawIdentityState>(ClawServiceIds.OemEvents)
 {
     /// <summary>
     ///     How close a WMI QS event and a firmware QS chord must be to count as one press. Where
@@ -119,7 +139,7 @@ internal sealed class OemEventService(
 
 internal sealed class PowerService(
     ClawPowerCapability capability,
-    DeviceRecoveryJournal journal) : ClawJournalledService(ServiceIds.Power)
+    DeviceRecoveryJournal journal) : DeviceService<ClawIdentityState>(ClawServiceIds.Power)
 {
     private readonly ClawPowerCapability _capability =
         capability ?? throw new ArgumentNullException(nameof(capability));
@@ -134,22 +154,19 @@ internal sealed class PowerService(
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
 
+    /// <summary>Restores the original captured under the BIOS this cycle runs on; an entry it cannot compare waits.</summary>
     public override ValueTask<DeviceServiceResult> ReleaseAsync(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        return RestoreJournalledAsync(
-            context,
-            _journal,
-            state => ClawRecoveryValues.TryPower(state, out var snapshot) ? snapshot : null,
-            _capability.RestoreAsync,
-            cancellationToken);
+        return RestoreOriginalAsync(_journal, context.Identity.OriginalFor(_journal, ServiceId)?.ToPower(),
+            context.Deadline, _capability.RestoreAsync, cancellationToken);
     }
 }
 
 internal sealed class ChargeLimitService : DeviceService<ClawIdentityState>
 {
-    internal ChargeLimitService() : base(ServiceIds.ChargeLimit)
+    internal ChargeLimitService() : base(ClawServiceIds.ChargeLimit)
     {
     }
 
@@ -172,7 +189,7 @@ internal sealed class ChargeLimitService : DeviceService<ClawIdentityState>
 
 internal sealed class FanService(
     ClawFanCapability capability,
-    DeviceRecoveryJournal journal) : ClawJournalledService(ServiceIds.Fans)
+    DeviceRecoveryJournal journal) : DeviceService<ClawIdentityState>(ClawServiceIds.Fans)
 {
     private readonly ClawFanCapability _capability =
         capability ?? throw new ArgumentNullException(nameof(capability));
@@ -187,32 +204,36 @@ internal sealed class FanService(
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
 
+    /// <summary>Restores the original captured under the BIOS this cycle runs on; an entry it cannot compare waits.</summary>
     public override ValueTask<DeviceServiceResult> ReleaseAsync(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        return RestoreJournalledAsync(
-            context,
-            _journal,
-            state => ClawRecoveryValues.TryFans(state, out var snapshot) ? snapshot : null,
-            _capability.RestoreAsync,
-            cancellationToken);
+        return RestoreOriginalAsync(_journal, context.Identity.OriginalFor(_journal, ServiceId)?.ToFans(),
+            context.Deadline, _capability.RestoreAsync, cancellationToken);
     }
 }
 
 internal sealed class TelemetryService(
-    ClawFanCapability capability) : DeviceService<ClawIdentityState>(ServiceIds.Telemetry)
+    ClawFanCapability capability) : DeviceService<ClawIdentityState>(ClawServiceIds.Telemetry)
 {
     private readonly ClawFanCapability _capability =
         capability ?? throw new ArgumentNullException(nameof(capability));
 
+    /// <summary>The last reading, or null before the first one and after one failed.</summary>
     public FanTelemetry? LastTelemetry { get; private set; }
-    public DateTimeOffset? ObservedAt { get; private set; }
 
     internal override async ValueTask RefreshAsync(CancellationToken cancellationToken)
     {
-        LastTelemetry = await _capability.ReadTelemetryAsync(cancellationToken).ConfigureAwait(false);
-        ObservedAt = DateTimeOffset.UtcNow;
+        try
+        {
+            LastTelemetry = await _capability.ReadTelemetryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LastTelemetry = null;
+            throw;
+        }
     }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(
@@ -229,13 +250,12 @@ internal sealed class TelemetryService(
     {
         cancellationToken.ThrowIfCancellationRequested();
         LastTelemetry = null;
-        ObservedAt = null;
         return ValueTask.FromResult(Set(DeviceServiceState.Idle));
     }
 }
 
 internal sealed class LightingService(
-    IClawMcuTransport transport) : DeviceService<ClawIdentityState>(ServiceIds.Lighting)
+    IClawMcuTransport transport) : DeviceService<ClawIdentityState>(ClawServiceIds.Lighting)
 {
     private readonly IClawMcuTransport _transport = transport ?? throw new ArgumentNullException(nameof(transport));
 
@@ -265,7 +285,7 @@ internal sealed class LightingService(
 }
 
 internal sealed class MotionService(IClawMotionSource source, ClawModel model)
-    : DeviceService<ClawIdentityState>(ServiceIds.Motion)
+    : DeviceService<ClawIdentityState>(ClawServiceIds.Motion)
 {
     /// <summary>How long a sensor reading may still be attached to a controller sample.</summary>
     /// <remarks>
@@ -441,7 +461,7 @@ internal sealed class MotionService(IClawMotionSource source, ClawModel model)
 
 internal sealed class ChordSuppressorService(
     IFirmwareChordSuppressor suppressor,
-    OemEventService oemEvents) : DeviceService<ClawIdentityState>(ServiceIds.ChordSuppressor)
+    OemEventService oemEvents) : DeviceService<ClawIdentityState>(ClawServiceIds.ChordSuppressor)
 {
     private readonly OemEventService _oemEvents = oemEvents
                                                   ?? throw new ArgumentNullException(nameof(oemEvents));

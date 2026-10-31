@@ -5,6 +5,7 @@ using LibHandheld.Families.MsiClaw.Tests.Fakes;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Runtime;
+using LibHandheld.Internal.Windows;
 using LibHandheld.Testing;
 using static LibHandheld.Families.MsiClaw.Tests.Builders.ClawCommands;
 
@@ -24,8 +25,8 @@ public sealed class ClawDeviceEngineTests
     {
         using TemporaryDirectory state = new();
         var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
-        _ = await journal.BeginAsync(ServiceIds.Power, "bios:E1T52IMS.114",
-            ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)), CancellationToken.None);
+        _ = await journal.BeginAsync(ClawServiceIds.Power, "bios:E1T52IMS.114",
+            ClawRecoveryState.Power(new PowerPair(30, 37, 0xC1)), CancellationToken.None);
         using CancellationTokenSource cancellation = new();
         FakeWmiTransport wmi = new();
         wmi.AfterSetter = (_, package) =>
@@ -192,6 +193,58 @@ public sealed class ClawDeviceEngineTests
         Assert.True(after.ObservedAt >= before.ObservedAt);
         Assert.All(host.CapabilityStates.Where(value => value.CapabilityId == CapabilityIds.FanRpm)
             .TakeLast(2), value => Assert.Equal(after.ObservedAt, value.ObservedAt));
+    }
+
+    // HC's TDP watchdog writes the accepted pair again on the ten-second pass. A failed write leaves its
+    // effect unknown: the limits must read unknown, the rest of the pass and the other controls carry
+    // on, and the uncertain write is never sent again on its own.
+    [Fact]
+    public async Task WatchdogWriteFailureLeavesTheLimitsUnknownAndIsNotRetried()
+    {
+        using TemporaryDirectory state = new();
+        FakeWmiTransport wmi = new();
+        ManualClock clock = new();
+        ClawDeviceEngine? provider = null;
+        await using var plugin = new ServiceEngineFixture(context =>
+            provider = new ClawDeviceEngine(context, CreateServices(wmi, time: clock)));
+        _ = await plugin.StartAsync(StartContext(new TestPluginHostAdapter(FixtureId), state.Root),
+            CancellationToken.None);
+        var engine = provider!;
+        Assert.Equal(CommandOutcome.Applied, (await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+            {
+                PairedPowerLimitWatts = 20
+            }, CancellationToken.None)).Outcome);
+        Assert.Equal(CommandOutcome.Applied, (await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.Scenario, null, CapabilityValue.Choice("sport")), CancellationToken.None)).Outcome);
+        var telemetryBefore = Row(CapabilityIds.Temperature).ObservedAt;
+
+        clock.Advance(TimeSpan.FromSeconds(10));
+        wmi.FailNextSetter = true;
+        await Task.Delay(1);
+        await engine.RefreshAsync(CancellationToken.None);
+
+        foreach (var limit in new[] { CapabilityIds.PowerSustained, CapabilityIds.PowerBoost })
+        {
+            var row = Row(limit);
+            Assert.True(row.Available);
+            Assert.Null(row.Reason);
+            Assert.Null(row.ObservedValue);
+            Assert.Equal(HardwareStateQuality.Unknown, row.Quality);
+        }
+
+        Assert.Equal("sport", Row(CapabilityIds.Scenario).ObservedValue?.ChoiceValue);
+        Assert.True(Row(CapabilityIds.Temperature).ObservedAt > telemetryBefore);
+
+        wmi.Writes.Clear();
+        clock.Advance(TimeSpan.FromSeconds(10));
+        await engine.RefreshAsync(CancellationToken.None);
+        Assert.Empty(wmi.Writes);
+
+        CapabilityState Row(string capabilityId)
+        {
+            return engine.States.Single(value => value.CapabilityId == capabilityId);
+        }
     }
 
     [Fact]
@@ -559,7 +612,8 @@ public sealed class ClawDeviceEngineTests
             host,
             journal,
             ClawModels.Claw8A2Vm,
-            TestTiming.NoDelay)
+            TestTiming.NoDelay,
+            _ => { })
         {
             Enabled = true
         };
@@ -582,6 +636,103 @@ public sealed class ClawDeviceEngineTests
 
         Assert.Equal(DeviceServiceState.Idle, controller.State);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await publication);
+    }
+
+    // The reader fails on a transport thread, outside any serialized turn, and the telemetry tick
+    // publishes only the readings it samples. The controller row must change when the pad goes away
+    // and again when it comes back, not at the next full refresh.
+    [Fact]
+    public async Task ControllerReaderFault_PublishesTheLostAndReturnedPadFromTheCallback()
+    {
+        using TemporaryDirectory state = new();
+        FakeControllerSource controller = new();
+        ClawDeviceEngine? provider = null;
+        await using var plugin = new ServiceEngineFixture(context =>
+            provider = new ClawDeviceEngine(context, CreateServices(controller: controller)));
+        TestPluginHostAdapter host = new(FixtureId);
+        _ = await plugin.StartAsync(StartContext(host, state.Root) with { ControllerManagementEnabled = true },
+            CancellationToken.None);
+        var engine = provider!;
+        Assert.Equal(SourceOwnership.Managed, ControllerRow(engine).ObservedValue?.ChoiceValue);
+
+        controller.TriggerReaderFault(new IOException("Synthetic reader loss."));
+
+        var lost = ControllerRow(engine);
+        Assert.False(lost.Available);
+        Assert.Equal(CapabilityReasonCode.TransportFaulted, lost.Reason?.Code);
+        Assert.Equal(SourceOwnership.Unavailable, lost.ObservedValue?.ChoiceValue);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!ControllerRow(engine).Available && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.True(ControllerRow(engine).Available);
+        Assert.Equal(SourceOwnership.Managed, ControllerRow(engine).ObservedValue?.ChoiceValue);
+
+        static CapabilityState ControllerRow(ClawDeviceEngine engine)
+        {
+            return engine.States.Single(value => value.CapabilityId == CapabilityIds.Controller);
+        }
+    }
+
+    [Fact]
+    public async Task StartAsync_PowerEntryWaitsWhileTheBiosVersionIsUnknown()
+    {
+        using TemporaryDirectory state = new();
+        {
+            var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+            _ = await journal.BeginAsync(ClawServiceIds.Power, "bios:E1T52IMS.114",
+                ClawRecoveryState.Power(new PowerPair(30, 37, 0xC1)), CancellationToken.None);
+        }
+
+        FakeWmiTransport wmi = new();
+        await using (var plugin = Engine(CreateServices(wmi)))
+        {
+            _ = await plugin.StartAsync(StartContext(new TestPluginHostAdapter(FixtureId), state.Root) with
+            {
+                Identity = ExactIdentity()
+            }, CancellationToken.None);
+            _ = await plugin.StopAsync(new EngineStopContext(Deadline.After(TimeSpan.FromSeconds(10))),
+                CancellationToken.None);
+        }
+
+        // Neither the start nor the stop can compare the binding, so nothing is written and the entry waits.
+        Assert.Empty(wmi.Writes);
+        Assert.NotNull((await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None))
+            .EntryFor<ClawRecoveryState>(ClawServiceIds.Power));
+    }
+
+    // Kept, an entry that cannot be restored would hold the place of the next capture forever: the
+    // journal hands it back instead of reading a fresh original, and release finds nothing to write.
+    [Fact]
+    public async Task StartAsync_IncompleteEntryIsRetiredWithoutAWriteSoTheNextCommandCaptures()
+    {
+        using TemporaryDirectory state = new();
+        {
+            var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
+            _ = await journal.BeginAsync(ClawServiceIds.Power, "bios:E1T52IMS.114",
+                new ClawRecoveryState { Kind = ClawRecoveryStateKind.Power, SustainedWatts = 30 },
+                CancellationToken.None);
+        }
+
+        FakeWmiTransport wmi = new();
+        await using var plugin = Engine(CreateServices(wmi));
+        _ = await plugin.StartAsync(StartContext(new TestPluginHostAdapter(FixtureId), state.Root),
+            CancellationToken.None);
+
+        Assert.Empty(wmi.Writes);
+        Assert.Null((await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None))
+            .EntryFor<ClawRecoveryState>(ClawServiceIds.Power));
+        _ = await plugin.ExecuteCommandAsync(
+            Command(CapabilityIds.PowerSustained, null, CapabilityValue.Integer(20)) with
+            {
+                PairedPowerLimitWatts = 20
+            }, CancellationToken.None);
+        var captured = (await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None))
+            .EntryFor<ClawRecoveryState>(ClawServiceIds.Power);
+        Assert.NotNull(captured?.OriginalState.ToPower());
     }
 
     [Fact]
@@ -634,10 +785,9 @@ public sealed class ClawDeviceEngineTests
         {
             var pending = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
             var entry = Assert.Single(pending.Entries<ClawRecoveryState>());
-            Assert.Equal(ServiceIds.Power, entry.ServiceId);
+            Assert.Equal(ClawServiceIds.Power, entry.ServiceId);
             Assert.NotNull(entry);
-            Assert.True(ClawRecoveryValues.TryPower(entry.OriginalState, out var original));
-            Assert.Equal(new PowerPair(30, 37, 0xC1), original);
+            Assert.Equal(new PowerPair(30, 37, 0xC1), entry.OriginalState.ToPower());
         }
 
         var stop = await plugin.StopAsync(
@@ -840,7 +990,8 @@ public sealed class ClawDeviceEngineTests
             host,
             journal,
             ClawModels.Claw8A2Vm,
-            TestTiming.NoDelay)
+            TestTiming.NoDelay,
+            _ => { })
         {
             Enabled = true
         };
@@ -879,7 +1030,8 @@ public sealed class ClawDeviceEngineTests
             host,
             journal,
             ClawModels.Claw8A2Vm,
-            TestTiming.NoDelay)
+            TestTiming.NoDelay,
+            _ => { })
         {
             Enabled = true
         };
@@ -904,9 +1056,9 @@ public sealed class ClawDeviceEngineTests
         {
             var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
             var operation = await journal.BeginAsync(
-                ServiceIds.Power,
+                ClawServiceIds.Power,
                 "ec:1T52EMS1.109;msi-acpi:8.0",
-                ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)),
+                ClawRecoveryState.Power(new PowerPair(30, 37, 0xC1)),
                 CancellationToken.None);
 
             Assert.True(Assert.IsType<DeviceRecoveryOperation<ClawRecoveryState>>(operation).Opened);
@@ -917,18 +1069,16 @@ public sealed class ClawDeviceEngineTests
             state.Root,
             CancellationToken.None);
         var entry = Assert.Single(reopened.Entries<ClawRecoveryState>());
-        Assert.True(ClawRecoveryValues.TryPower(entry.OriginalState, out var original));
-        Assert.Equal(new PowerPair(30, 37, 0xC1), original);
+        Assert.Equal(new PowerPair(30, 37, 0xC1), entry.OriginalState.ToPower());
 
         var existing = await reopened.BeginAsync(
-            ServiceIds.Power,
+            ClawServiceIds.Power,
             "ec:1T52EMS1.109;msi-acpi:8.0",
-            ClawRecoveryValues.Power(new PowerPair(25, 37, 0xC1)),
+            ClawRecoveryState.Power(new PowerPair(25, 37, 0xC1)),
             CancellationToken.None);
         Assert.False(Assert.IsType<DeviceRecoveryOperation<ClawRecoveryState>>(existing).Opened);
-        Assert.True(ClawRecoveryValues.TryPower(
-            Assert.IsType<DeviceRecoveryOperation<ClawRecoveryState>>(existing).Entry.OriginalState, out var retained));
-        Assert.Equal(new PowerPair(30, 37, 0xC1), retained);
+        Assert.Equal(new PowerPair(30, 37, 0xC1),
+            Assert.IsType<DeviceRecoveryOperation<ClawRecoveryState>>(existing).Entry.OriginalState.ToPower());
     }
 
     [Fact]
@@ -938,9 +1088,9 @@ public sealed class ClawDeviceEngineTests
         {
             var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
             _ = await journal.BeginAsync(
-                ServiceIds.Power,
+                ClawServiceIds.Power,
                 "bios:E1T52IMS.114",
-                ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)),
+                ClawRecoveryState.Power(new PowerPair(30, 37, 0xC1)),
                 CancellationToken.None);
         }
 
@@ -968,9 +1118,9 @@ public sealed class ClawDeviceEngineTests
         {
             var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
             _ = await journal.BeginAsync(
-                ServiceIds.Power,
+                ClawServiceIds.Power,
                 "bios:E1T52IMS.114",
-                ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)),
+                ClawRecoveryState.Power(new PowerPair(30, 37, 0xC1)),
                 CancellationToken.None);
         }
 
@@ -986,13 +1136,13 @@ public sealed class ClawDeviceEngineTests
 
             Assert.Equal(nameof(DeviceServiceState.Owned), diagnostics["msiclaw-native"]);
             Assert.NotNull((await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None))
-                .EntryFor<ClawRecoveryState>(ServiceIds.Power));
+                .EntryFor<ClawRecoveryState>(ClawServiceIds.Power));
             // Dispose only closes handles, as after an interrupted process lifetime. A clean stop would
             // attempt restoration again and retire the original after an accepted write.
         }
 
         var failed = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
-        Assert.NotNull(failed.EntryFor<ClawRecoveryState>(ServiceIds.Power));
+        Assert.NotNull(failed.EntryFor<ClawRecoveryState>(ClawServiceIds.Power));
         wmi.Writes.Clear();
         await using (var secondCycle = Engine(CreateServices(wmi)))
         {
@@ -1051,10 +1201,10 @@ public sealed class ClawDeviceEngineTests
         FakeControllerSource? controller = null,
         FakeMotionSource? motion = null,
         FakeChordSuppressor? chordSuppressor = null,
-        FakeIdentityReader? identity = null)
+        FakeIdentityReader? identity = null,
+        TimeProvider? time = null)
     {
         return new ClawHardwareServices(
-            identity ?? new FakeIdentityReader(),
             wmi ?? new FakeWmiTransport(),
             oemEvents ?? new FakeOemEventSource(),
             mcu ?? new FakeMcuTransport(),
@@ -1062,7 +1212,9 @@ public sealed class ClawDeviceEngineTests
             motion ?? new FakeMotionSource(),
             chordSuppressor ?? new FakeChordSuppressor(),
             new OemButtonLatch(),
-            TestTiming.NoDelay);
+            TestTiming.NoDelay,
+            (identity ?? new FakeIdentityReader()).ReadOnAcPower,
+            time);
     }
 
     private static DeviceIdentitySnapshot ExactIdentity()
@@ -1108,15 +1260,9 @@ public sealed class ClawDeviceEngineTests
     [InlineData(true)]
     public void AcPowerFailureKeepsAConservativePowerSource(bool comFailure)
     {
-        var reader = Reader(() => throw (comFailure
+        // The shared probe the Claw and the Ally both read: a failed probe is battery.
+        Assert.False(WindowsMachineIdentity.OnAcPower(() => throw (comFailure
             ? new COMException("test failure")
-            : new UnauthorizedAccessException("test refusal")));
-
-        Assert.False(reader.ReadOnAcPower());
-    }
-
-    private static WindowsClawIdentityReader Reader(Func<bool> readPower)
-    {
-        return new WindowsClawIdentityReader(readPower);
+            : new UnauthorizedAccessException("test refusal"))));
     }
 }

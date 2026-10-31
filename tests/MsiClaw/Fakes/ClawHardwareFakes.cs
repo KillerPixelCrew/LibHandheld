@@ -2,7 +2,8 @@ using System.Buffers.Binary;
 
 namespace LibHandheld.Families.MsiClaw.Tests.Fakes;
 
-internal sealed class FakeIdentityReader : IClawIdentityReader
+/// <summary>The cycle identity a test starts with, and the power source each command reads.</summary>
+internal sealed class FakeIdentityReader
 {
     public int ReadCount { get; private set; }
 
@@ -373,6 +374,7 @@ internal sealed class FakeControllerSource : IClawControllerSource
 
     private readonly Lock _gate = new();
     private Task? _activePublication;
+    private Action<Exception>? _fault;
     private Func<CanonicalControllerSample, CancellationToken, ValueTask>? _publish;
     private CancellationTokenSource? _readerCancellation;
 
@@ -411,6 +413,7 @@ internal sealed class FakeControllerSource : IClawControllerSource
             _readerCancellation?.Dispose();
             _readerCancellation = new CancellationTokenSource();
             _publish = publish;
+            _fault = fault;
         }
 
         return ValueTask.CompletedTask;
@@ -442,6 +445,7 @@ internal sealed class FakeControllerSource : IClawControllerSource
         lock (_gate)
         {
             _publish = null;
+            _fault = null;
             _activePublication = null;
             _readerCancellation?.Dispose();
             _readerCancellation = null;
@@ -470,6 +474,18 @@ internal sealed class FakeControllerSource : IClawControllerSource
     public ValueTask DisposeAsync()
     {
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>Ends the reader as a vanished pad does, through the fault callback the service registered.</summary>
+    public void TriggerReaderFault(Exception exception)
+    {
+        Action<Exception> fault;
+        lock (_gate)
+        {
+            fault = _fault ?? throw new InvalidOperationException("The fake reader is not active.");
+        }
+
+        fault(exception);
     }
 
     public ValueTask EmitAsync(CanonicalControllerSample sample)
@@ -565,5 +581,22 @@ internal sealed class FakeChordSuppressor : IFirmwareChordSuppressor
     public void TriggerFault(Exception exception)
     {
         (_fault ?? throw new InvalidOperationException("The fake hook is not active."))(exception);
+    }
+}
+
+/// <summary>A clock whose timestamps move only when a test advances them.</summary>
+internal sealed class ManualClock : TimeProvider
+{
+    private long _timestamp;
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override long GetTimestamp()
+    {
+        return _timestamp;
+    }
+
+    internal void Advance(TimeSpan elapsed)
+    {
+        _timestamp += elapsed.Ticks;
     }
 }

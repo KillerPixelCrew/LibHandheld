@@ -1,4 +1,5 @@
 using System.Text.Json;
+using LibHandheld.Contracts;
 using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Services;
@@ -245,6 +246,25 @@ internal sealed class DeviceRecoveryJournal
         finally
         {
             _gate.Release();
+        }
+    }
+
+    /// <summary>Retires the original a command opened when that same command was refused before any write.</summary>
+    /// <param name="operation">What <c>BeginAsync</c> returned for the command, or null when it journalled nothing.</param>
+    /// <param name="result">The command's result.</param>
+    /// <remarks>
+    ///     A refusal proves nothing was written, so its original has nothing to restore and would otherwise make
+    ///     release write the device back to the state it is already in. An applied or indeterminate command keeps
+    ///     its original, and one opened earlier is never touched. The cycle's capture is kept, so the next command
+    ///     journals that same first original again.
+    /// </remarks>
+    public async ValueTask DiscardUnusedAsync<T>(DeviceRecoveryOperation<T>? operation,
+        CapabilityCommandResult result) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (operation is { Opened: true } && result.Outcome is CommandOutcome.Rejected)
+        {
+            await MarkRestoredAsync(operation.Entry.ServiceId, CancellationToken.None).ConfigureAwait(false);
         }
     }
 

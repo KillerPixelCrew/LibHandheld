@@ -86,22 +86,6 @@ public sealed class ClawModelLifecycleTests
         Assert.Equal(2, identity.AcPowerReads);
     }
 
-    [Theory]
-    [InlineData(0xC6, "user")]
-    [InlineData(0xC3, null)]
-    [InlineData(0xC4, "sport")]
-    [InlineData(0x86, "inactive")]
-    public void ScenarioDecode_UsesTheCg3EmUserValue(int raw, string? expected)
-    {
-        Assert.Equal(expected, ClawDeviceEngine.Scenario((byte)raw, ClawModels.Claw8ExCg3Em)?.ChoiceValue);
-    }
-
-    [Fact]
-    public void ScenarioDecode_KeepsUserAtThreeElsewhere()
-    {
-        Assert.Equal("user", ClawDeviceEngine.Scenario(0xC3, ClawModels.Claw8A2Vm)?.ChoiceValue);
-    }
-
     [Fact]
     public async Task A1MRumble_IsOnOffAt193AndDeclaresItsPaceToTheHost()
     {
@@ -326,24 +310,14 @@ public sealed class ClawModelLifecycleTests
         Assert.Null(pair.FastWatts);
     }
 
-    [Theory]
-    [InlineData("bios:114", "bios:114", "Restore")]
-    [InlineData("bios:114", "bios:115", "Discard")]
-    [InlineData("bios:114", null, "Wait")]
-    public void RecoveryUsesOnlyTheCapturedFirmwareBinding(string bound, string? current, string action)
-    {
-        Assert.Equal(Enum.Parse<ClawReconciliationAction>(action),
-            ClawRecoveryRules.Decide(PowerEntry(bound), current));
-    }
-
     [Fact]
     public async Task StartAsync_EntryFromAnotherEcIsDroppedAndPowerStaysAvailable()
     {
         using TemporaryDirectory state = new();
         {
             var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
-            _ = await journal.BeginAsync(ServiceIds.Power, "ec:1T52EMS1.108;msi-acpi:8.0",
-                ClawRecoveryValues.Power(new PowerPair(20, 30, 0xC1)), CancellationToken.None);
+            _ = await journal.BeginAsync(ClawServiceIds.Power, "ec:1T52EMS1.108;msi-acpi:8.0",
+                ClawRecoveryState.Power(new PowerPair(20, 30, 0xC1)), CancellationToken.None);
         }
 
         FakeWmiTransport wmi = new();
@@ -434,7 +408,8 @@ public sealed class ClawModelLifecycleTests
             host,
             journal,
             model,
-            TestTiming.NoDelay)
+            TestTiming.NoDelay,
+            _ => { })
         {
             Enabled = true
         };
@@ -452,12 +427,6 @@ public sealed class ClawModelLifecycleTests
             ClawHardwareFacts.DirectInputProductId,
             "PCIROOT(0)#USBROOT(0)#USB(2)",
             []);
-    }
-
-    private static DeviceRecoveryEntry<ClawRecoveryState> PowerEntry(string firmware)
-    {
-        return new DeviceRecoveryEntry<ClawRecoveryState>(ServiceIds.Power, firmware,
-            ClawRecoveryValues.Power(new PowerPair(30, 37, 0xC1)));
     }
 
     private static EngineStartContext Context(IDeviceSink host, string stateDirectory, ClawModel model)
@@ -484,7 +453,6 @@ public sealed class ClawModelLifecycleTests
         FakeMcuTransport? mcu = null)
     {
         return new ClawHardwareServices(
-            identity,
             wmi ?? new FakeWmiTransport(),
             new FakeOemEventSource(),
             mcu ?? new FakeMcuTransport(),
@@ -492,6 +460,7 @@ public sealed class ClawModelLifecycleTests
             new FakeMotionSource(),
             new FakeChordSuppressor(),
             new OemButtonLatch(),
-            TestTiming.NoDelay);
+            TestTiming.NoDelay,
+            identity.ReadOnAcPower);
     }
 }

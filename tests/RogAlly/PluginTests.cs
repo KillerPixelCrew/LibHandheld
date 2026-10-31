@@ -128,6 +128,36 @@ public sealed class PluginTests
         Assert.Empty(restored.Entries<AllyRecoveryState>());
     }
 
+    // Seven points pass the shared curve validation but not the ASUS encoder, so the command is refused
+    // after its fan original was captured. Nothing was written, so nothing may be left to restore.
+    [Fact]
+    public async Task RejectedJournalledCommandLeavesNoRecoveryEntry()
+    {
+        using var directory = new TemporaryDirectory();
+        var hardware = new AllyFakeHardware();
+        var host = new TestPluginHostAdapter(1);
+        await using var plugin = hardware.CreatePlugin();
+        _ = await plugin.StartAsync(Start(host, directory, "rc72la"), CancellationToken.None);
+        var points = AsusFanCurve.Decode(AsusFanCurve.DefaultGpuCurve).Take(7).ToArray();
+
+        var result = await plugin.ExecuteCommandAsync(
+            AcpiCapabilityTests.Command(CapabilityValue.Curve(points), CapabilityIds.FanCurve),
+            CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        Assert.Empty(hardware.Acpi.BufferWrites);
+        var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        Assert.DoesNotContain(journal.Entries<AllyRecoveryState>(), entry => entry.ServiceId == AllyServiceIds.Fans);
+
+        // A valid command afterwards journals the same first original and writes.
+        var applied = await plugin.ExecuteCommandAsync(
+            AcpiCapabilityTests.Command(CapabilityValue.Curve(AsusFanCurve.Decode(AsusFanCurve.DefaultGpuCurve)),
+                CapabilityIds.FanCurve), CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, applied.Outcome);
+        journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        Assert.Contains(journal.Entries<AllyRecoveryState>(), entry => entry.ServiceId == AllyServiceIds.Fans);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]

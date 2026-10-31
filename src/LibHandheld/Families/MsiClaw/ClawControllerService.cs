@@ -6,6 +6,18 @@ using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.MsiClaw;
 
+/// <summary>The physical controller: DirectInput mode, the reader, rumble and the identities WSGM hides.</summary>
+/// <param name="mcu">MCU transport for the paddle mapping and the mode switch.</param>
+/// <param name="source">DirectInput reader and rumble output.</param>
+/// <param name="motion">Motion service sampled alongside each controller frame.</param>
+/// <param name="host">Host callbacks for controller delivery, physical-device hiding and OEM events.</param>
+/// <param name="journal">Durable restore obligation for the controller mode.</param>
+/// <param name="model">Matched model selecting the report decoding and rumble shape.</param>
+/// <param name="delay">Cancellable spacing for HC's paddle-mapping writes.</param>
+/// <param name="stateChanged">
+///     Publishes this service's capability states after a reader fault, a failed reconnection or the pad's
+///     return changed its state outside a serialized turn.
+/// </param>
 internal sealed class ControllerService(
     IClawMcuTransport mcu,
     IClawControllerSource source,
@@ -13,7 +25,8 @@ internal sealed class ControllerService(
     IDeviceSink host,
     DeviceRecoveryJournal journal,
     ClawModel model,
-    Func<TimeSpan, CancellationToken, Task> delay) : DeviceService<ClawIdentityState>(ServiceIds.Controller)
+    Func<TimeSpan, CancellationToken, Task> delay,
+    Action<DeviceServiceStatus> stateChanged) : DeviceService<ClawIdentityState>(ClawServiceIds.Controller)
 {
     /// <summary>
     ///     The mode the controller goes back to on release: XInput, as HC's <c>Close</c> and app exit
@@ -74,6 +87,10 @@ internal sealed class ControllerService(
     private readonly SemaphoreSlim _outputSerializer = new(1, 1);
     private readonly DeviceReconnect _reconnect = new();
     private readonly IClawControllerSource _source = source ?? throw new ArgumentNullException(nameof(source));
+
+    private readonly Action<DeviceServiceStatus> _stateChanged =
+        stateChanged ?? throw new ArgumentNullException(nameof(stateChanged));
+
     private DeviceCycleContext<ClawIdentityState>? _context;
     private byte _lastStrong;
     private byte _lastWeak;
@@ -151,8 +168,8 @@ internal sealed class ControllerService(
             DeviceWriteBudget.Require(context.Deadline, "controller mode acquisition");
             _ = await _journal.BeginAsync(
                 ServiceId,
-                ClawFirmwareIdentities.Mcu,
-                ClawRecoveryValues.ControllerMode(ReleaseMode),
+                ClawServiceIds.McuFirmware,
+                ClawRecoveryState.Controller(ReleaseMode),
                 cancellationToken).ConfigureAwait(false);
             DeviceTrace.Write(
                 DeviceTraceLevel.Info,
@@ -274,6 +291,7 @@ internal sealed class ControllerService(
         var detail = DiagnosticText.FromException("The controller reader stopped", exception);
         DeviceTrace.Write(DeviceTraceLevel.Warn, "controller", detail + "; waiting for the pad to come back.");
         _ = Set(DeviceServiceState.Degraded, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
+        _stateChanged(this);
         if (_context is { } context)
         {
             _ = NeutralizeReaderAndReconnectAsync(context);
@@ -325,7 +343,13 @@ internal sealed class ControllerService(
             DeviceTrace.Write(DeviceTraceLevel.Info, "controller", "the pad is back.");
         }
 
-        return result.State is not DeviceServiceState.Degraded;
+        if (result.State is not DeviceServiceState.Degraded)
+        {
+            _stateChanged(this);
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -336,7 +360,8 @@ internal sealed class ControllerService(
         var detail = DiagnosticText.FromException("Taking the pad again failed", exception);
         DeviceTrace.Write(DeviceTraceLevel.Error, "controller",
             detail + "; turn controller management off and on to try again.");
-        _ = Set(DeviceServiceState.Faulted, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
+        Fault(new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
+        _stateChanged(this);
     }
 
     public override async ValueTask<DeviceServiceResult> SuspendAsync(

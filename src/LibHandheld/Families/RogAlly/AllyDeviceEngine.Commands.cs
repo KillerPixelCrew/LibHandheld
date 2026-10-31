@@ -96,20 +96,22 @@ internal sealed partial class AllyDeviceEngine
         CancellationToken cancellationToken)
     {
         var value = command.RequestedValue!;
-        Func<AllyIdentityState, CancellationToken, ValueTask>? prepare = command.CapabilityId switch
-        {
-            CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power!
-                .PrepareWriteAsync,
-            CapabilityIds.FanCurve or CapabilityIds.FanDuty => _fans!.PrepareWriteAsync,
-            CapabilityIds.FanMode when value.ChoiceValue == FanModes.Automatic => _fans!.PrepareWriteAsync,
-            _ => null
-        };
+        Func<AllyIdentityState, CancellationToken, ValueTask<DeviceRecoveryOperation<AllyRecoveryState>?>>? prepare =
+            command.CapabilityId switch
+            {
+                CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power!
+                    .PrepareWriteAsync,
+                CapabilityIds.FanCurve or CapabilityIds.FanDuty => _fans!.PrepareWriteAsync,
+                CapabilityIds.FanMode when value.ChoiceValue == FanModes.Automatic => _fans!.PrepareWriteAsync,
+                _ => null
+            };
+        DeviceRecoveryOperation<AllyRecoveryState>? operation = null;
         if (prepare is not null)
         {
             DeviceWriteBudget.Require(command.Deadline, "command preparation");
             try
             {
-                await prepare(identity, cancellationToken).ConfigureAwait(false);
+                operation = await prepare(identity, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
@@ -117,6 +119,17 @@ internal sealed partial class AllyDeviceEngine
             }
         }
 
+        // A thrown write keeps its original for recovery; a refusal wrote nothing and drops the one it opened.
+        var result = await ApplyPreparedAsync(command, value, cancellationToken).ConfigureAwait(false);
+        await _journal!.DiscardUnusedAsync(operation, result).ConfigureAwait(false);
+        return result;
+    }
+
+    private async ValueTask<CapabilityCommandResult> ApplyPreparedAsync(
+        CapabilityCommand command,
+        CapabilityValue value,
+        CancellationToken cancellationToken)
+    {
         switch (command.CapabilityId)
         {
             case CapabilityIds.PowerSustained or CapabilityIds.PowerBoost:
@@ -206,19 +219,7 @@ internal sealed partial class AllyDeviceEngine
                 "The live identity no longer matches the Ally model.", true);
         }
 
-        return service.State switch
-        {
-            DeviceServiceState.Owned => null,
-            DeviceServiceState.Passive => new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
-                service.Reason?.Detail ?? "The device service is unavailable."),
-            DeviceServiceState.Releasing => new CapabilityReason(CapabilityReasonCode.Quiescing,
-                "The device service is being released."),
-            DeviceServiceState.Degraded or DeviceServiceState.Faulted or DeviceServiceState.ReleasedUnverified =>
-                new CapabilityReason(CapabilityReasonCode.TransportFaulted,
-                    service.Reason?.Detail ?? "The device service is faulted."),
-            _ => new CapabilityReason(CapabilityReasonCode.ResourceReleased,
-                "The plugin does not currently own this device service.", true)
-        };
+        return DeviceServiceLifecycle.CommandRefusal(service);
     }
 
     private CapabilityReason? Validate(CapabilityCommand command, CapabilityDescriptor descriptor, bool onAcPower)

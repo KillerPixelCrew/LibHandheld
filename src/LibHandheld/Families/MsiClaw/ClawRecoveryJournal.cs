@@ -1,44 +1,29 @@
 using System.Text.Json.Serialization;
-using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
 
+[JsonConverter(typeof(JsonStringEnumConverter<ClawRecoveryStateKind>))]
+internal enum ClawRecoveryStateKind
+{
+    Power,
+    Fans,
+    ControllerMode
+}
+
 /// <summary>Keeps only the original temporary state WSGM must restore after a crash.</summary>
 /// <remarks>
-///     Power and fans bind to the BIOS version and the controller mode to the MCU binding
-///     (<see cref="ClawFirmwareIdentities" />). <see cref="ClawRecoveryRules.Decide" /> holds the start-time rule for
-///     power
-///     and fans; the controller entry re-reads the pad before it writes, so it is restored at every start.
+///     Power and fans bind to the BIOS version (<see cref="ClawIdentityState.RecoveryBinding" />) and the
+///     controller mode to <see cref="ClawServiceIds.McuFirmware" />. Charge limit and lighting are persistent
+///     user choices and are never journalled. The journal persists this record by its full type name, so the
+///     name never changes.
 /// </remarks>
-internal static class ClawRecoveryRules
-{
-    internal static ClawReconciliationAction Decide(DeviceRecoveryEntry<ClawRecoveryState> entry, string? binding)
-    {
-        if (binding is null)
-        {
-            return ClawReconciliationAction.Wait;
-        }
-
-        return entry.FirmwareIdentity == binding ? ClawReconciliationAction.Restore : ClawReconciliationAction.Discard;
-    }
-}
-
-internal enum ClawReconciliationAction
-{
-    /// <summary>Write the original once.</summary>
-    Restore,
-
-    /// <summary>The firmware cannot be read this cycle: write nothing and keep the entry pending.</summary>
-    Wait,
-
-    /// <summary>The firmware changed under the entry: drop it without restoring.</summary>
-    Discard
-}
-
 // Unknown members are ignored: a record a different build of this package left behind must still
 // load, or the services it covers would stay blocked with nothing in the product able to clear it.
 internal sealed record ClawRecoveryState
 {
+    /// <summary>The length of every raw fan-table package.</summary>
+    private const int FanPackageLength = 32;
+
     public required ClawRecoveryStateKind Kind { get; init; }
 
     public int? SustainedWatts { get; init; }
@@ -62,18 +47,7 @@ internal sealed record ClawRecoveryState
     public byte? FullSpeedFlag { get; init; }
 
     public ClawControllerMode? ControllerMode { get; init; }
-}
 
-[JsonConverter(typeof(JsonStringEnumConverter<ClawRecoveryStateKind>))]
-internal enum ClawRecoveryStateKind
-{
-    Power,
-    Fans,
-    ControllerMode
-}
-
-internal static class ClawRecoveryValues
-{
     public static ClawRecoveryState Power(PowerPair snapshot)
     {
         return new ClawRecoveryState
@@ -84,21 +58,6 @@ internal static class ClawRecoveryValues
             FastWatts = snapshot.FastWatts,
             Scenario = snapshot.Scenario
         };
-    }
-
-    public static bool TryPower(ClawRecoveryState? value, out PowerPair? snapshot)
-    {
-        snapshot = null;
-        if (value?.Kind is not ClawRecoveryStateKind.Power
-            || value.SustainedWatts is not { } sustained
-            || value.BoostWatts is not { } boost
-            || value.Scenario is not { } scenario)
-        {
-            return false;
-        }
-
-        snapshot = new PowerPair(sustained, boost, scenario, value.FastWatts);
-        return true;
     }
 
     public static ClawRecoveryState Fans(FanSnapshot snapshot)
@@ -115,29 +74,7 @@ internal static class ClawRecoveryValues
         };
     }
 
-    public static bool TryFans(ClawRecoveryState? value, out FanSnapshot? snapshot)
-    {
-        snapshot = null;
-        if (value?.Kind is not ClawRecoveryStateKind.Fans
-            || value.LeftDuty.Length != 32
-            || value.LeftTemperature.Length != 32
-            || value.RightDuty.Length != 32
-            || value.RightTemperature.Length != 32
-            || value.CustomFlag is not { } customFlag
-            || value.FullSpeedFlag is not { } fullSpeedFlag)
-        {
-            return false;
-        }
-
-        snapshot = new FanSnapshot(
-            new FanTable([.. value.LeftDuty], [.. value.LeftTemperature]),
-            new FanTable([.. value.RightDuty], [.. value.RightTemperature]),
-            customFlag,
-            fullSpeedFlag);
-        return true;
-    }
-
-    public static ClawRecoveryState ControllerMode(ClawControllerMode mode)
+    public static ClawRecoveryState Controller(ClawControllerMode mode)
     {
         return new ClawRecoveryState
         {
@@ -146,10 +83,44 @@ internal static class ClawRecoveryValues
         };
     }
 
-    public static bool TryControllerMode(ClawRecoveryState? value, out ClawControllerMode mode)
+    /// <summary>The captured power original, or null when this is not a complete power record.</summary>
+    /// <returns>The scenario and pair to write back, with the fast limit when it was read.</returns>
+    public PowerPair? ToPower()
     {
-        mode = value?.ControllerMode ?? ClawControllerMode.Offline;
-        return value?.Kind is ClawRecoveryStateKind.ControllerMode
-               && mode is ClawControllerMode.XInput or ClawControllerMode.DirectInput;
+        return Kind is ClawRecoveryStateKind.Power
+               && SustainedWatts is { } sustained
+               && BoostWatts is { } boost
+               && Scenario is { } scenario
+            ? new PowerPair(sustained, boost, scenario, FastWatts)
+            : null;
+    }
+
+    /// <summary>The captured fan original, or null when this is not a complete fan record.</summary>
+    /// <returns>Both raw tables and both flags, copied so a restore cannot change the record.</returns>
+    public FanSnapshot? ToFans()
+    {
+        return Kind is ClawRecoveryStateKind.Fans
+               && LeftDuty.Length == FanPackageLength
+               && LeftTemperature.Length == FanPackageLength
+               && RightDuty.Length == FanPackageLength
+               && RightTemperature.Length == FanPackageLength
+               && CustomFlag is { } customFlag
+               && FullSpeedFlag is { } fullSpeedFlag
+            ? new FanSnapshot(
+                new FanTable([.. LeftDuty], [.. LeftTemperature]),
+                new FanTable([.. RightDuty], [.. RightTemperature]),
+                customFlag,
+                fullSpeedFlag)
+            : null;
+    }
+
+    /// <summary>The controller mode to put back, or null when this is not a writable controller record.</summary>
+    /// <returns>XInput or DirectInput.</returns>
+    public ClawControllerMode? ToControllerMode()
+    {
+        return Kind is ClawRecoveryStateKind.ControllerMode
+               && ControllerMode is ClawControllerMode.XInput or ClawControllerMode.DirectInput
+            ? ControllerMode
+            : null;
     }
 }

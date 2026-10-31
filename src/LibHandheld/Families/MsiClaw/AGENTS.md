@@ -27,16 +27,17 @@ a baseboard product in `ClawModels`. The SKU is recorded, never matched. Family 
 per-model definition IDs (`ms-1t41` ... `ms-1t91`) identify software records, not the machine. WMI-backed services need
 only the MSI_ACPI provider, bound at HC's instance path. Power and fan recovery entries bind to the SMBIOS BIOS
 version (MSI ships EC updates inside BIOS packages). `Get_WMI` and `Get_EC` are read for diagnostics,
-and may fail without consequence. Legacy journal entries are not migrated. An entry bound to another BIOS is dropped
-rather than restored. Unresolved entries are kept and never written automatically; an explicit command re-arms them.
-No reconciliation outcome blocks a service. MSI USB VID `0DB0` with the supported PIDs gates the controller. Never
-gate on a firmware revision, EC or MCU (the HID collection's release number): MSI ships both through Windows Update and
+and may fail without consequence. Legacy journal entries are not migrated. Start reconciles entries through the
+shared `DeviceRecoveryJournal.ReconcileAsync`: an entry bound to another BIOS is dropped rather than restored, one this
+start cannot compare (no BIOS version) waits unwritten, and a failed restore is kept for the next release or start.
+An entry too incomplete to restore is retired. No reconciliation outcome blocks a service. MSI USB VID `0DB0` with
+the supported PIDs gates the controller. Never gate on a firmware revision, EC or MCU (the HID collection's release number): MSI ships both through Windows Update and
 its updater, and the 0229 gate refused controller ownership and lighting on every unit that moved to 0230. Record
 revisions for diagnostics. MCU addresses (lighting and the paddle mapping) follow HC's nearest-firmware table.
 
 Detection must remain side-effect free. Identity is captured once and reused on resume and controller changes;
-a command reads the AC line and revalidates service availability, cancellation, deadline and range before
-access. Install the per-instance diagnostic sink before the first hardware read.
+a command reads the AC line (the shared probe, where a failed probe reads as battery) and revalidates service
+availability, cancellation, deadline and range before access. Install the per-instance diagnostic sink before the first hardware read.
 Report truthful outcomes: a write the transport failed is indeterminate, never success.
 
 ## Readback
@@ -50,8 +51,10 @@ write is never retried.
 ## Lifecycle and service behavior
 
 - Serialize commands with observation so reads cannot race writes. Preserve whole-set publication and active-owner admission.
-- Keep periodic observation inside the host freshness window. A service read failure may degrade that service but must
-  not kill the observation loop or unrelated services.
+- Keep periodic observation inside the host freshness window. Accepted writes and sensor readings live in the engine's
+  `ObservedValues` for the cycle and publish through `ProviderControls`; release clears them. A failed sensor read
+  leaves the readings unknown until the next one, and a failed watchdog write leaves the limits unknown; neither
+  stops the observation loop or another service. The controller publishes its own state changes from its callbacks.
 - Retract physical/OEM/descriptors if startup cannot establish the supported device. Treat OEM,
   power/charge/fans/telemetry, lighting, motion, controller, and chord suppression as independently
   degradable.

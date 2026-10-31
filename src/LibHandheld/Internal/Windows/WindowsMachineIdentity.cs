@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using LibHandheld.Internal.Identity;
+using LibHandheld.Internal.Runtime;
 using Microsoft.Win32;
 using DeviceIdentitySnapshot = LibHandheld.Contracts.DeviceIdentitySnapshot;
 using UsbEndpointObservation = LibHandheld.Contracts.UsbEndpointObservation;
@@ -11,9 +12,23 @@ namespace LibHandheld.Internal.Windows;
 // Read-only registry, CPUID and HID interface metadata. No reports, EC methods or privileged drivers are used.
 internal static class WindowsMachineIdentity
 {
-    internal static bool OnAcPower()
+    /// <summary>Whether the machine runs on AC power, read for every command and start.</summary>
+    /// <param name="probe">Replaces the native probe, for an injected hardware fixture.</param>
+    /// <returns>
+    ///     True only on a known AC line. A probe that fails, throws or reports an unknown line reads as battery,
+    ///     the conservative source: a control offered only on AC is then refused rather than written on battery.
+    /// </returns>
+    internal static bool OnAcPower(Func<bool>? probe = null)
     {
-        return !GetSystemPowerStatus(out var status) || status.ACLineStatus != 0;
+        try
+        {
+            return probe?.Invoke() ?? (GetSystemPowerStatus(out var status) && status.ACLineStatus == 1);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            DeviceTrace.Failure("power", "AC-power observation failed; assuming battery", ex);
+            return false;
+        }
     }
 
     [DllImport("kernel32.dll")]

@@ -1,7 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -22,7 +21,7 @@ internal sealed partial class ClawDeviceEngine
             return CommandResults.Rejected(
                 command,
                 CapabilityReasonCode.Unsupported,
-                $"Capability '{CapabilityKey(command.CapabilityId, command.InstanceId)}' is not available.");
+                $"Capability '{command.CapabilityId}' is not available.");
         }
 
         if (_cycleIdentity is not { } cycleIdentity)
@@ -36,8 +35,12 @@ internal sealed partial class ClawDeviceEngine
 
         // SMBIOS, the model and the firmware binding cannot change within a cycle; start and resume
         // read them. Only the power source changes under a running cycle, so it is read per command.
-        var identity = cycleIdentity with { OnAcPower = _services.Identity.ReadOnAcPower() };
-        var refusal = RefusalFor(service) ?? ValidateCommand(command, descriptor, identity.OnAcPower);
+        var identity = cycleIdentity with { OnAcPower = OnAcPower() };
+
+        // No firmware revision gates a command: the definition matched at start, and MSI ships EC and MCU
+        // updates that an allowlist would refuse.
+        var refusal = DeviceServiceLifecycle.CommandRefusal(service)
+                      ?? ValidateCommand(command, descriptor, identity.OnAcPower);
         if (refusal is not null)
         {
             return CommandResults.Rejected(command, refusal);
@@ -56,7 +59,62 @@ internal sealed partial class ClawDeviceEngine
                 exception);
         }
 
+        if (result.Outcome is CommandOutcome.Applied && command.RequestedValue is { } requested)
+        {
+            RecordWritten(command, requested);
+        }
+
         return result;
+    }
+
+    /// <summary>Records what an accepted command wrote as the observed value for the rest of the cycle.</summary>
+    /// <remarks>
+    ///     HC never reads a control back, so the written value stands in for a readback, with the knock-on
+    ///     effects the firmware applies: a fixed duty is custom mode without the curve, a charge limit sets
+    ///     Battery Master, and a lighting write carries the whole profile.
+    /// </remarks>
+    private void RecordWritten(CapabilityCommand command, CapabilityValue requested)
+    {
+        switch (command.CapabilityId)
+        {
+            case CapabilityIds.PowerSustained or CapabilityIds.PowerBoost
+                when DevicePowerPair.TryResolve(command, _descriptorSet!.Descriptors, out var sustained,
+                    out var boost, out _):
+                _observedValues.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
+                _observedValues.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
+                return;
+            case CapabilityIds.ChargeLimit:
+                _observedValues.Written(CapabilityIds.ChargeLimit, requested);
+                _observedValues.Written(CapabilityIds.ChargeProtection, CapabilityValue.Boolean(true));
+                return;
+            case CapabilityIds.ChargeProtection:
+                _observedValues.Written(CapabilityIds.ChargeProtection, requested);
+                if (_chargeLimitCapability?.WrittenPercent is { } percent)
+                {
+                    _observedValues.Written(CapabilityIds.ChargeLimit, CapabilityValue.Integer(percent));
+                }
+
+                return;
+            case CapabilityIds.FanDuty:
+                _observedValues.Written(CapabilityIds.FanDuty, requested);
+                _observedValues.Written(CapabilityIds.FanMode, CapabilityValue.Choice("custom"));
+                _observedValues.Forget(CapabilityIds.FanCurve);
+                return;
+            case CapabilityIds.LightingBrightness or CapabilityIds.LightingColor
+                when _lightingCapability?.Current is { } lighting:
+                _observedValues.Written(CapabilityIds.LightingBrightness,
+                    CapabilityValue.Integer(lighting.Brightness));
+                _observedValues.Written(CapabilityIds.LightingColor, CapabilityValue.Color(lighting.LeftRingColor),
+                    CapabilityInstances.LeftRing);
+                _observedValues.Written(CapabilityIds.LightingColor, CapabilityValue.Color(lighting.RightRingColor),
+                    CapabilityInstances.RightRing);
+                _observedValues.Written(CapabilityIds.LightingColor, CapabilityValue.Color(lighting.ButtonsColor),
+                    CapabilityInstances.Buttons);
+                return;
+            default:
+                _observedValues.Written(command.CapabilityId, requested, command.InstanceId);
+                return;
+        }
     }
 
     private ValueTask<CapabilityCommandResult> ApplyCapabilityCommandAsync(
@@ -88,10 +146,10 @@ internal sealed partial class ClawDeviceEngine
         ValueTask<CapabilityCommandResult> PowerCommand(ClawCommandHandler apply)
         {
             return JournalCommandAsync(
-                ServiceIds.Power,
+                ClawServiceIds.Power,
                 binding,
                 command,
-                async token => ClawRecoveryValues.Power(
+                async token => ClawRecoveryState.Power(
                     await power.ReadAsync(token).ConfigureAwait(false)),
                 apply,
                 cancellationToken);
@@ -100,10 +158,10 @@ internal sealed partial class ClawDeviceEngine
         ValueTask<CapabilityCommandResult> FanCommand(ClawCommandHandler apply)
         {
             return JournalCommandAsync(
-                ServiceIds.Fans,
+                ClawServiceIds.Fans,
                 binding,
                 command,
-                async token => ClawRecoveryValues.Fans(
+                async token => ClawRecoveryState.Fans(
                     await fans.ReadSnapshotAsync(token).ConfigureAwait(false)),
                 apply,
                 cancellationToken);
@@ -183,34 +241,6 @@ internal sealed partial class ClawDeviceEngine
         };
     }
 
-    /// <summary>Why the owning service cannot take a command now, or null when it owns its hardware.</summary>
-    /// <remarks>
-    ///     No firmware revision gates a command: the definition matched at start, and MSI ships EC and MCU
-    ///     updates that an allowlist would refuse.
-    /// </remarks>
-    private static CapabilityReason? RefusalFor(DeviceServiceStatus service)
-    {
-        return service.State switch
-        {
-            DeviceServiceState.Owned => null,
-            DeviceServiceState.Passive => new CapabilityReason(
-                CapabilityReasonCode.ResourceConflict,
-                "The device service is passive or held by another owner.", true),
-            DeviceServiceState.Releasing => new CapabilityReason(
-                CapabilityReasonCode.Quiescing,
-                "The device service is being released."),
-            DeviceServiceState.Degraded => new CapabilityReason(
-                CapabilityReasonCode.TransportFaulted,
-                "The device service is degraded and cannot accept commands."),
-            DeviceServiceState.Faulted or DeviceServiceState.ReleasedUnverified => new CapabilityReason(
-                CapabilityReasonCode.TransportFaulted,
-                "The device service is faulted or its release could not be verified."),
-            _ => new CapabilityReason(
-                CapabilityReasonCode.ResourceReleased,
-                "The plugin does not currently own this device service.", true)
-        };
-    }
-
     private CapabilityReason? ValidateCommand(
         CapabilityCommand command,
         CapabilityDescriptor descriptor,
@@ -243,27 +273,15 @@ internal sealed partial class ClawDeviceEngine
             }
         }
 
-        if (!DeviceWriteBudget.IsAvailable(command.Deadline) || cancellationToken.IsCancellationRequested)
-        {
-            return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
-                "Cancelled before native dispatch.", true);
-        }
-
         // A transport exception does not prove whether the firmware accepted a write. Let it
         // propagate while the exact pre-command journal entry remains outstanding for recovery.
-        var result = await apply(command, cancellationToken).ConfigureAwait(false);
-        if (operation?.Opened == true && result.Outcome is CommandOutcome.Rejected)
+        var result = !DeviceWriteBudget.IsAvailable(command.Deadline) || cancellationToken.IsCancellationRequested
+            ? CommandResults.Rejected(command, CapabilityReasonCode.Quiescing, "Cancelled before native dispatch.",
+                true)
+            : await apply(command, cancellationToken).ConfigureAwait(false);
+        if (_journal is not null)
         {
-            // Nothing was written, so the entry this command opened has nothing to restore.
-            try
-            {
-                await _journal!.MarkRestoredAsync(serviceId, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                DeviceTrace.Failure(serviceId, "The unused recovery entry could not be removed; release rewrites it",
-                    ex);
-            }
+            await _journal.DiscardUnusedAsync(operation, result).ConfigureAwait(false);
         }
 
         return result;
