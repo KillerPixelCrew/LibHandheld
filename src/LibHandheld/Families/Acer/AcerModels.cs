@@ -1,6 +1,7 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
+using LibHandheld.Internal.Transports;
 
 namespace LibHandheld.Families.Acer;
 
@@ -23,7 +24,9 @@ internal static class AcerModels
         {
             // Power, fans, battery, lighting, controller, rear buttons, motion and rumble were accepted on
             // a PA08-I51 in attended sessions; see PROVENANCE.md.
-            HardwareVerified = true
+            HardwareVerified = true,
+            // KX writes the MCHBAR mirror; setup turns Memory Integrity and the driver blocklist off.
+            HardwareAccess = DeviceHardwareAccess.IntelKx
         },
         SourceFamilyId = "PredatorAtlas8",
         IdentitySource = ProfileIdentitySource.System,
@@ -32,6 +35,7 @@ internal static class AcerModels
         Cpu = CpuPowerKind.Intel,
         UseStandardServices = false,
         NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
+            CapabilityRole.PowerBackend,
             CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,
             CapabilityRole.ChargeProtectionMode, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
             CapabilityRole.LightingEffectSpeed, CapabilityRole.LightingZoneColor, CapabilityRole.Telemetry],
@@ -112,7 +116,7 @@ internal static class AcerModels
             // The mode owner supplies Combination rear reports; it must precede the dependent OEM readers.
             // This mode is lifecycle-owned, not a user-visible remapping option or a permanent ROM setting.
             ServiceFactories = [context => new AcerControllerModeService(context, controller),
-                context => new AcerPowerService(context, ec), context => new AcerFanService(context, ec),
+                context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open), context => new AcerFanService(context, ec),
                 context => new AcerBatteryService(context), context => new AcerLightingService(context, controller)]
         });
     }

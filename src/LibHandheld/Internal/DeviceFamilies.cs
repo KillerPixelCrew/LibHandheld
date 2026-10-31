@@ -40,7 +40,7 @@ internal static class DeviceFamilies
                     CapabilityRole.ScenarioMode, CapabilityRole.FanMode, CapabilityRole.FanDuty,
                     CapabilityRole.LightingBrightness, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
                     CapabilityRole.HapticSink, CapabilityRole.Telemetry, CapabilityRole.FanMeasuredRpm,
-                    CapabilityRole.FanCurve, CapabilityRole.LightingZoneColor
+                    CapabilityRole.FanCurve, CapabilityRole.LightingZoneColor, CapabilityRole.PowerBackend
                 ])
             }).ToArray()),
             identity => ClawModels.Find(identity)?.DefinitionId,

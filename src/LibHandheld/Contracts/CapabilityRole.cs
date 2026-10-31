@@ -109,7 +109,10 @@ public enum CapabilityRole
     GenericText,
 
     /// <summary>A device-specific read-only value with no more specific role.</summary>
-    GenericReadOnly
+    GenericReadOnly,
+
+    /// <summary>Which hardware path carries the CPU power limits: firmware, PawnIO MSR or KX MSR plus MCHBAR.</summary>
+    PowerBackend
 }
 
 /// <summary>The shape of a capability's value, which decides how it is rendered and validated.</summary>

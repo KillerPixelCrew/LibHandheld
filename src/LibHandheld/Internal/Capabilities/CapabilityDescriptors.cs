@@ -51,6 +51,8 @@ internal static class CapabilityDescriptors
             "" => value,
             SourceOwnership.Managed => "Plugin",
             "aok-classic" => "AOKZOE classic",
+            "pawnio" => "PawnIO",
+            "kx" => "KX",
             _ => char.ToUpperInvariant(value[0]) + value[1..].Replace('-', ' ')
         };
     }

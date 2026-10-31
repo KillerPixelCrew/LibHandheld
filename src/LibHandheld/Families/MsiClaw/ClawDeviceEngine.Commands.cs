@@ -1,5 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Lifecycle;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
@@ -97,6 +98,18 @@ internal sealed partial class ClawDeviceEngine
         var lighting = _lightingCapability
                        ?? throw new InvalidOperationException("The lighting capability is unavailable.");
 
+        if (command.CapabilityId == CapabilityIds.PowerBackend)
+        {
+            return SelectPowerPathAsync(command, identity, power, cancellationToken);
+        }
+
+        if (command.CapabilityId is CapabilityIds.PowerSustained or CapabilityIds.PowerBoost
+            && _direct is { Direct: true } direct)
+        {
+            var (sustained, boost) = Limits();
+            return WriteDirectLimitsAsync(command, identity, power, direct, sustained, boost, cancellationToken);
+        }
+
         return command.CapabilityId switch
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => JournalCommandAsync(
@@ -174,6 +187,96 @@ internal sealed partial class ClawDeviceEngine
         };
     }
 
+    /// <summary>Opens the WMI pair to the model maximum once, then writes the limits to the CPU registers.</summary>
+    private async ValueTask<CapabilityCommandResult> WriteDirectLimitsAsync(CapabilityCommand command,
+        ClawIdentityState identity, ClawPowerCapability power, ClawDirectPowerService direct, int sustained, int boost,
+        CancellationToken cancellationToken)
+    {
+        if (!direct.FirmwareOpened)
+        {
+            var opened = await JournalCommandAsync(ServiceIds.Power, identity.RecoveryBinding, command,
+                async token => ClawRecoveryValues.Power(await power.ReadAsync(token).ConfigureAwait(false)),
+                (journalCommand, token) => power.ApplyLimitsAsync(journalCommand, Model.MaximumWatts,
+                    Model.MaximumWatts, token),
+                cancellationToken).ConfigureAwait(false);
+            if (opened.Outcome != CommandOutcome.Applied)
+            {
+                return opened;
+            }
+
+            direct.FirmwareOpened = true;
+            DeviceTrace.Change("power", "power-path",
+                $"WMI opened to {Model.MaximumWatts}/{Model.MaximumWatts} W; the CPU registers carry the limits.");
+        }
+
+        var dispatched = false;
+        try
+        {
+            await direct.WriteAsync(sustained, boost, ClawDirectPowerService.Binding(identity), () => dispatched = true,
+                cancellationToken).ConfigureAwait(false);
+            return CommandResults.Applied(command);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return CommandResults.TransportFailure(command, dispatched, exception);
+        }
+    }
+
+    /// <summary>Switches between WMI, PawnIO and KX and re-applies the current pair through the new path.</summary>
+    private async ValueTask<CapabilityCommandResult> SelectPowerPathAsync(CapabilityCommand command,
+        ClawIdentityState identity, ClawPowerCapability power, CancellationToken cancellationToken)
+    {
+        if (_direct is not { } direct || !direct.Paths.TryParse(command, out var path))
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
+                "This power-limit path is not available on this device.");
+        }
+
+        if (path == direct.Paths.Selected)
+        {
+            return CommandResults.Applied(command);
+        }
+
+        var last = direct.Direct ? direct.Written : power.WrittenLimits;
+        var binding = ClawDirectPowerService.Binding(identity);
+        try
+        {
+            await direct.Paths.SelectAsync(path, binding, cancellationToken).ConfigureAwait(false);
+            if (path == IntelPowerPath.Firmware)
+            {
+                await direct.RestoreMsrAsync(binding, cancellationToken).ConfigureAwait(false);
+                direct.FirmwareOpened = false;
+            }
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return CommandResults.TransportFailure(command, true, exception);
+        }
+
+        if (last is { } pair)
+        {
+            var reapply = command with
+            {
+                CapabilityId = CapabilityIds.PowerSustained, RequestedValue = CapabilityValue.Integer(pair.Sustained),
+                PairedPowerLimitWatts = pair.Boost
+            };
+            var result = direct.Direct
+                ? await WriteDirectLimitsAsync(reapply, identity, power, direct, pair.Sustained, pair.Boost,
+                    cancellationToken).ConfigureAwait(false)
+                : await JournalCommandAsync(ServiceIds.Power, identity.RecoveryBinding, reapply,
+                    async token => ClawRecoveryValues.Power(await power.ReadAsync(token).ConfigureAwait(false)),
+                    (journalCommand, token) => power.ApplyLimitsAsync(journalCommand, pair.Sustained, pair.Boost,
+                        token),
+                    cancellationToken).ConfigureAwait(false);
+            if (result.Outcome != CommandOutcome.Applied)
+            {
+                DeviceTrace.Warn("power", $"Limits were not re-applied after the path change: {result.Reason?.Detail}");
+            }
+        }
+
+        return CommandResults.Applied(command);
+    }
+
     private ValueTask<CapabilityCommandResult> ApplyFanCurveCommandAsync(
         CapabilityCommand command,
         ClawFanCapability fans,
@@ -198,6 +301,7 @@ internal sealed partial class ClawDeviceEngine
         return capabilityId switch
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power,
+            CapabilityIds.PowerBackend => _direct,
             CapabilityIds.ChargeLimit or ClawChargeLimitCapability.ProtectionId => _chargeLimit,
             CapabilityIds.FanMode or CapabilityIds.FanCurve or "fan.duty" => _fans,
             CapabilityIds.FanRpm or CapabilityIds.Temperature => _telemetry,
@@ -220,6 +324,8 @@ internal sealed partial class ClawDeviceEngine
             // Read from the Windows sensor stack, not MSI firmware, so there is no firmware revision to
             // gate it on and gating it on the WMI one would refuse it whenever that path is degraded.
             CapabilityIds.Motion => FirmwareKind.None,
+            // The path switch itself is no WMI write; a re-applied pair goes through its own path.
+            CapabilityIds.PowerBackend => FirmwareKind.None,
             _ => FirmwareKind.Wmi
         };
     }

@@ -27,10 +27,16 @@ internal sealed partial class ClawDeviceEngine
     /// <summary>Runs the ten-second watchdog without querying control state, then refreshes sensor readings.</summary>
     private async ValueTask RefreshAllObservedAsync(CancellationToken cancellationToken)
     {
-        if (_power is { State: DeviceServiceState.Owned })
+        // HC's ten-second WMI watchdog belongs to the firmware path; a direct path sends no firmware writes.
+        if (_power is { State: DeviceServiceState.Owned } && _direct is not { Direct: true })
         {
             await RefreshServiceAsync(_power, _powerCapability!.ReassertAsync, cancellationToken)
                 .ConfigureAwait(false);
+        }
+
+        if (_direct is { State: DeviceServiceState.Owned } direct)
+        {
+            await RefreshServiceAsync(direct, direct.RefreshAsync, cancellationToken).ConfigureAwait(false);
         }
 
         if (_telemetry is { State: DeviceServiceState.Owned })

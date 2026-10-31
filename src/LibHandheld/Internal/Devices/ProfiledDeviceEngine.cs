@@ -109,7 +109,8 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
 
             if (_profile.UseStandardServices)
             {
-                _power = new ProfiledPowerService(() => OpenPower(featureContext), _journal, _profile);
+                _power = new ProfiledPowerService(() => OpenPower(featureContext), _journal, _profile,
+                    featureContext.Resources.IntelKxPath);
                 _services.Add(_power);
                 if (_profile.Fan is { } fan)
                 {

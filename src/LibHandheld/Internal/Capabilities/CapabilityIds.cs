@@ -20,6 +20,9 @@ internal static class CapabilityIds
     /// <summary>The firmware's performance scenario or mode.</summary>
     public const string Scenario = "power.scenario";
 
+    /// <summary>The hardware path that carries the CPU power limits.</summary>
+    public const string PowerBackend = "power.backend";
+
     /// <summary>The battery charge ceiling.</summary>
     public const string ChargeLimit = "battery.charge-limit";
 

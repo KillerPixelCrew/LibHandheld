@@ -433,6 +433,7 @@ public sealed class ClawDeviceEngineTests
             [
                 "msi-oem-events",
                 "msi-power",
+                "msi-power.direct",
                 "msi-charge-limit",
                 "msi-fans",
                 "msi-telemetry",

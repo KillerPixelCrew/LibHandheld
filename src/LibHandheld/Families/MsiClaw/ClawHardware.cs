@@ -336,4 +336,8 @@ internal sealed record ClawHardwareServices(
     IClawMotionSource Motion,
     IFirmwareChordSuppressor ChordSuppressor,
     OemButtonLatch OemButtons,
-    Func<TimeSpan, CancellationToken, Task> Delay);
+    Func<TimeSpan, CancellationToken, Task> Delay)
+{
+    /// <summary>Opens PawnIO MSR 0x610 for the direct power paths; null offers only the WMI path.</summary>
+    internal Func<LibHandheld.Internal.Transports.ICpuPowerTransport>? OpenMsr { get; init; }
+}

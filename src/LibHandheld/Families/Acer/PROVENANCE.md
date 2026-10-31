@@ -548,3 +548,31 @@ come from selectors 2 and 4. Three tiers sit below Quiet, all through Manual 3 w
 battery: Battery Saver 8/8, Efficiency 12/15 and Light 15/20 W. Quiet 20/20, Balanced 25/37, Turbo
 30/37 and Full Power 40/65 W keep their ids and values. No instrumented package-power sweep below
 25 W has been recorded.
+
+## Selectable power-limit paths and Intel IPF (2026-10-31)
+
+Attended on the PA08-I51, BIOS V1.03, on AC. The maintainer reported in-game lag with the EC power
+path, and the same lag with Predator Sense. MSR 0x610 is unlocked (bit 63 clear). Writing PL1/PL2
+there through PawnIO, with Manual opened once to the firmware maxima, felt better in game.
+
+A read-only capture sampled package energy (MSR 0x611), MSR 0x610, MCHBAR 0x59A0 (signed
+IntelMCHBAR read) and package thermal status (0x1B1) once a second. With PL1 50 W in the register,
+the package ran about 50 W for about a minute, then MCHBAR PL1 stepped 40 -> 38 -> 36 -> 35 W and
+sustained power followed it to 33..37 W. Re-selecting Manual every 5 s returned MCHBAR to 40 W and
+held about 41 W sustained, but FPS swung between 80 and 100, so the re-arm was removed. Manual's
+offset 8 field (PL1 + 5 W in every stock profile, 30 W in Manual) changed nothing.
+
+The MCHBAR writer was Intel's Innovation Platform Framework (`ipfsvc`, processor participant
+`ipf_cpu`, sensors SEN2..SEN4). It overwrote a KX-written 45 W within 5 s at idle and ramped it back
+to 40 W. With `ipfsvc` stopped, MCHBAR held 45 W for two minutes at idle. Under load the package
+reached 100 C within about 15 s and something below the service (the BIOS or `ipf_cpu`) still
+lowered MCHBAR PL1 to 35 W once the thermal thresholds tripped; it returned to 40 W within about
+20 s of cooling. Windows 11 re-enabled Memory Integrity after setup cleared its scenario value
+(`WasEnabledBy` 2), and HVCI blocked HwRwDrv (Code Integrity event 3077) until it was off.
+
+The runtime therefore offers Firmware, PawnIO and KX, chosen by the user and stored globally. The
+direct paths keep PL1 at the firmware's 40 W maximum, disable and stop IPF while selected, and
+restore it, MSR 0x610 and MCHBAR on Firmware or release. KX loads HwRwDrv for one command and unloads
+it on exit, so it runs only while KX is selected. Raw captures: local
+`artifacts/acer-power-monitor-20261031-*.jsonl`. The path switch and IPF guard in this build have
+not had an attended game session yet.

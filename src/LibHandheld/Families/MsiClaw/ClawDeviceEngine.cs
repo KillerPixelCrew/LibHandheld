@@ -3,6 +3,7 @@ using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Transports;
 
 namespace LibHandheld.Families.MsiClaw;
 
@@ -38,6 +39,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
     private OemEventService? _oem;
     private PowerService? _power;
     private ClawPowerCapability? _powerCapability;
+    private ClawDirectPowerService? _direct;
     private bool _quiescing;
     private ChordSuppressorService? _suppressor;
     private TelemetryService? _telemetry;
@@ -132,6 +134,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             _journal = context.Journal;
             _oem = new OemEventService(_services.OemEvents, context.Host, _services.OemButtons);
             _power = new PowerService(powerCapability, _journal);
+            _direct = new ClawDirectPowerService(_journal, context.Resources.IntelKxPath, _services.OpenMsr);
             _chargeLimit = new ChargeLimitService();
             _fans = new FanService(fanCapability, _journal);
             _telemetry = new TelemetryService(fanCapability);
@@ -161,6 +164,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             [
                 _oem,
                 _power,
+                _direct,
                 _chargeLimit,
                 _fans,
                 _telemetry,
@@ -169,6 +173,8 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
                 _controller,
                 _suppressor
             ];
+            // The offered power paths are fixed before the surface is first published.
+            _direct.Prepare();
             BuildCapabilitySurface();
 
             {
@@ -440,6 +446,6 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             new WindowsClawMotionSource(),
             new FirmwareChordSuppressor(),
             oemButtons,
-            Task.Delay);
+            Task.Delay) { OpenMsr = IntelMsrPowerTransport.Open };
     }
 }

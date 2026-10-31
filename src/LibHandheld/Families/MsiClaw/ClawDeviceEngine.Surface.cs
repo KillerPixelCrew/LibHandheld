@@ -1,5 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -134,7 +135,8 @@ internal sealed partial class ClawDeviceEngine
             IntegerDescriptor(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
                 DisplayKey.FanRight, 0, 10_000, CapabilityUnit.Rpm, false,
                 CapabilityInstances.Right,
-                section: SectionIds.Info, category: CategoryIds.Readings, order: 2)
+                section: SectionIds.Info, category: CategoryIds.Readings, order: 2),
+            .. _direct?.Paths.Descriptor is { } path ? new[] { path } : []
         ];
 
         EnsureUniqueCapabilityKeys(descriptors);
@@ -260,17 +262,27 @@ internal sealed partial class ClawDeviceEngine
         }
     }
 
+    /// <summary>The pair in force: the registers' on a direct path, otherwise the WMI pair.</summary>
+    private (int Sustained, int Boost)? PublishedLimits()
+    {
+        return _direct is { Direct: true } direct ? direct.Written : _powerCapability!.WrittenLimits;
+    }
+
     private CapabilityValue? CurrentState(CapabilityDescriptor descriptor)
     {
         switch (descriptor.CapabilityId)
         {
             case CapabilityIds.PowerSustained:
             {
-                return _powerCapability!.WrittenLimits is { } value ? CapabilityValue.Integer(value.Sustained) : null;
+                return PublishedLimits() is { } value ? CapabilityValue.Integer(value.Sustained) : null;
             }
             case CapabilityIds.PowerBoost:
             {
-                return _powerCapability!.WrittenLimits is { } value ? CapabilityValue.Integer(value.Boost) : null;
+                return PublishedLimits() is { } value ? CapabilityValue.Integer(value.Boost) : null;
+            }
+            case CapabilityIds.PowerBackend:
+            {
+                return CapabilityValue.Choice(IntelPowerPaths.Name(_direct!.Paths.Selected));
             }
             case CapabilityIds.Scenario:
             {
@@ -343,7 +355,10 @@ internal sealed partial class ClawDeviceEngine
     {
         return capabilityId switch
         {
-            CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => _powerCapability!.LimitsWrittenAt,
+            CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => _direct is { Direct: true } direct
+                ? direct.WrittenAt
+                : _powerCapability!.LimitsWrittenAt,
+            CapabilityIds.PowerBackend => DateTimeOffset.UtcNow,
             CapabilityIds.Scenario => _powerCapability!.ScenarioWrittenAt,
             CapabilityIds.ChargeLimit => _chargeLimitCapability!.WrittenAt,
             ClawChargeLimitCapability.ProtectionId => _chargeLimitCapability!.ProtectionWrittenAt,
