@@ -1,6 +1,5 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Runtime;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
 
@@ -132,11 +131,6 @@ internal static class GpdModels
         }
     ]);
 
-    internal static IReadOnlyList<HandheldDefinition> GetDefinitions()
-    {
-        return Array.AsReadOnly(All.Select(model => model.DeclaredDefinition).ToArray());
-    }
-
     internal static ProfiledDeviceModel? Match(DeviceIdentitySnapshot identity)
     {
         if (All.FirstOrDefault(model => model.Matches(identity)) is { } matched)
@@ -148,11 +142,6 @@ internal static class GpdModels
         // does not select another known variant. Other boards still require their own exact row.
         var max2 = All.Single(model => model.Definition.Id == "gpd-win-max2-8840u");
         return (max2 with { Processors = [] }).Matches(identity) ? max2 : null;
-    }
-
-    internal static NativeEngine CreateEngine(HandheldDefinition definition)
-    {
-        return new ProfiledDeviceEngine(All.Single(model => model.Definition.Id == definition.Id));
     }
 
     private static ProfiledDeviceModel Model(string id, string name, string source, string[] products,

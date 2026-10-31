@@ -33,7 +33,7 @@ public sealed class DeviceServiceStatusTests
     {
         internal void ChangeState(DeviceServiceState state)
         {
-            State = state;
+            _ = Set(state);
         }
     }
 }

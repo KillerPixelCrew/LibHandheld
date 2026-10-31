@@ -130,12 +130,6 @@ internal sealed class PowerService(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        var identity = context.Identity;
-        if (!identity.ExactMachineMatch || !identity.WmiAvailable)
-        {
-            return ValueTask.FromResult(Set(DeviceServiceState.Passive, FirmwareReason(identity)));
-        }
-
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
@@ -151,17 +145,6 @@ internal sealed class PowerService(
             _capability.RestoreAsync,
             cancellationToken);
     }
-
-    private static CapabilityReason FirmwareReason(ClawIdentityState identity)
-    {
-        return identity.ExactMachineMatch
-            ? new CapabilityReason(
-                CapabilityReasonCode.FirmwareNotVerified,
-                "The MSI_ACPI provider did not answer.")
-            : new CapabilityReason(
-                CapabilityReasonCode.Unsupported,
-                "The Claw model identity no longer matches.");
-    }
 }
 
 internal sealed class ChargeLimitService : DeviceService<ClawIdentityState>
@@ -174,12 +157,6 @@ internal sealed class ChargeLimitService : DeviceService<ClawIdentityState>
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        var identity = context.Identity;
-        if (!identity.ExactMachineMatch || !identity.WmiAvailable)
-        {
-            return ValueTask.FromResult(Set(DeviceServiceState.Passive, FirmwareReason(identity)));
-        }
-
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
@@ -190,17 +167,6 @@ internal sealed class ChargeLimitService : DeviceService<ClawIdentityState>
     {
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(Set(DeviceServiceState.Idle));
-    }
-
-    private static CapabilityReason FirmwareReason(ClawIdentityState identity)
-    {
-        return identity.ExactMachineMatch
-            ? new CapabilityReason(
-                CapabilityReasonCode.FirmwareNotVerified,
-                "The MSI_ACPI provider did not answer.")
-            : new CapabilityReason(
-                CapabilityReasonCode.Unsupported,
-                "The Claw model identity no longer matches.");
     }
 }
 
@@ -217,16 +183,6 @@ internal sealed class FanService(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        var identity = context.Identity;
-        if (!identity.ExactMachineMatch || !identity.WmiAvailable)
-        {
-            return ValueTask.FromResult(Set(DeviceServiceState.Passive, new CapabilityReason(
-                identity.ExactMachineMatch
-                    ? CapabilityReasonCode.FirmwareNotVerified
-                    : CapabilityReasonCode.Unsupported,
-                "The Claw model or its MSI_ACPI provider was not available.")));
-        }
-
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
@@ -263,14 +219,6 @@ internal sealed class TelemetryService(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        var identity = context.Identity;
-        if (!identity.ExactMachineMatch || !identity.WmiAvailable)
-        {
-            return Set(DeviceServiceState.Passive, new CapabilityReason(
-                CapabilityReasonCode.PrerequisiteMissing,
-                "MSI telemetry requires the MSI_ACPI provider."));
-        }
-
         await RefreshAsync(cancellationToken).ConfigureAwait(false);
         return Set(DeviceServiceState.Owned);
     }
@@ -295,14 +243,6 @@ internal sealed class LightingService(
         DeviceCycleContext<ClawIdentityState> context,
         CancellationToken cancellationToken)
     {
-        var identity = context.Identity;
-        if (!identity.ExactMachineMatch)
-        {
-            return Set(DeviceServiceState.Passive, new CapabilityReason(
-                CapabilityReasonCode.Unsupported,
-                "Exact device identity no longer matches the Claw implementation."));
-        }
-
         if (!await _transport.IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
             return Set(DeviceServiceState.Passive, new CapabilityReason(
@@ -501,11 +441,8 @@ internal sealed class MotionService(IClawMotionSource source, ClawModel model)
 
 internal sealed class ChordSuppressorService(
     IFirmwareChordSuppressor suppressor,
-    OemEventService oemEvents,
-    IDeviceSink host) : DeviceService<ClawIdentityState>(ServiceIds.ChordSuppressor)
+    OemEventService oemEvents) : DeviceService<ClawIdentityState>(ServiceIds.ChordSuppressor)
 {
-    private readonly IDeviceSink _host = host ?? throw new ArgumentNullException(nameof(host));
-
     private readonly OemEventService _oemEvents = oemEvents
                                                   ?? throw new ArgumentNullException(nameof(oemEvents));
 

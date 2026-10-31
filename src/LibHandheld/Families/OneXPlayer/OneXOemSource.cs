@@ -18,13 +18,11 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
     private Task? _configuration;
     private volatile bool _connected;
 
-    private int _hidReportLength;
     private Action<string, CanonicalButtons, bool>? _publish;
     private Timer? _pulseTimer;
     private Task? _reader;
     private SerialPort? _serial;
     private CancellationTokenSource? _stop;
-    private FileStream? _stream;
     private OneXVendorTransport? _vendor;
     public bool IsConnected => _connected;
 
@@ -32,6 +30,8 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
     {
         token.ThrowIfCancellationRequested();
         _publish = publish;
+        FileStream? stream = null;
+        var reportLength = 0;
         if (profile.SerialButtons)
         {
             _serial = TryOpenSerial(() => OneXSerial.Open(true));
@@ -48,8 +48,8 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
                 return ValueTask.FromResult(false);
             }
 
-            _stream = HidDevices.OpenStream(collection);
-            _hidReportLength = collection.InputLength;
+            stream = HidDevices.OpenStream(collection);
+            reportLength = collection.InputLength;
         }
 
         _stop = new CancellationTokenSource();
@@ -74,12 +74,11 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
         _connected = true;
         if (_serial is not null)
         {
-            _reader = ReadAsync(_stop.Token);
+            _reader = ReadAsync(_serial, _stop.Token);
         }
         else
         {
-            _connected = _hidSource.Start(_stream!, _hidReportLength, ParseHid, ReaderStopped, token);
-            _stream = null;
+            _connected = _hidSource.Start(stream!, reportLength, ParseHid, ReaderStopped, token);
         }
 
         return ValueTask.FromResult(_connected);
@@ -88,7 +87,6 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
     public async ValueTask StopAsync(CancellationToken token)
     {
         _stop?.Cancel();
-        _stream?.Dispose();
         _serial?.Dispose();
         await _hidSource.StopAsync(token).ConfigureAwait(false);
         if (_reader is not null)
@@ -126,7 +124,6 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
 
         _stop?.Dispose();
         _stop = null;
-        _stream = null;
         _serial = null;
         _publish = null;
     }
@@ -177,7 +174,7 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
         }
     }
 
-    private async Task ReadAsync(CancellationToken token)
+    private async Task ReadAsync(SerialPort serial, CancellationToken token)
     {
         var buffer = new byte[256];
         var serialFrame = new byte[14];
@@ -186,34 +183,31 @@ internal sealed class OneXOemSource(OneXProtocolProfile profile) : IProfiledOemS
         {
             while (!token.IsCancellationRequested)
             {
-                if (_serial is { } serial)
+                var count = await serial.BaseStream.ReadAsync(buffer, token).ConfigureAwait(false);
+                if (count == 0)
                 {
-                    var count = await serial.BaseStream.ReadAsync(buffer, token).ConfigureAwait(false);
-                    if (count == 0)
+                    break;
+                }
+
+                for (var index = 0; index < count; index++)
+                {
+                    var value = buffer[index];
+                    if (serialLength == 1 && value != 0x3F)
                     {
-                        break;
+                        serialFrame[0] = value;
+                        continue;
                     }
 
-                    for (var index = 0; index < count; index++)
+                    serialFrame[serialLength++] = value;
+                    if (serialLength != 14)
                     {
-                        var value = buffer[index];
-                        if (serialLength == 1 && value != 0x3F)
-                        {
-                            serialFrame[0] = value;
-                            continue;
-                        }
+                        continue;
+                    }
 
-                        serialFrame[serialLength++] = value;
-                        if (serialLength != 14)
-                        {
-                            continue;
-                        }
-
-                        serialLength = 0;
-                        if (serialFrame[0] == 0x1A && serialFrame[12] == 0x3F && serialFrame[13] == 0x1A)
-                        {
-                            Edge(serialFrame[2], serialFrame[8] == 1, true);
-                        }
+                    serialLength = 0;
+                    if (serialFrame[0] == 0x1A && serialFrame[12] == 0x3F && serialFrame[13] == 0x1A)
+                    {
+                        Edge(serialFrame[2], serialFrame[8] == 1, true);
                     }
                 }
             }

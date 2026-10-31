@@ -1,3 +1,4 @@
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Testing;
@@ -24,13 +25,13 @@ public sealed class ProfiledHardwareServiceTests
         });
 
         await service.WriteAsync(new CpuPowerLimits(18, 22, 22), "test", CancellationToken.None, () => { });
-        var at = service.ObservedAt;
+        var at = Published(service, CapabilityIds.PowerSustained).ObservedAt;
         await service.RefreshAsync(CancellationToken.None);
         await service.WriteAsync(new CpuPowerLimits(20, 25, 25), "test", CancellationToken.None, () => { });
         await service.RefreshAsync(CancellationToken.None);
         Assert.Equal(1, transport.Reads);
-        Assert.Equal(new CpuPowerLimits(20, 25, 25), service.Observed);
-        Assert.True(service.ObservedAt >= at);
+        AssertPublished(service, sustained: 20, boost: 25);
+        Assert.True(Published(service, CapabilityIds.PowerSustained).ObservedAt >= at);
         Assert.Equal(DeviceServiceState.Idle, (await service.ReleaseAsync(cycle, CancellationToken.None)).State);
         Assert.Equal(new CpuPowerLimits(15, 20, 25), transport.Writes[^1]);
         Assert.Equal(1, transport.Reads);
@@ -50,7 +51,7 @@ public sealed class ProfiledHardwareServiceTests
         await service.RefreshAsync(CancellationToken.None);
         Assert.Equal(1, transport.Reads);
         Assert.Equal(2, transport.Writes.Count);
-        Assert.Equal(new CpuPowerLimits(20, 25, 25), service.Observed);
+        AssertPublished(service, sustained: 20, boost: 25);
         Assert.Equal(DeviceServiceState.ReleasedUnverified,
             (await service.ReleaseAsync(cycle, CancellationToken.None)).State);
     }
@@ -145,6 +146,17 @@ public sealed class ProfiledHardwareServiceTests
         ec.Writes.Clear();
         await fan.ReleaseAsync(cycle, CancellationToken.None);
         Assert.Equal(new (ushort, byte)[] { (0xC311, 20), (0xC880, 35) }, ec.Writes);
+    }
+
+    private static CapabilityState Published(ProfiledPowerService service, string capabilityId)
+    {
+        return service.States.Single(state => state.CapabilityId == capabilityId);
+    }
+
+    private static void AssertPublished(ProfiledPowerService service, int sustained, int boost)
+    {
+        Assert.Equal(sustained, Published(service, CapabilityIds.PowerSustained).ObservedValue?.IntegerValue);
+        Assert.Equal(boost, Published(service, CapabilityIds.PowerBoost).ObservedValue?.IntegerValue);
     }
 
     private sealed class AutomaticFanEc : IEmbeddedController

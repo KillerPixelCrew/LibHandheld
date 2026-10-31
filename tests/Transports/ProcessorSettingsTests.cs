@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Testing;
@@ -20,12 +21,12 @@ public sealed class ProcessorSettingsTests
             {
                 Journal = TestRecovery.Open(directory.Root)
             }, CpuPowerKind.Amd, minimumGpuClock: 100, maximumGpuClock: 2900,
-            openAmd: () => new AmdSmuTransport(module, codeName, firmwareVersion: 1));
+            openAmd: () => new AmdSmuTransport(module, codeName));
         await service.AcquireAsync(new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
             new ProfiledCycleIdentity("bios")), CancellationToken.None);
         var command = new CapabilityCommand
         {
-            CommandId = Guid.NewGuid(), CapabilityId = "processor.gpu-clock", Deadline = Deadline.Never,
+            CommandId = Guid.NewGuid(), CapabilityId = CapabilityIds.ProcessorGpuClock, Deadline = Deadline.Never,
             RequestedValue = CapabilityValue.Integer(800)
         };
         Assert.Equal(CommandOutcome.Applied,
@@ -41,10 +42,10 @@ public sealed class ProcessorSettingsTests
         module.Calls.Clear();
         var result = await service.ExecuteAsync(command with
         {
-            CapabilityId = "processor.reset", RequestedValue = null
+            CapabilityId = CapabilityIds.ProcessorReset, RequestedValue = null
         }, "bios", CancellationToken.None);
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
-        Assert.Null(service.States.Single(state => state.CapabilityId == "processor.gpu-clock").ObservedValue);
+        Assert.Null(service.States.Single(state => state.CapabilityId == CapabilityIds.ProcessorGpuClock).ObservedValue);
         if (needsRestart)
         {
             Assert.Contains("Restart Windows", result.Reason?.Detail);
@@ -85,21 +86,21 @@ public sealed class ProcessorSettingsTests
             new ProfiledFeatureContext(directory.Root, "bios", new TestPluginHostAdapter(1))
             {
                 Journal = TestRecovery.Open(directory.Root)
-            }, CpuPowerKind.Amd, openAmd: () => new AmdSmuTransport(module, codeName: 23, firmwareVersion: 1));
+            }, CpuPowerKind.Amd, openAmd: () => new AmdSmuTransport(module, codeName: 23));
         await service.AcquireAsync(new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never,
             new ProfiledCycleIdentity("bios")), CancellationToken.None);
         module.Calls.Clear();
         module.WrongEcho = true;
         var result = await service.ExecuteAsync(new CapabilityCommand
         {
-            CommandId = Guid.NewGuid(), CapabilityId = "processor.reset", Deadline = Deadline.Never
+            CommandId = Guid.NewGuid(), CapabilityId = CapabilityIds.ProcessorReset, Deadline = Deadline.Never
         }, "bios", CancellationToken.None);
         Assert.Equal(CommandOutcome.Indeterminate, result.Outcome);
         Assert.Single(module.Calls);
         Assert.Contains("a Windows restart may be needed", service.Descriptors
-            .Single(descriptor => descriptor.CapabilityId == "processor.reset").Display.Description);
-        Assert.Contains("Restart Windows", service.States.Single(state => state.CapabilityId == "processor.reset")
-            .Reason?.Detail);
+            .Single(descriptor => descriptor.CapabilityId == CapabilityIds.ProcessorReset).Display.Description);
+        Assert.Contains("Restart Windows", service.States
+            .Single(state => state.CapabilityId == CapabilityIds.ProcessorReset).Reason?.Detail);
         await service.DisposeAsync();
     }
 
@@ -165,7 +166,7 @@ public sealed class ProcessorSettingsTests
     public void CurveWriteUsesModulePathAndSignedTwentyBitOffset(int curve, long command)
     {
         using var module = new SettingsModule();
-        using var smu = new AmdSmuTransport(module, codeName: 23, firmwareVersion: 1);
+        using var smu = new AmdSmuTransport(module, codeName: 23);
         smu.WriteCurve((AmdCurveKind)curve, steps: -24);
         var call = Assert.Single(module.Calls);
         Assert.Equal("ioctl_send_smu_command", call.Function);
@@ -176,7 +177,7 @@ public sealed class ProcessorSettingsTests
     public void CurveAcknowledgementFailureDoesNotRetry()
     {
         using var module = new SettingsModule { WrongEcho = true };
-        using var smu = new AmdSmuTransport(module, codeName: 23, firmwareVersion: 1);
+        using var smu = new AmdSmuTransport(module, codeName: 23);
         Assert.Throws<IOException>(() => smu.WriteCurve(AmdCurveKind.AllCores, steps: -10));
         Assert.Single(module.Calls);
     }
@@ -185,7 +186,7 @@ public sealed class ProcessorSettingsTests
     public void SkinTemperatureUsesUnsignedEightBitFraction()
     {
         using var module = new SettingsModule();
-        using var smu = new AmdSmuTransport(module, codeName: 23, firmwareVersion: 1);
+        using var smu = new AmdSmuTransport(module, codeName: 23);
         smu.WriteThermalLimit(AmdThermalLimit.ApuSkin, celsius: 45);
         Assert.Contains(module.Calls, call => call.Function == "ioctl_write_smu_register"
                                              && call.Input.SequenceEqual([0x03B10998L, 45L * 256]));
@@ -197,7 +198,7 @@ public sealed class ProcessorSettingsTests
     public void UnsupportedOrInvalidSettingsReachNoHardware()
     {
         using var module = new SettingsModule();
-        using var smu = new AmdSmuTransport(module, codeName: 2, firmwareVersion: 1);
+        using var smu = new AmdSmuTransport(module, codeName: 2);
         Assert.Throws<NotSupportedException>(() => smu.WriteCurve(AmdCurveKind.Gpu, steps: -1));
         Assert.Throws<ArgumentOutOfRangeException>(() => smu.WriteThermalLimit(AmdThermalLimit.Tctl, celsius: 121));
         Assert.Throws<NotSupportedException>(() => smu.ReadThermalLimit(AmdThermalLimit.ApuSkin));
@@ -209,7 +210,7 @@ public sealed class ProcessorSettingsTests
     public void OlderAmdGpuUsesMinThenMaxOnlyOnce()
     {
         using var module = new SettingsModule();
-        using var smu = new AmdSmuTransport(module, codeName: 2, firmwareVersion: 1);
+        using var smu = new AmdSmuTransport(module, codeName: 2);
         smu.WriteGpuClock(megahertz: 800);
         Assert.Equal(new long[] { 0x47, 0x46 }, module.Calls.Select(call => call.Input[0]));
         Assert.All(module.Calls, call => Assert.Equal(800, call.Input[1]));
@@ -233,7 +234,7 @@ public sealed class ProcessorSettingsTests
     public void ModuleRefusalsAreDecodedAndOnlyUnknownOrFailedAreDefinite(int win32, uint status, bool definite)
     {
         using var module = new SettingsModule { Refused = { 0x4B }, RefusalCode = win32 };
-        using var smu = new AmdSmuTransport(module, codeName: 31, firmwareVersion: 1);
+        using var smu = new AmdSmuTransport(module, codeName: 31);
         var refusal = Assert.Throws<SmuCommandException>(() => smu.WriteCurve(AmdCurveKind.PerCore, steps: 0));
         Assert.Equal(status, refusal.Status);
         Assert.Equal(definite, AmdSmuTransport.IsDefiniteRefusal(refusal));
@@ -245,12 +246,12 @@ public sealed class ProcessorSettingsTests
     public void ModuleTimeoutStaysUncertainAndOtherFailuresKeepTheirCode()
     {
         using var timeout = new SettingsModule { Refused = { 0x4B }, RefusalCode = 121 };
-        using var smu = new AmdSmuTransport(timeout, codeName: 31, firmwareVersion: 1);
+        using var smu = new AmdSmuTransport(timeout, codeName: 31);
         var unknown = Assert.Throws<TimeoutException>(() => smu.WriteCurve(AmdCurveKind.PerCore, steps: 0));
         Assert.False(AmdSmuTransport.IsDefiniteRefusal(unknown));
 
         using var other = new SettingsModule { Refused = { 0x4B }, RefusalCode = 5 };
-        using var second = new AmdSmuTransport(other, codeName: 31, firmwareVersion: 1);
+        using var second = new AmdSmuTransport(other, codeName: 31);
         var failure = Assert.Throws<Win32Exception>(() => second.WriteCurve(AmdCurveKind.PerCore, steps: 0));
         Assert.Equal(5, failure.NativeErrorCode);
         Assert.False(AmdSmuTransport.IsDefiniteRefusal(failure));
@@ -270,7 +271,7 @@ public sealed class ProcessorSettingsTests
             call => Assert.Equal(0, call.Input[1]));
         Assert.Equal(0, Observed(service, "processor.cpu-curve-all"));
         Assert.Equal(0, Observed(service, "processor.cpu-curve-core0"));
-        Assert.Null(Observed(service, "processor.gpu-clock"));
+        Assert.Null(Observed(service, CapabilityIds.ProcessorGpuClock));
         Assert.Null(Observed(service, "processor.tctl-limit"));
         await service.DisposeAsync();
     }
@@ -320,27 +321,27 @@ public sealed class ProcessorSettingsTests
 
         var result = await service.ExecuteAsync(new CapabilityCommand
         {
-            CommandId = Guid.NewGuid(), CapabilityId = "processor.gpu-clock", Deadline = Deadline.Never,
+            CommandId = Guid.NewGuid(), CapabilityId = CapabilityIds.ProcessorGpuClock, Deadline = Deadline.Never,
             RequestedValue = CapabilityValue.Integer(1200)
         }, "bios", CancellationToken.None);
 
         Assert.Equal(CommandOutcome.Rejected, result.Outcome);
         Assert.Equal(CapabilityReasonCode.Unsupported, result.Reason?.Code);
         Assert.False(service.DescriptorsChanged);
-        Assert.Contains(service.Descriptors, d => d.CapabilityId == "processor.gpu-clock");
+        Assert.Contains(service.Descriptors, d => d.CapabilityId == CapabilityIds.ProcessorGpuClock);
         Assert.Single(module.Calls, call => call.Function == "ioctl_send_smu_command" && call.Input[0] == 0x89);
 
         // A wake re-acquires the same instance: the control is still there and nothing is settled again.
         module.Calls.Clear();
         await Acquire(service);
-        Assert.Contains(service.Descriptors, d => d.CapabilityId == "processor.gpu-clock");
+        Assert.Contains(service.Descriptors, d => d.CapabilityId == CapabilityIds.ProcessorGpuClock);
         Assert.DoesNotContain(module.Calls, call => call.Function == "ioctl_send_smu_command");
         await service.DisposeAsync();
 
         using var next = new SettingsModule();
         var restarted = Processor(directory, next, codeName: 31, firmware: "bios");
         await Acquire(restarted);
-        Assert.DoesNotContain(restarted.Descriptors, d => d.CapabilityId == "processor.gpu-clock");
+        Assert.DoesNotContain(restarted.Descriptors, d => d.CapabilityId == CapabilityIds.ProcessorGpuClock);
         await restarted.DisposeAsync();
     }
 
@@ -356,7 +357,7 @@ public sealed class ProcessorSettingsTests
 
         var result = await service.ExecuteAsync(new CapabilityCommand
         {
-            CommandId = Guid.NewGuid(), CapabilityId = "processor.reset", Deadline = Deadline.Never
+            CommandId = Guid.NewGuid(), CapabilityId = CapabilityIds.ProcessorReset, Deadline = Deadline.Never
         }, "bios", CancellationToken.None);
 
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
@@ -373,7 +374,7 @@ public sealed class ProcessorSettingsTests
             {
                 Journal = TestRecovery.Open(directory.Root)
             }, CpuPowerKind.Amd, minimumGpuClock: 100, maximumGpuClock: 2900,
-            openAmd: () => new AmdSmuTransport(module, codeName, firmwareVersion: 1));
+            openAmd: () => new AmdSmuTransport(module, codeName));
     }
 
     private static async Task Acquire(ProfiledProcessorService service)

@@ -28,6 +28,27 @@ internal interface ILegionHid : IAsyncDisposable
 /// <summary>Command collection and controller acquisition are independent; releasing input retains lighting.</summary>
 internal sealed partial class WindowsLegionHid : ILegionHid
 {
+    /// <summary>HC's Legion DirectInput button indices.</summary>
+    private static readonly CanonicalButtons[] DInputButtons =
+    [
+        CanonicalButtons.A,
+        CanonicalButtons.B,
+        CanonicalButtons.None,
+        CanonicalButtons.X,
+        CanonicalButtons.Y,
+        CanonicalButtons.None,
+        CanonicalButtons.LeftShoulder,
+        CanonicalButtons.RightShoulder,
+        CanonicalButtons.None,
+        CanonicalButtons.None,
+        CanonicalButtons.View,
+        CanonicalButtons.Menu,
+        CanonicalButtons.None,
+        CanonicalButtons.LeftStick,
+        CanonicalButtons.RightStick
+    ];
+
+    private readonly HidReportSource _gamepadSource = new();
     private readonly Lock _output = new();
     private readonly long[] _pressIds = new long[14];
     private readonly SemaphoreSlim _publishing = new(1, 1);
@@ -36,10 +57,9 @@ internal sealed partial class WindowsLegionHid : ILegionHid
     private readonly SemaphoreSlim _writes = new(1, 1);
     private HidCollection? _commandCollection;
     private SafeFileHandle? _commands;
-    private LegionDInput? _dinput;
+    private HidUsageReader? _dinput;
     private volatile bool _forward;
     private FileStream? _gamepad;
-    private Task? _gamepadReader;
     private CanonicalControllerSample _gamepadSample;
     private FileStream? _input;
     private LegionGoModel? _model;
@@ -133,13 +153,9 @@ internal sealed partial class WindowsLegionHid : ILegionHid
     public async ValueTask StopAsync(CancellationToken cancellationToken)
     {
         _forward = false;
+        await _gamepadSource.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        // The source owns the stream once its reader starts; one opened by a start that failed earlier closes here.
         _gamepad?.Dispose();
-        if (_gamepadReader is { } gamepadReader)
-        {
-            await gamepadReader.ConfigureAwait(false);
-        }
-
-        _gamepadReader = null;
         _gamepad = null;
         _dinput?.Dispose();
         _dinput = null;
@@ -155,10 +171,7 @@ internal sealed partial class WindowsLegionHid : ILegionHid
             {
                 try
                 {
-                    if (_model is not null && _slot >= 0)
-                    {
-                        LegionXInput.Rumble(_slot, HapticOutputFrame.Stop(DateTimeOffset.UtcNow));
-                    }
+                    LegionXInput.Rumble(_slot, HapticOutputFrame.Stop(DateTimeOffset.UtcNow));
                 }
                 catch (IOException)
                 {
@@ -282,7 +295,7 @@ internal sealed partial class WindowsLegionHid : ILegionHid
         if (gamepad is not null)
         {
             _gamepad = HidDevices.OpenStream(gamepad);
-            _dinput = new LegionDInput(_gamepad.SafeFileHandle);
+            _dinput = new HidUsageReader(_gamepad.SafeFileHandle);
         }
 
         // Only controller nodes from this composite device are eligible for hiding; never hide the command/IMU channel.
@@ -312,7 +325,8 @@ internal sealed partial class WindowsLegionHid : ILegionHid
         var token = _readerCancellation!.Token;
         if (gamepad is not null)
         {
-            _gamepadReader = ReadGamepadAsync(gamepad, token);
+            _gamepadSource.Start(_gamepad!, gamepad.InputLength, DecodeGamepad, ClearGamepad, token);
+            _gamepad = null;
         }
 
         if (!Listening)
@@ -500,37 +514,23 @@ internal sealed partial class WindowsLegionHid : ILegionHid
         }
     }
 
-    private async Task ReadGamepadAsync(HidCollection collection, CancellationToken token)
+    private void DecodeGamepad(ReadOnlySpan<byte> report)
     {
-        var report = new byte[collection.InputLength];
-        try
-        {
-            while (!token.IsCancellationRequested)
-            {
-                var count = await _gamepad!.ReadAsync(report, token).ConfigureAwait(false);
-                if (count == 0)
-                {
-                    break;
-                }
-
-                if (_dinput!.TryDecode(report.AsSpan(0, count), DateTimeOffset.UtcNow, out var sample))
-                {
-                    lock (_samples)
-                    {
-                        _gamepadSample = sample;
-                    }
-                }
-            }
-        }
-        catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
-        {
-        }
-        finally
+        if (_dinput!.TryDecodeGamepad(report, DateTimeOffset.UtcNow, DInputButtons, CanonicalButtons.None,
+                out var sample))
         {
             lock (_samples)
             {
-                _gamepadSample = default;
+                _gamepadSample = sample;
             }
+        }
+    }
+
+    private void ClearGamepad()
+    {
+        lock (_samples)
+        {
+            _gamepadSample = default;
         }
     }
 

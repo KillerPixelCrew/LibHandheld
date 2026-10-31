@@ -1,5 +1,7 @@
 using System.Numerics;
 using LibHandheld.Contracts;
+using LibHandheld.Families.Asus;
+using LibHandheld.Internal.Capabilities;
 
 // SPDX-License-Identifier: MIT
 
@@ -140,19 +142,6 @@ internal readonly record struct AllyVendorAction(
 internal static class AllyModels
 {
     public const string PackageId = "rog-ally";
-
-    /// <summary>ASUS's own handheld manager, as HC 1.3.1.6's RogAllySpaceWatcher names it.</summary>
-    /// <remarks>
-    ///     ArmouryCrateKeyControl is the helper the ArmouryCrateControlInterface service starts in the user
-    ///     session; without Armoury Crate installed it answers the Armoury Crate button with a dialog that
-    ///     asks to install it (seen on an Ally after Handheld Companion's uninstall put the service back).
-    /// </remarks>
-    public static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
-    [
-        new("armoury-crate", "Armoury Crate",
-            ["ArmouryCrate", "ArmourySocketServer", "ArmouryCrateUserSessionHelper", "ArmouryCrateKeyControl"],
-            ["ArmouryCrateSEService", "AsusAppService", "ArmouryCrateControlInterface"], [])
-    ];
     public const string Manufacturer = "ASUSTeK COMPUTER INC.";
     public const ushort AsusVendorId = 0x0B05;
 
@@ -167,6 +156,19 @@ internal static class AllyModels
 
     /// <summary>F22, the Xbox models' right front button in the Device Lab run.</summary>
     public const uint VkF22 = 0x85;
+
+    /// <summary>ASUS's own handheld manager, as HC 1.3.1.6's RogAllySpaceWatcher names it.</summary>
+    /// <remarks>
+    ///     ArmouryCrateKeyControl is the helper the ArmouryCrateControlInterface service starts in the user
+    ///     session; without Armoury Crate installed it answers the Armoury Crate button with a dialog that
+    ///     asks to install it (seen on an Ally after Handheld Companion's uninstall put the service back).
+    /// </remarks>
+    public static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
+    [
+        new("armoury-crate", "Armoury Crate",
+            ["ArmouryCrate", "ArmourySocketServer", "ArmouryCrateUserSessionHelper", "ArmouryCrateKeyControl"],
+            ["ArmouryCrateSEService", "AsusAppService", "ArmouryCrateControlInterface"], [])
+    ];
 
     // HC declares the same product IDs for every Ally class (ROGAlly.cs:213, inherited by ROGAllyX,
     // XboxROGAlly and XboxROGAllyX); HHD uses 0x1ABE only for RC71L and 0x1B4C for the rest
@@ -284,6 +286,19 @@ internal static class AllyModels
         }
     ];
 
+    public static IReadOnlyList<HandheldDefinition> Definitions { get; } = All.Select(model =>
+        new HandheldDefinition(model.DefinitionId, PackageId, model.DisplayName, model.GlyphProfileId)
+        {
+            DeclaredRoles =
+            [
+                CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
+                CapabilityRole.ChargeLimit, CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanCurve,
+                CapabilityRole.Telemetry, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
+                CapabilityRole.LightingEffectSpeed, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
+                CapabilityRole.HapticSink, CapabilityRole.LightingZoneColor
+            ]
+        }).ToArray();
+
     /// <summary>Returns the exact model for an identity, or null when this package does not apply.</summary>
     /// <param name="identity">SMBIOS snapshot containing baseboard manufacturer and product.</param>
     /// <returns>The exact supported model, or null when the baseboard identity is outside this package.</returns>
@@ -355,22 +370,27 @@ internal static class AllyModels
         OemControlDescriptor[] controls = model.Layout is AllyFrontLayout.Xbox
             ?
             [
-                Oem(OemControlIds.ArmouryCrate, "Armoury Crate", OemControlPlacement.Front, false) with
+                CapabilityDescriptors.OemControl(OemControlIds.ArmouryCrate, "Armoury Crate", OemControlPlacement.Front,
+                    requiresController: false) with
                 {
                     CompanionApplication = true,
                     DefaultActionHint = OemControlDefaultActionHint.CompanionApplication
                 },
-                Oem(OemControlIds.Library, "Library", OemControlPlacement.Front, false),
-                Oem(OemControlIds.M1, "M1", OemControlPlacement.Rear, true),
-                Oem(OemControlIds.M2, "M2", OemControlPlacement.Rear, true)
+                CapabilityDescriptors.OemControl(OemControlIds.Library, "Library", OemControlPlacement.Front,
+                    requiresController: false),
+                CapabilityDescriptors.OemControl(OemControlIds.M1, "M1", OemControlPlacement.Rear),
+                CapabilityDescriptors.OemControl(OemControlIds.M2, "M2", OemControlPlacement.Rear)
             ]
             :
             [
-                Oem(OemControlIds.CommandCenter, "Command Center", OemControlPlacement.Front, false),
-                Oem(OemControlIds.ArmouryCrate, "Armoury Crate", OemControlPlacement.Front, false),
-                Oem(OemControlIds.Library, "Library", OemControlPlacement.Front, false),
-                Oem(OemControlIds.M1, "M1", OemControlPlacement.Rear, true),
-                Oem(OemControlIds.M2, "M2", OemControlPlacement.Rear, true)
+                CapabilityDescriptors.OemControl(OemControlIds.CommandCenter, "Command Center", OemControlPlacement.Front,
+                    requiresController: false),
+                CapabilityDescriptors.OemControl(OemControlIds.ArmouryCrate, "Armoury Crate", OemControlPlacement.Front,
+                    requiresController: false),
+                CapabilityDescriptors.OemControl(OemControlIds.Library, "Library", OemControlPlacement.Front,
+                    requiresController: false),
+                CapabilityDescriptors.OemControl(OemControlIds.M1, "M1", OemControlPlacement.Rear),
+                CapabilityDescriptors.OemControl(OemControlIds.M2, "M2", OemControlPlacement.Rear)
             ];
         var buttons = new[] { VendorAction(model, code: 0xA6), VendorAction(model, code: 0x38),
             VendorAction(model, code: 0x93) };
@@ -379,32 +399,6 @@ internal static class AllyModels
             ControllerButton = buttons.FirstOrDefault(button => button?.ControlId == control.ControlId)?.Button
                                ?? CanonicalButtons.None
         }).ToArray();
-    }
-
-    /// <summary>ASUS performance modes, by the value ATKACPI and HC's OEMPowerMode use.</summary>
-    /// <param name="scenario">Performance, Turbo or Silent scenario identifier.</param>
-    /// <returns>The native performance-mode byte: 0, 1 or 2 respectively.</returns>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="scenario" /> is unrecognized.</exception>
-    public static byte ScenarioValue(string scenario)
-    {
-        return scenario switch
-        {
-            Scenarios.Performance => 0,
-            Scenarios.Turbo => 1,
-            Scenarios.Silent => 2,
-            _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, null)
-        };
-    }
-
-    public static string? ScenarioName(int value)
-    {
-        return value switch
-        {
-            0 => Scenarios.Performance,
-            1 => Scenarios.Turbo,
-            2 => Scenarios.Silent,
-            _ => null
-        };
     }
 
     public static IReadOnlyList<DevicePowerPreset> PowerPresets(AllyModel model)
@@ -424,20 +418,6 @@ internal static class AllyModels
         ];
     }
 
-    private static OemControlDescriptor Oem(
-        string id,
-        string label,
-        OemControlPlacement placement,
-        bool requiresController)
-    {
-        return new OemControlDescriptor
-        {
-            ControlId = id,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
-            Placement = placement,
-            RequiresControllerAcquisition = requiresController
-        };
-    }
 }
 
 internal static class OemControlIds
@@ -447,11 +427,4 @@ internal static class OemControlIds
     public const string Library = "library";
     public const string M1 = "m1";
     public const string M2 = "m2";
-}
-
-internal static class Scenarios
-{
-    public const string Silent = "silent";
-    public const string Performance = "performance";
-    public const string Turbo = "turbo";
 }

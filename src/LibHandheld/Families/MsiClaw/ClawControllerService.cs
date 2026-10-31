@@ -26,7 +26,7 @@ internal sealed class ControllerService(
     /// </summary>
     /// <remarks>
     ///     Two motors and no trigger haptics: the rumble report
-    ///     (<see cref="ClawControllerCodec.EncodeRumble" />) carries one weak and one strong byte and
+    ///     (<see cref="ClawControllerCodec.WriteRumbleReport" />) carries one weak and one strong byte and
     ///     nothing else. WSGM's output router paces frames to the declared rate and never holds a stop
     ///     back, so this service writes every frame it is given.
     /// </remarks>
@@ -100,22 +100,9 @@ internal sealed class ControllerService(
 
         _context = context;
 
-
-        // Exact machine identity is the only gate. The MCU revision is deliberately not one: the
-        // mode switch and the hide list are not addressed writes, and gating them on the revision
-        // took the controller away from every unit MSI updated to 0230.
-        var identity = context.Identity;
-        if (!identity.ExactMachineMatch)
-        {
-            DeviceTrace.Write(
-                DeviceTraceLevel.Warn,
-                "controller",
-                "acquire refused at the identity gate: the Claw model identity no longer matches.");
-            return Set(DeviceServiceState.Passive, new CapabilityReason(
-                CapabilityReasonCode.Unsupported,
-                "Exact device identity no longer matches the Claw implementation."));
-        }
-
+        // The device definition matched at start is the only gate. The MCU revision is deliberately not
+        // one: the mode switch and the hide list are not addressed writes, and gating them on the
+        // revision took the controller away from every unit MSI updated to 0230.
         var observed = await _source.DiscoverAsync(cancellationToken).ConfigureAwait(false);
         if (observed is null)
         {
@@ -211,7 +198,7 @@ internal sealed class ControllerService(
 
         if (CurrentTopology.PhysicalDevices.Count == 0)
         {
-            // Captured before the restore, which clears _current: the whole point of this reason is
+            // Captured before the restore, which clears CurrentTopology: the whole point of this reason is
             // to say what was observed, and reading it afterwards is reading nothing.
             var detail = "No exact DirectInput physical interface identity was available for "
                          + $"handoff. Mode={CurrentTopology.Mode}, product=0x{CurrentTopology.ProductId:X4}, "
@@ -389,56 +376,50 @@ internal sealed class ControllerService(
             {
                 DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                     "the controller disappeared before its original mode could be put back.");
-                await _journal.SetStatusAsync(
-                    ServiceId,
-                    DeviceRecoveryStatus.RestoreFailed,
-                    CancellationToken.None).ConfigureAwait(false);
             }
 
             _ = Set(DeviceServiceState.Idle);
             return;
         }
 
-        DeviceRecoveryStatus? status = DeviceRecoveryStatus.RestoredVerified;
+        var restored = true;
         if (CurrentTopology.Mode != ReleaseMode && !DeviceWriteBudget.IsAvailable(deadline))
         {
             // Nothing is written and the entry is left as it is: the next start reads the mode and
             // puts it back.
             DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                 "too little time to put the original controller mode back; the next start restores it.");
-            status = null;
+            restored = false;
         }
         else if (CurrentTopology.Mode != ReleaseMode)
         {
             try
             {
-                var restored = await _mcu.SwitchModeAsync(
+                var settled = await _mcu.SwitchModeAsync(
                     ReleaseMode,
                     _original.PhysicalLocation,
                     deadline,
                     cancellationToken).ConfigureAwait(false);
-                if (restored.Mode != ReleaseMode
-                    || !HidDevices.SamePhysicalLocation(restored.PhysicalLocation, _original.PhysicalLocation))
+                if (settled.Mode != ReleaseMode
+                    || !HidDevices.SamePhysicalLocation(settled.PhysicalLocation, _original.PhysicalLocation))
                 {
                     DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
-                        $"mode switch back settled at {restored.Mode} at '{restored.PhysicalLocation}'.");
-                    status = DeviceRecoveryStatus.RestoredUnverified;
+                        $"mode switch back settled at {settled.Mode} at '{settled.PhysicalLocation}'.");
                 }
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 DeviceTrace.Write(DeviceTraceLevel.Warn, "controller",
                     $"the original controller mode could not be put back: {ex.GetType().Name}: {ex.Message}");
-                status = DeviceRecoveryStatus.RestoreFailed;
+                restored = false;
             }
         }
 
         CurrentTopology = null;
         _rearButtons = CanonicalButtons.None;
-        if (status is { } recorded)
+        if (restored)
         {
-            await _journal.SetStatusAsync(ServiceId, recorded, CancellationToken.None)
-                .ConfigureAwait(false);
+            await _journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
         }
 
         _ = Set(DeviceServiceState.Idle);
@@ -635,10 +616,6 @@ internal sealed class ControllerService(
                     CapabilityReasonCode.TransportFaulted,
                     "Controller topology vanished during acquisition rollback.");
                 Fault(reason);
-                await _journal.SetStatusAsync(
-                    ServiceId,
-                    DeviceRecoveryStatus.RestoreFailed,
-                    CancellationToken.None).ConfigureAwait(false);
                 return;
             }
 
@@ -651,10 +628,6 @@ internal sealed class ControllerService(
                 CapabilityReasonCode.TransportFaulted,
                 "Controller acquisition rollback failed.");
             Fault(reason);
-            await _journal.SetStatusAsync(
-                ServiceId,
-                DeviceRecoveryStatus.RestoreFailed,
-                CancellationToken.None).ConfigureAwait(false);
         }
     }
 

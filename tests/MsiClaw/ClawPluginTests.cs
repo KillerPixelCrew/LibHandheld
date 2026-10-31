@@ -590,7 +590,7 @@ public sealed class ClawDeviceEngineTests
                 FakeIdentityReader.CreateState()),
             CancellationToken.None);
         FakeChordSuppressor hook = new();
-        ChordSuppressorService suppressor = new(hook, oem, host);
+        ChordSuppressorService suppressor = new(hook, oem);
         _ = await suppressor.AcquireAsync(
             new DeviceCycleContext<ClawIdentityState>(
                 Deadline.After(TimeSpan.FromSeconds(10)),

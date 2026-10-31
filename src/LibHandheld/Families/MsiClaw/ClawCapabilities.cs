@@ -47,6 +47,21 @@ internal static class ClawApplied
             ? response[index]
             : throw new InvalidOperationException($"The {operation} getter returned a truncated response.");
     }
+
+    /// <summary>Writes one EC byte through <c>Set_Data</c>: a zero-filled package with the address and the value.</summary>
+    /// <param name="transport">Serialized MSI_ACPI transport.</param>
+    /// <param name="address">EC address, package byte 0.</param>
+    /// <param name="value">Value, package byte 1.</param>
+    /// <param name="cancellationToken">Cancels waiting without proving that a dispatched write stopped.</param>
+    /// <returns>Completion after invocation; the setter's response is not checked, as in HC.</returns>
+    public static ValueTask SetDataAsync(IMsiWmiTransport transport, byte address, byte value,
+        CancellationToken cancellationToken)
+    {
+        var package = new byte[ClawHardwareFacts.WmiPackageLength];
+        package[0] = address;
+        package[1] = value;
+        return transport.InvokeSetterAsync("Set_Data", package, cancellationToken);
+    }
 }
 
 internal sealed class ClawPowerCapability(
@@ -301,10 +316,7 @@ internal sealed class ClawPowerCapability(
 
     private ValueTask WriteDataAsync(byte address, int value, CancellationToken cancellationToken)
     {
-        var package = new byte[ClawHardwareFacts.WmiPackageLength];
-        package[0] = address;
-        package[1] = checked((byte)value);
-        return _transport.InvokeSetterAsync("Set_Data", package, cancellationToken);
+        return ClawApplied.SetDataAsync(_transport, address, checked((byte)value), cancellationToken);
     }
 }
 
@@ -318,7 +330,6 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
 
     /// <summary>MSI's Battery Master flag, bit 7 of 0xD7: the limit is only enforced while it is set.</summary>
     internal const byte BatteryMaster = 0x80;
-    internal const string ProtectionId = "battery.charge-protection";
 
     private readonly IMsiWmiTransport _transport = transport ?? throw new ArgumentNullException(nameof(transport));
     internal ChargeLimitState? Written { get; private set; }
@@ -345,7 +356,8 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
         {
             // HC's SetBatteryMaster(true) and SetBatteryChargeLimit together: choosing a limit enables
             // it, so bit 7 is set along with the percentage.
-            await WriteRawAsync(wanted, cancellationToken).ConfigureAwait(false);
+            await ClawApplied.SetDataAsync(_transport, ClawHardwareFacts.ChargeLimitAddress, wanted,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -397,7 +409,8 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
 
         try
         {
-            await WriteRawAsync(wanted, cancellationToken).ConfigureAwait(false);
+            await ClawApplied.SetDataAsync(_transport, ClawHardwareFacts.ChargeLimitAddress, wanted,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -423,14 +436,6 @@ internal sealed class ClawChargeLimitCapability(IMsiWmiTransport transport)
     internal static byte Encode(int percent)
     {
         return (byte)(BatteryMaster | checked((byte)percent));
-    }
-
-    private ValueTask WriteRawAsync(byte rawValue, CancellationToken cancellationToken)
-    {
-        var package = new byte[ClawHardwareFacts.WmiPackageLength];
-        package[0] = ClawHardwareFacts.ChargeLimitAddress;
-        package[1] = rawValue;
-        return _transport.InvokeSetterAsync("Set_Data", package, cancellationToken);
     }
 }
 
@@ -583,8 +588,7 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
     /// </remarks>
     /// <param name="command">Validated host command used for result identity.</param>
     /// <param name="curve">
-    ///     Exactly six nondecreasing temperature/duty points, each within 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“100
-    ///     Ãƒâ€šÃ‚Â°C/percent.
+    ///     Exactly six nondecreasing temperature/duty points, each within 0–100 °C/percent.
     /// </param>
     /// <param name="cancellationToken">Cancels reads/writes; cancellation after dispatch can leave partial effects.</param>
     /// <returns>
@@ -675,17 +679,6 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
         return true;
     }
 
-    internal static IReadOnlyList<CurvePoint> DecodeCurve(FanTable table)
-    {
-        return
-        [
-            .. Enumerable.Range(0, TemperatureOffsets.Length)
-                .Select(index => new CurvePoint(
-                    table.TemperatureBuffer[TemperatureOffsets[index]],
-                    table.DutyBuffer[DutyOffsets[index]]))
-        ];
-    }
-
     private static FanTable Encode(FanTable current, IReadOnlyList<CurvePoint> curve)
     {
         byte[] temperatures = [.. current.TemperatureBuffer];
@@ -727,10 +720,7 @@ internal sealed class ClawFanCapability(IMsiWmiTransport transport)
 
     private ValueTask WriteRawFlagAsync(byte address, byte value, CancellationToken cancellationToken)
     {
-        var package = new byte[ClawHardwareFacts.WmiPackageLength];
-        package[0] = address;
-        package[1] = value;
-        return _transport.InvokeSetterAsync("Set_Data", package, cancellationToken);
+        return ClawApplied.SetDataAsync(_transport, address, value, cancellationToken);
     }
 
     private static int DecodeRpm(byte high, byte low)
@@ -753,9 +743,6 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
     private LightingState? _envelopeState;
     private DateTimeOffset _lastPersistentWrite;
     private byte[]? _profile;
-
-    /// <summary>The MCU profile address for this cycle's controller firmware.</summary>
-    public ushort ProfileAddress => profileAddress;
 
     /// <summary>The last accepted lighting intent, never inferred from a device read.</summary>
     public LightingState? Current { get; private set; }
@@ -874,11 +861,11 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
         payload[4] = checked((byte)state.Brightness);
         for (var zone = 0; zone < 4; zone++)
         {
-            WriteColor(payload, 5 + zone * 3, state.RightRingColor);
-            WriteColor(payload, 17 + zone * 3, state.LeftRingColor);
+            CapabilityDescriptors.WriteRgb(payload.AsSpan(5 + zone * 3), state.RightRingColor);
+            CapabilityDescriptors.WriteRgb(payload.AsSpan(17 + zone * 3), state.LeftRingColor);
         }
 
-        WriteColor(payload, 29, state.ButtonsColor);
+        CapabilityDescriptors.WriteRgb(payload.AsSpan(29), state.ButtonsColor);
         return payload;
     }
 
@@ -891,13 +878,6 @@ internal sealed class ClawLightingCapability(IClawMcuTransport transport, ushort
     private static int ReadColor(byte[] payload, int offset)
     {
         return (payload[offset] << 16) | (payload[offset + 1] << 8) | payload[offset + 2];
-    }
-
-    private static void WriteColor(byte[] payload, int offset, int color)
-    {
-        payload[offset] = checked((byte)((color >> 16) & 0xFF));
-        payload[offset + 1] = checked((byte)((color >> 8) & 0xFF));
-        payload[offset + 2] = checked((byte)(color & 0xFF));
     }
 
     private static bool IsColor(int color)
@@ -913,31 +893,4 @@ internal static class CapabilityInstances
     public const string RightRing = "right-ring";
     public const string LeftRing = "left-ring";
     public const string Buttons = "buttons";
-}
-
-/// <summary>Overlay sections this plugin declares in its descriptor set.</summary>
-internal static class SectionIds
-{
-    public const string Power = DeviceSections.PowerId;
-    public const string Lighting = DeviceSections.RgbId;
-
-    /// <summary>Read-only ownership and telemetry. Nothing here is a control.</summary>
-    /// <remarks>
-    ///     Was <c>input</c>, a page of three rows that only ever reported whether the plugin held the
-    ///     pad, the gyro and the rumble sink. That is worth reading when something is wrong and worth
-    ///     nothing the rest of the time, so it is no longer a Controller page competing with the one
-    ///     that has the actual controller settings on it.
-    /// </remarks>
-    public const string Info = DeviceSections.InfoId;
-}
-
-/// <summary>Categories inside the declared overlay sections.</summary>
-internal static class CategoryIds
-{
-    public const string Limits = "limits";
-    public const string Charging = "charging";
-    public const string Control = "control";
-    public const string Readings = "readings";
-    public const string Zones = "zones";
-    public const string Ownership = "ownership";
 }

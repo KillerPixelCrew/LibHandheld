@@ -7,7 +7,7 @@ namespace LibHandheld.Contracts;
 ///     The canonical state represents the richest supported handheld without assuming a virtual target.
 ///     A target consumes only what it genuinely supports: the Steam Deck composite takes rear paddles and
 ///     native motion, Xbox 360 takes neither, and nothing is synthesized to fill the gap. Gyro is passed
-///     through where the target supports motion and simply absent where it does not â€” it is never
+///     through where the target supports motion and simply absent where it does not; it is never
 ///     converted into stick or mouse movement, which is the line between calibration and remapping.
 /// </remarks>
 [Flags]
@@ -175,7 +175,7 @@ public readonly record struct CanonicalControllerSample
     ///     The neutral sample: nothing held, every axis centred.
     /// </summary>
     /// <remarks>
-    ///     Published to the virtual target whenever forwarding stops â€” UI capture, target removal, game
+    ///     Published to the virtual target whenever forwarding stops: UI capture, target removal, game
     ///     exit, suspend, disconnect, plugin disable, or fault. Without it the last forwarded state stays
     ///     latched and the game keeps seeing a held control.
     /// </remarks>

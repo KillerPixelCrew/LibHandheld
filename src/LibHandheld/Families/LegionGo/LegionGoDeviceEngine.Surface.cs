@@ -1,5 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Families.LegionGo;
@@ -7,7 +8,6 @@ namespace LibHandheld.Families.LegionGo;
 internal sealed partial class LegionGoDeviceEngine
 {
     private const string LightingPower = "lighting.enabled";
-    private const string FanDuty = "fan.duty";
     private const string GyroSide = "motion.gyro-side";
     private const string NativeTouchpad = "controller.touchpad-native";
     private const string ControllerMode = "controller.native-mode";
@@ -19,26 +19,20 @@ internal sealed partial class LegionGoDeviceEngine
         List<CapabilityDescriptor> values =
         [
             Number(CapabilityIds.PowerSustained, "Sustained power limit", CapabilityRole.PowerSustainedLimit,
-                    model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, DeviceSections.PowerId) with
+                    model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true) with
                 {
                     PairedPowerLimitId = CapabilityIds.PowerBoost,
                     PowerPresets = Presets(model)
                 },
             Number(CapabilityIds.PowerBoost, "Boost power limit", CapabilityRole.PowerSlowLimit,
-                model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, DeviceSections.PowerId),
+                model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true),
             Choice(CapabilityIds.Scenario, "Performance mode", CapabilityRole.ScenarioMode,
-                ["quiet", "balanced", "performance", "custom"], true, true, DeviceSections.PowerId),
+                ["quiet", "balanced", "performance", "custom"], true, true),
             Choice(CapabilityIds.FanMode, "Fan mode", CapabilityRole.FanMode,
-                ["automatic", "custom", "full-speed"], false, true, DeviceSections.PowerId),
-            new()
-            {
-                CapabilityId = CapabilityIds.FanCurve, Role = CapabilityRole.FanCurve,
-                ValueKind = CapabilityValueKind.Curve, Display = CapabilityDescriptors.Label("Fan curve"),
-                // WriteFanTable consumes the ten points at 10, 20, ... 100 degrees Celsius.
-                CurveInputs = Enumerable.Range(1, 10).Select(index => index * 10).ToArray(),
-                Minimum = 0, Maximum = 100, Unit = CapabilityUnit.Percent,
-                SupportsRead = !model.EcFan, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
-            },
+                ["automatic", "custom", "full-speed"], false, true),
+            // WriteFanTable consumes the ten points at 10, 20, ... 100 degrees Celsius.
+            CapabilityDescriptors.Curve(CapabilityIds.FanCurve, CapabilityDescriptors.Label("Fan curve"),
+                Enumerable.Range(1, 10).Select(index => index * 10).ToArray(), read: !model.EcFan),
             new()
             {
                 CapabilityId = CapabilityIds.ChargeLimit, Role = CapabilityRole.ChargeProtectionMode,
@@ -46,9 +40,9 @@ internal sealed partial class LegionGoDeviceEngine
                 SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent
             },
             Number(CapabilityIds.FanRpm, "Fan speed", CapabilityRole.FanMeasuredRpm, 0, 20000,
-                CapabilityUnit.Rpm, false, DeviceSections.InfoId),
+                CapabilityUnit.Rpm, false),
             Number(CapabilityIds.Temperature, "CPU temperature", CapabilityRole.Telemetry, 0, 150,
-                CapabilityUnit.Celsius, false, DeviceSections.InfoId),
+                CapabilityUnit.Celsius, false),
             new()
             {
                 CapabilityId = LightingPower, Role = CapabilityRole.LightingPower,
@@ -57,33 +51,27 @@ internal sealed partial class LegionGoDeviceEngine
                 Persistence = CapabilityPersistence.DevicePersistent
             },
             Number(CapabilityIds.LightingBrightness, "Brightness", CapabilityRole.LightingBrightness, 0, 100,
-                    CapabilityUnit.Percent, true, DeviceSections.RgbId) with
+                    CapabilityUnit.Percent, true) with
                 {
                     SupportsRead = false, Persistence = CapabilityPersistence.DevicePersistent
                 },
             Number(CapabilityIds.LightingSpeed, "Effect speed", CapabilityRole.LightingEffectSpeed, 0, 100,
-                    CapabilityUnit.Percent, true, DeviceSections.RgbId) with
+                    CapabilityUnit.Percent, true) with
                 {
                     SupportsRead = false, Persistence = CapabilityPersistence.DevicePersistent
                 },
             Choice(CapabilityIds.LightingEffect, "Lighting effect", CapabilityRole.LightingEffect,
-                    ["solid", "breathing", "rainbow", "wheel"], false, true, DeviceSections.RgbId) with
+                    ["solid", "breathing", "rainbow", "wheel"], false, true) with
                 {
                     Persistence = CapabilityPersistence.DevicePersistent
                 },
             Color("left", model.Slim ? "Stick rings" : "Left stick ring"),
             Choice(CapabilityIds.Controller, "Physical controller", CapabilityRole.ControllerSource,
-                SourceOwnership.Choices,
-                true, false, DeviceSections.InfoId),
+                SourceOwnership.Choices, true, false),
             Choice(CapabilityIds.Motion, "Motion sensors", CapabilityRole.MotionSource, SourceOwnership.Choices,
-                true, false, DeviceSections.InfoId),
-            new()
-            {
-                CapabilityId = CapabilityIds.Rumble, Role = CapabilityRole.HapticSink,
-                ValueKind = CapabilityValueKind.None,
-                Display = CapabilityDescriptors.Label("Rumble"), SupportsAction = true,
-                Persistence = CapabilityPersistence.Volatile
-            },
+                true, false),
+            CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
+                CapabilityDescriptors.Label("Rumble")),
             new()
             {
                 CapabilityId = NativeTouchpad, Role = CapabilityRole.GenericToggle,
@@ -91,34 +79,27 @@ internal sealed partial class LegionGoDeviceEngine
                 Display = CapabilityDescriptors.Label("Native mouse touchpad"), SupportsWrite = true,
                 Persistence = CapabilityPersistence.Volatile
             },
-            new()
-            {
-                CapabilityId = ControllerReset, Role = CapabilityRole.GenericAction,
-                ValueKind = CapabilityValueKind.None,
-                Display = CapabilityDescriptors.Label("Reset controller mappings"), SupportsAction = true,
-                Persistence = CapabilityPersistence.DevicePersistent
-            }
+            CapabilityDescriptors.Action(ControllerReset, CapabilityRole.GenericAction,
+                CapabilityDescriptors.Label("Reset controller mappings"), CapabilityPersistence.DevicePersistent)
         ];
         if (model.EcFan)
         {
             values.RemoveAll(descriptor => descriptor.Role == CapabilityRole.FanCurve);
         }
 
+        values.Add(Number(CapabilityIds.FanDuty, "Fan duty", CapabilityRole.FanDuty, 0, 100, CapabilityUnit.Percent,
+            true) with
         {
-            values.Add(Number(FanDuty, "Fan duty", CapabilityRole.FanDuty, 0, 100, CapabilityUnit.Percent, true,
-                    DeviceSections.PowerId) with
-                {
-                    SupportsRead = false
-                });
-        }
+            SupportsRead = false
+        });
 
         if (!model.Slim)
         {
             values.Add(Color("right", "Right stick ring"));
             values.Add(Choice(GyroSide, "Motion source controller", CapabilityRole.GenericChoice,
-                ["left", "right"], false, true, DeviceSections.ControllerId));
+                ["left", "right"], false, true));
             values.Add(Choice(ControllerMode, "Native controller mode", CapabilityRole.GenericChoice,
-                ["xinput", "dinput"], false, true, DeviceSections.ControllerId));
+                ["xinput", "dinput"], false, true));
         }
 
         _surface = new CapabilityDescriptorSet
@@ -145,7 +126,7 @@ internal sealed partial class LegionGoDeviceEngine
 
     private async ValueTask PublishSurfaceAsync(CancellationToken token)
     {
-        await _host!.PublishDescriptorsAsync(_surface!, token).ConfigureAwait(false);
+        await _publications.PublishDescriptorsAsync(_surface!, token).ConfigureAwait(false);
         var names = _model!.Slim
             ? new[] { "Legion R", "Legion L", "Y1", "Y2" }
             :
@@ -153,7 +134,7 @@ internal sealed partial class LegionGoDeviceEngine
                 "Legion R", "Legion L", "Y1", "Y2", "M3", "Y3", "M1", "M2", "Page", "Desktop", "Wheel click",
                 "Wheel up", "Wheel down", "Touchpad secondary click"
             ];
-        await _host.PublishOemControlsAsync(names.Select((name, index) => new OemControlDescriptor
+        await _publications.PublishOemControlsAsync(names.Select((name, index) => new OemControlDescriptor
         {
             ControlId = LegionControls.Ids[index], Display = CapabilityDescriptors.Label(name),
             Placement = index < 2 || index >= 8 ? OemControlPlacement.Front : OemControlPlacement.Rear,
@@ -187,31 +168,27 @@ internal sealed partial class LegionGoDeviceEngine
 
     private async ValueTask PublishStatesAsync(CancellationToken token)
     {
-        if (_surface is null || _host is null)
+        if (_surface is null)
         {
             return;
         }
 
         foreach (var descriptor in _surface.Descriptors)
         {
-            var key = (descriptor.CapabilityId, descriptor.InstanceId);
-            var available = descriptor.Role is CapabilityRole.LightingBrightness or CapabilityRole.LightingEffect
-                                or CapabilityRole.LightingEffectSpeed or CapabilityRole.LightingZoneColor
-                                or CapabilityRole.LightingPower ||
-                            descriptor.CapabilityId is NativeTouchpad or GyroSide or ControllerMode or ControllerReset
-                ? _hid?.Connected == true
-                : _wmi?.FeaturesAvailable == true;
+            var available = UsesHid(descriptor) ? _hid?.Connected == true : _wmi?.FeaturesAvailable == true;
             if (descriptor.CapabilityId == CapabilityIds.Scenario)
             {
                 available = _wmi?.ModesAvailable == true;
             }
 
-            if (!_model!.EcFan && descriptor.CapabilityId is CapabilityIds.FanCurve or CapabilityIds.FanMode or FanDuty)
+            if (!_model!.EcFan
+                && descriptor.CapabilityId is CapabilityIds.FanCurve or CapabilityIds.FanMode or CapabilityIds.FanDuty)
             {
                 available &= _wmi?.FansAvailable == true;
             }
 
-            if (_model!.EcFan && descriptor.CapabilityId is FanDuty or CapabilityIds.FanCurve or CapabilityIds.FanMode)
+            if (_model!.EcFan
+                && descriptor.CapabilityId is CapabilityIds.FanDuty or CapabilityIds.FanCurve or CapabilityIds.FanMode)
             {
                 available = _ec is not null && !_ecFaulted;
             }
@@ -221,9 +198,9 @@ internal sealed partial class LegionGoDeviceEngine
                 available = true;
                 var ownership =
                     CapabilityValue.Choice(_hid?.Reading == true ? SourceOwnership.Managed : SourceOwnership.Device);
-                if (_observed.Value(key.CapabilityId) != ownership)
+                if (_observed.Value(descriptor.CapabilityId) != ownership)
                 {
-                    _observed.Read(key.CapabilityId, ownership);
+                    _observed.Read(descriptor.CapabilityId, ownership);
                 }
             }
 
@@ -232,21 +209,22 @@ internal sealed partial class LegionGoDeviceEngine
                 available = _hid?.Reading == true && _hid.RumbleAvailable;
             }
 
-            var observed = _observed.Value(key.CapabilityId, key.InstanceId);
-            await _host.PublishCapabilityStateAsync(new CapabilityState
-            {
-                CapabilityId = key.CapabilityId, InstanceId = key.InstanceId, Available = available && !_quiescing,
-                ObservedValue = observed,
-                Quality = observed is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                ObservedAt = _observed.Time(key.CapabilityId, key.InstanceId),
-
-
-                Reason = available
+            await _publications.PublishCapabilityStateAsync(ProviderControls.Observed(descriptor, _observed,
+                available && !_quiescing,
+                available
                     ? null
                     : new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
-                        "The native Lenovo transport for this control is unavailable.")
-            }, token).ConfigureAwait(false);
+                        "The native Lenovo transport for this control is unavailable.")), token).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Lighting and native controller controls use the HID command collection; the rest use WMI or the EC.</summary>
+    private static bool UsesHid(CapabilityDescriptor descriptor)
+    {
+        return descriptor.Role is CapabilityRole.LightingBrightness or CapabilityRole.LightingEffect
+                   or CapabilityRole.LightingEffectSpeed or CapabilityRole.LightingZoneColor
+                   or CapabilityRole.LightingPower ||
+               descriptor.CapabilityId is NativeTouchpad or GyroSide or ControllerMode or ControllerReset;
     }
 
     private void Observe(string id, int? value)
@@ -274,7 +252,7 @@ internal sealed partial class LegionGoDeviceEngine
 
 
     private static CapabilityDescriptor Number(string id, string label, CapabilityRole role, int minimum, int maximum,
-        CapabilityUnit unit, bool writable, string section)
+        CapabilityUnit unit, bool writable)
     {
         return CapabilityDescriptors.Integer(id, role, CapabilityDescriptors.Label(label), minimum, maximum, unit,
             true, writable);
@@ -282,7 +260,7 @@ internal sealed partial class LegionGoDeviceEngine
 
     private static CapabilityDescriptor Choice(string id, string label, CapabilityRole role,
         IReadOnlyList<string> choices,
-        bool read, bool write, string section)
+        bool read, bool write)
     {
         return CapabilityDescriptors.Choice(id, role, CapabilityDescriptors.Label(label),
             CapabilityDescriptors.Choices(choices), read, write);

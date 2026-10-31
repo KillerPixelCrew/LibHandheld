@@ -19,8 +19,7 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
         ["patrol", "breathing", "factory", "solid", "off", "rainbow", "demo", "ambilight"];
 
     private readonly DeviceRecoveryJournal _journal = context.Journal;
-    private readonly Dictionary<(string Id, string? Instance), CapabilityValue> _observed = [];
-    private readonly Dictionary<(string Id, string? Instance), DateTimeOffset> _observedAt = [];
+    private readonly ObservedValues _observed = new();
     private int _effect = 3;
     private int _left;
     private IPawnIoModule? _module;
@@ -53,19 +52,12 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
         }
     ]);
 
-    internal override IReadOnlyList<CapabilityState> States => Descriptors.Select(descriptor => new CapabilityState
-    {
-        CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
-        Available = State == DeviceServiceState.Owned && (descriptor.InstanceId != "right" || _effect == 7),
-        Reason = descriptor.InstanceId == "right" && _effect != 7
-            ? Missing("The right endpoint colour requires Ambilight.")
-            : Reason,
-        ObservedValue = _observed.GetValueOrDefault((descriptor.CapabilityId, descriptor.InstanceId)),
-        Quality = _observed.ContainsKey((descriptor.CapabilityId, descriptor.InstanceId))
-            ? HardwareStateQuality.Observed
-            : HardwareStateQuality.Unknown,
-        ObservedAt = _observedAt.TryGetValue((descriptor.CapabilityId, descriptor.InstanceId), out var at) ? at : null
-    }).ToArray();
+    internal override IReadOnlyList<CapabilityState> States => Descriptors.Select(descriptor =>
+        ProviderControls.Observed(descriptor, _observed,
+            State == DeviceServiceState.Owned && (descriptor.InstanceId != "right" || _effect == 7),
+            descriptor.InstanceId == "right" && _effect != 7
+                ? Missing("The right endpoint colour requires Ambilight.")
+                : Reason)).ToArray();
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
@@ -264,54 +256,42 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
 
     private async ValueTask RestoreAsync(CancellationToken token)
     {
-        if (_module is null || _journal.PendingOriginalFor<SteamMachineOriginal>(ServiceId) is not { } original)
+        if (_module is null || _journal.OriginalStateFor<SteamMachineOriginal>(ServiceId) is not { } original)
         {
             return;
         }
 
-        try
+        HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
         {
-            HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
+            for (var led = 0; led < 17; led++)
             {
-                for (var led = 0; led < 17; led++)
+                if (original.Colors[led] is { } color)
                 {
-                    if (original.Colors[led] is { } color)
-                    {
-                        WriteColor(led, color);
-                    }
+                    WriteColor(led, color);
                 }
-
-                if (original.Brightness is { } brightness)
-                {
-                    _module.Execute("ioctl_set_brightness_scale", [brightness], 0);
-                }
-
-                if (original.Effect is { } effect)
-                {
-                    _module.Execute("ioctl_set_effect", [effect], 0);
-                }
-
-                if (original.Enabled is { } enabled)
-                {
-                    _module.Execute("ioctl_set_enabled", [enabled], 0);
-                }
-
-                return true;
-            });
-            await _journal.SetStatusAsync(ServiceId,
-                    DeviceRecoveryStatus.RestoredUnverified, token)
-                .ConfigureAwait(false);
-            if (_journal.EntryFor<SteamMachineOriginal>("fremont-init") is not null)
-            {
-                await _journal.SetStatusAsync("fremont-init", DeviceRecoveryStatus.RestoredUnverified, token)
-                    .ConfigureAwait(false);
             }
-        }
-        catch
+
+            if (original.Brightness is { } brightness)
+            {
+                _module.Execute("ioctl_set_brightness_scale", [brightness], 0);
+            }
+
+            if (original.Effect is { } effect)
+            {
+                _module.Execute("ioctl_set_effect", [effect], 0);
+            }
+
+            if (original.Enabled is { } enabled)
+            {
+                _module.Execute("ioctl_set_enabled", [enabled], 0);
+            }
+
+            return true;
+        });
+        await _journal.MarkRestoredAsync(ServiceId, token).ConfigureAwait(false);
+        if (_journal.EntryFor<SteamMachineOriginal>("fremont-init") is not null)
         {
-            await _journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                .ConfigureAwait(false);
-            throw;
+            await _journal.MarkRestoredAsync("fremont-init", token).ConfigureAwait(false);
         }
     }
 
@@ -334,7 +314,6 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
             _module?.Dispose();
             _module = null;
             _observed.Clear();
-            _observedAt.Clear();
         }
 
         return Set(_journal.Entries<SteamMachineOriginal>().Count > 0
@@ -345,19 +324,13 @@ internal sealed class SteamMachineLighting(ProfiledFeatureContext context, Func<
 
     private void Observe(string id, string? instance, CapabilityValue value)
     {
-        _observed[(id, instance)] = value;
-        _observedAt[(id, instance)] = DateTimeOffset.UtcNow;
+        _observed.Written(id, value, instance);
     }
 
     private static CapabilityDescriptor Color(string instance, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = ColorId, InstanceId = instance, Role = CapabilityRole.LightingZoneColor,
-            ValueKind = CapabilityValueKind.Color,
-            Display = CapabilityDescriptors.Label(label), SupportsRead = true, SupportsWrite = true,
-            Persistence = CapabilityPersistence.Volatile
-        };
+        return CapabilityDescriptors.Color(ColorId, instance, CapabilityDescriptors.Label(label), read: true,
+            CapabilityPersistence.Volatile);
     }
 }
 

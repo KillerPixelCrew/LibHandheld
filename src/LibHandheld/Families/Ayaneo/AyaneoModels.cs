@@ -1,6 +1,5 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
@@ -121,9 +120,6 @@ internal static class AyaneoModels
             manufacturers: ["MYSTEN LABS, INC."], chords: Modern(true))
     ]);
 
-    internal static IReadOnlyList<HandheldDefinition> Definitions { get; } =
-        Array.AsReadOnly(All.Select(model => model.Profile.DeclaredDefinition).ToArray());
-
     internal static string? Match(DeviceIdentitySnapshot identity)
     {
         string? selected = null;
@@ -143,11 +139,6 @@ internal static class AyaneoModels
         }
 
         return selected;
-    }
-
-    internal static NativeEngine CreateEngine(HandheldDefinition definition)
-    {
-        return new ProfiledDeviceEngine(All.Single(model => model.Profile.Definition.Id == definition.Id).Profile);
     }
 
     private static int PresetTarget(string id, DevicePowerPreset preset)
@@ -187,14 +178,9 @@ internal static class AyaneoModels
                 new DevicePowerPreset("battery", "Battery", 8, 8, DevicePowerMode.BetterBattery),
                 new DevicePowerPreset("balanced", "Balanced", 15, 15, DevicePowerMode.Balanced),
                 new DevicePowerPreset("performance", "Performance", 28, 28, DevicePowerMode.BestPerformance)
-            }.Select(preset => preset with
-            {
-                SustainedWatts = Math.Clamp(PresetTarget(id, preset), minimum, maximum),
-                SlowWatts = Math.Clamp(PresetTarget(id, preset), minimum, maximum),
-                FastWatts = cpu == CpuPowerKind.Amd
-                    ? Math.Clamp(PresetTarget(id, preset), minimum, maximum)
-                    : null
-            }).ToArray(),
+            }.Select(preset => ProfiledDeviceModel.ClampToModel(
+                preset with { SustainedWatts = PresetTarget(id, preset), SlowWatts = PresetTarget(id, preset) },
+                minimum, maximum, cpu)).ToArray(),
             Fan = protocol == AyaneoEcProtocol.None
                 ? null
                 : fan ?? (protocol == AyaneoEcProtocol.CEii

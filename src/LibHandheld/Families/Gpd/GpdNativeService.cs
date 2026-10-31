@@ -13,19 +13,12 @@ internal sealed class GpdNativeService()
     private readonly ObservedValues _observed = new();
     private GpdControlsProtocol? _protocol;
     private GpdControlsSnapshot? _snapshot;
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _snapshot is null ? [] : Describe(_snapshot);
+    private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors;
 
-    internal override IReadOnlyList<CapabilityState> States => _snapshot is null
-        ? []
-        : Descriptors.Select(descriptor => new CapabilityState
-        {
-            CapabilityId = descriptor.CapabilityId, Available = State == DeviceServiceState.Owned,
-            ObservedValue = _observed.Value(descriptor.CapabilityId),
-            Quality = _observed.Value(descriptor.CapabilityId) is null
-                ? HardwareStateQuality.Unknown
-                : HardwareStateQuality.Observed,
-            ObservedAt = _observed.Time(descriptor.CapabilityId)
-        }).ToArray();
+    internal override IReadOnlyList<CapabilityState> States => _descriptors.Select(descriptor =>
+        ProviderControls.State(descriptor.CapabilityId, State == DeviceServiceState.Owned,
+            _observed.Value(descriptor.CapabilityId), _observed.Time(descriptor.CapabilityId))).ToArray();
 
     public override bool Suspendable => true;
 
@@ -42,6 +35,7 @@ internal sealed class GpdNativeService()
         try
         {
             _snapshot = _protocol.Read(token);
+            _descriptors = Describe(_snapshot);
         }
         catch
         {
@@ -84,6 +78,7 @@ internal sealed class GpdNativeService()
             dispatched = true;
             _protocol.Write(snapshot, next, token);
             _snapshot = snapshot with { Configuration = next };
+            _descriptors = Describe(_snapshot);
             _observed.Written(command.CapabilityId, command.RequestedValue!);
             return ValueTask.FromResult(CommandResults.Applied(command));
         }
@@ -116,6 +111,7 @@ internal sealed class GpdNativeService()
         _protocol?.Dispose();
         _protocol = null;
         _snapshot = null;
+        _descriptors = [];
         _observed.Clear();
     }
 
@@ -123,7 +119,8 @@ internal sealed class GpdNativeService()
     {
         List<CapabilityDescriptor> result =
         [
-            Choice("haptic.strength", CapabilityRole.GenericChoice, "Rumble strength", ["off", "medium", "high"]),
+            Choice(CapabilityIds.HapticStrength, CapabilityRole.GenericChoice, "Rumble strength",
+                ["off", "medium", "high"]),
             Range("controller.left-deadzone", "Left stick deadzone"),
             Range("controller.right-deadzone", "Right stick deadzone"),
             Range("controller.left-boundary", "Left stick boundary"),
@@ -133,13 +130,8 @@ internal sealed class GpdNativeService()
         {
             result.Add(Choice(CapabilityIds.LightingEffect, CapabilityRole.LightingEffect, "Lighting effect",
                 ["off", "solid", "breathing", "gradient"]));
-            result.Add(new CapabilityDescriptor
-            {
-                CapabilityId = CapabilityIds.LightingColor, Role = CapabilityRole.LightingZoneColor,
-                ValueKind = CapabilityValueKind.Color, Display = CapabilityDescriptors.Label("Lighting color"),
-                SupportsWrite = true,
-                Persistence = CapabilityPersistence.DevicePersistent
-            });
+            result.Add(CapabilityDescriptors.Color(CapabilityIds.LightingColor, instance: null,
+                CapabilityDescriptors.Label("Lighting color"), read: false, CapabilityPersistence.DevicePersistent));
         }
 
         return Array.AsReadOnly(result.ToArray());
@@ -150,7 +142,7 @@ internal sealed class GpdNativeService()
         var value = command.RequestedValue!;
         switch (command.CapabilityId)
         {
-            case "haptic.strength":
+            case CapabilityIds.HapticStrength:
                 var strength = (byte)(value.ChoiceValue switch
                 {
                     "off" => 0, "medium" => 1, "high" => 2,
@@ -181,11 +173,7 @@ internal sealed class GpdNativeService()
                     "gradient" => v2 ? 0x82 : 0x21, _ => throw new ArgumentOutOfRangeException(nameof(command))
                 }); break;
             case CapabilityIds.LightingColor:
-                var offset = v2 ? 946 : 69;
-                var color = value.ColorValue!.Value;
-                config[offset] = (byte)(color >> 16);
-                config[offset + 1] = (byte)(color >> 8);
-                config[offset + 2] = (byte)color;
+                CapabilityDescriptors.WriteRgb(config.AsSpan(v2 ? 946 : 69), value.ColorValue!.Value);
                 break;
             default: throw new ArgumentException("Unknown GPD configuration field.", nameof(command));
         }
@@ -194,23 +182,14 @@ internal sealed class GpdNativeService()
 
     private static CapabilityDescriptor Choice(string id, CapabilityRole role, string label, string[] choices)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Choice,
-            Display = CapabilityDescriptors.Label(label),
-            SupportsWrite = true, Persistence = CapabilityPersistence.DevicePersistent,
-            Choices = CapabilityDescriptors.Choices(choices)
-        };
+        return CapabilityDescriptors.Choice(id, role, CapabilityDescriptors.Label(label),
+            CapabilityDescriptors.Choices(choices), read: false, write: true, CapabilityPersistence.DevicePersistent);
     }
 
     private static CapabilityDescriptor Range(string id, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = CapabilityRole.GenericRange, ValueKind = CapabilityValueKind.Integer,
-            Display = CapabilityDescriptors.Label(label),
-            SupportsWrite = true, Minimum = -10, Maximum = 10, Step = 1,
-            Persistence = CapabilityPersistence.DevicePersistent
-        };
+        return CapabilityDescriptors.Integer(id, CapabilityRole.GenericRange, CapabilityDescriptors.Label(label),
+            minimum: -10, maximum: 10, CapabilityUnit.None, read: false, write: true,
+            CapabilityPersistence.DevicePersistent);
     }
 }

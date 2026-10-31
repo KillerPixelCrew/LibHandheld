@@ -12,7 +12,7 @@ public sealed class OneXPlayerTests
     public void EveryConcreteModelHasAnUnambiguousSelector()
     {
         Assert.Equal(25, OneXPlayerModels.All.Count);
-        Assert.Equal(25, OneXPlayerModels.Definitions.Select(item => item.Id).Distinct().Count());
+        Assert.Equal(25, OneXPlayerModels.All.Select(item => item.Definition.Id).Distinct().Count());
         foreach (var model in OneXPlayerModels.All)
         foreach (var product in model.Products)
         {

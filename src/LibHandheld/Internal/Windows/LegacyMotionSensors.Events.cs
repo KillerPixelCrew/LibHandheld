@@ -244,21 +244,6 @@ internal sealed partial class LegacyMotionSensors
         DeviceTrace.Warn("motion", $"IMU event report could not be read: {error}");
     }
 
-    private void ReportEventFailure(string? error)
-    {
-        lock (_gate)
-        {
-            if (_eventFailureReported)
-            {
-                return;
-            }
-
-            _eventFailureReported = true;
-        }
-
-        DeviceTrace.Warn("motion", $"Physical IMU event report could not be read: {error}");
-    }
-
     [ComVisible(true)]
     private sealed class SensorEventSink(
         LegacyMotionSensors owner,

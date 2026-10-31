@@ -1,6 +1,6 @@
 using LibHandheld.Contracts;
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Runtime;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
 
@@ -163,9 +163,6 @@ internal static class OneXPlayerModels
         Aok("aokzoe-a2", "AOKZOE A2 Pro", "AOKZOEA2", "AOKZOE A2 Pro", 184)
     ]);
 
-    internal static IReadOnlyList<HandheldDefinition> Definitions { get; } =
-        Array.AsReadOnly(All.Select(model => model.DeclaredDefinition).ToArray());
-
     private static KeyboardOemChord[] FrontChords =>
     [
         new("turbo", "Turbo", [0xA2, 0x5B, 0xA4], CanonicalButtons.QuickAccess),
@@ -183,15 +180,12 @@ internal static class OneXPlayerModels
 
     private static OemControlDescriptor[] NativeControls =>
     [
-        Oem("turbo", "Turbo", OemControlPlacement.Front), Oem("keyboard", "Keyboard", OemControlPlacement.Front),
-        Oem("home", "Home", OemControlPlacement.Front), Oem("l4", "M1", OemControlPlacement.Rear),
-        Oem("r4", "M2", OemControlPlacement.Rear)
+        CapabilityDescriptors.OemControl("turbo", "Turbo", OemControlPlacement.Front),
+        CapabilityDescriptors.OemControl("keyboard", "Keyboard", OemControlPlacement.Front),
+        CapabilityDescriptors.OemControl("home", "Home", OemControlPlacement.Front),
+        CapabilityDescriptors.OemControl("l4", "M1", OemControlPlacement.Rear),
+        CapabilityDescriptors.OemControl("r4", "M2", OemControlPlacement.Rear)
     ];
-
-    internal static IReadOnlyList<HandheldDefinition> GetDefinitions()
-    {
-        return Definitions;
-    }
 
     internal static ProfiledDeviceModel? Match(DeviceIdentitySnapshot identity)
     {
@@ -213,11 +207,6 @@ internal static class OneXPlayerModels
         }
 
         return model.Matches(identity);
-    }
-
-    internal static NativeEngine CreateEngine(HandheldDefinition definition)
-    {
-        return new ProfiledDeviceEngine(All.Single(model => model.Definition.Id == definition.Id));
     }
 
     private static ProfiledDeviceModel Aok(string id, string name, string source, string product, byte maximum)
@@ -300,14 +289,7 @@ internal static class OneXPlayerModels
             ]);
         }
 
-        return presets.Select(preset => preset with
-        {
-            SustainedWatts = Math.Clamp(preset.SustainedWatts, minimum, maximum),
-            SlowWatts = Math.Clamp(preset.SlowWatts, minimum, maximum),
-            FastWatts = cpu == CpuPowerKind.Amd
-                ? Math.Clamp(preset.FastWatts ?? preset.SlowWatts, minimum, maximum)
-                : null
-        }).ToArray();
+        return presets.Select(preset => ProfiledDeviceModel.ClampToModel(preset, minimum, maximum, cpu)).ToArray();
     }
 
     private static IReadOnlyList<string> HhdProducts(string source)
@@ -372,15 +354,6 @@ internal static class OneXPlayerModels
         }
 
         return FrontChords;
-    }
-
-    private static OemControlDescriptor Oem(string id, string label, OemControlPlacement placement)
-    {
-        return new OemControlDescriptor
-        {
-            ControlId = id, Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
-            Placement = placement, RequiresControllerAcquisition = true
-        };
     }
 }
 

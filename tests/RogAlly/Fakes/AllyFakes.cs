@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using LibHandheld.Families.Asus;
 
 // SPDX-License-Identifier: MIT
 
@@ -9,8 +10,8 @@ internal sealed class FakeAsusAcpi : IAsusAcpi
 {
     private readonly Dictionary<AsusAcpiId, byte[]> _curves = new()
     {
-        [AsusAcpiId.CpuFanCurve] = [.. AllyFanCapability.DefaultCpuCurve],
-        [AsusAcpiId.GpuFanCurve] = [.. AllyFanCapability.DefaultGpuCurve]
+        [AsusAcpiId.CpuFanCurve] = [.. AsusFanCurve.DefaultCpuCurve],
+        [AsusAcpiId.GpuFanCurve] = [.. AsusFanCurve.DefaultGpuCurve]
     };
 
     private readonly Dictionary<AsusAcpiId, int> _scalars = new()
@@ -136,30 +137,6 @@ internal sealed class FakeAsusAcpi : IAsusAcpi
     public void SetCurve(AsusAcpiId id, byte[] curve)
     {
         _curves[id] = curve;
-    }
-}
-
-internal sealed class FakeIdentityReader(string product, string manufacturer = AllyModels.Manufacturer)
-    : IAllyIdentityReader
-{
-    public string Product { get; set; } = product;
-    public int Reads { get; private set; }
-
-    public ValueTask<AllyIdentityState> ReadAsync(CancellationToken cancellationToken)
-    {
-        Reads++;
-        var snapshot = new DeviceIdentitySnapshot
-        {
-            BaseboardManufacturer = manufacturer,
-            BaseboardProduct = Product,
-            BiosVersion = "RC72LA.312"
-        };
-        return ValueTask.FromResult(new AllyIdentityState
-        {
-            Snapshot = snapshot,
-            Model = AllyModels.Match(snapshot),
-            OnAcPower = true
-        });
     }
 }
 
@@ -444,7 +421,7 @@ internal sealed class FakeKeyboardSource : IAllyKeyboardSource
 }
 
 /// <summary>One set of fakes wired into a plugin.</summary>
-internal sealed class AllyFakeHardware(string product = "RC72LA")
+internal sealed class AllyFakeHardware
 {
     /// <summary>Skips HC's and HHD's write spacing so the tests do not sleep through it.</summary>
     public static readonly Func<TimeSpan, CancellationToken, Task> NoDelay = static (_, _) => Task.CompletedTask;
@@ -454,8 +431,6 @@ internal sealed class AllyFakeHardware(string product = "RC72LA")
     public FakeAuraHid Aura { get; } = new();
 
     public FakeControllerSource Controller { get; } = new();
-
-    public FakeIdentityReader Identity { get; } = new(product);
 
     public FakeKeyboardSource Keyboard { get; } = new();
 
@@ -468,7 +443,6 @@ internal sealed class AllyFakeHardware(string product = "RC72LA")
     public ServiceEngineFixture CreatePlugin()
     {
         return new ServiceEngineFixture(context => Provider = new AllyDeviceEngine(context, new AllyHardwareServices(
-            Identity,
             Acpi,
             _ => Vendor,
             _ => Aura,

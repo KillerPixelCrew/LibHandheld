@@ -75,15 +75,6 @@ public sealed class ClawModelsTests
         Assert.Equal(address, ClawModels.LightingProfileAddress(revision));
     }
 
-    [Theory]
-    [InlineData("1T52EMS1.1091204202509:10:47", "1T52EMS1.109")]
-    [InlineData("1T52EMS1.109", "1T52EMS1.109")]
-    [InlineData(null, null)]
-    public void EcVersionDropsTheAppendedBuildStamp(string? field, string? version)
-    {
-        Assert.Equal(version, WindowsClawIdentityReader.EcFirmwareVersion(field));
-    }
-
     [Fact]
     public void ClawA1MFlipsTheAccelerometerLikeHcsDeviceJson()
     {

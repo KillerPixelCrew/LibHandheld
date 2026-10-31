@@ -93,11 +93,10 @@ internal sealed class AyaneoNativeService(
         {
             await _journal.ReconcileAsync<AyaneoRecoveryState>("controller-power", _firmware,
                 (original, ct) => RestorePowerAsync(original.Owner, ct), token).ConfigureAwait(false);
-        }
-
-        if (model.ModularController && _controllerEnabled)
-        {
-            await AcquireControllerPowerAsync(token).ConfigureAwait(false);
+            if (_controllerEnabled)
+            {
+                await AcquireControllerPowerAsync(token).ConfigureAwait(false);
+            }
         }
 
         await RefreshAsync(token).ConfigureAwait(false);
@@ -173,7 +172,8 @@ internal sealed class AyaneoNativeService(
     {
         if (token.IsCancellationRequested)
         {
-            return Result(command, CommandOutcome.Rejected, "The native command was cancelled before dispatch.");
+            return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                "The native command was cancelled before dispatch.");
         }
 
         try
@@ -199,12 +199,7 @@ internal sealed class AyaneoNativeService(
             }
 
             PublishStates();
-            return new CapabilityCommandResult
-            {
-                CommandId = command.CommandId, Outcome = CommandOutcome.Indeterminate,
-                CompletedAt = DateTimeOffset.UtcNow,
-                Reason = new CapabilityReason(CapabilityReasonCode.TransportFaulted, exception.Message)
-            };
+            return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted, exception.Message);
         }
     }
 
@@ -213,7 +208,8 @@ internal sealed class AyaneoNativeService(
     {
         if (_ec is null || State != DeviceServiceState.Owned)
         {
-            return Result(command, CommandOutcome.Rejected, "AYANEO EC ownership is not active.");
+            return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                "AYANEO EC ownership is not active.");
         }
 
         token.ThrowIfCancellationRequested();
@@ -261,7 +257,7 @@ internal sealed class AyaneoNativeService(
             case MappingId:
                 if (!_controllerEnabled || !_superJoy.Open())
                 {
-                    return Result(command, CommandOutcome.Rejected,
+                    return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                         "Controller management or the modular HID interface is unavailable.");
                 }
 
@@ -270,7 +266,8 @@ internal sealed class AyaneoNativeService(
             case VibrationId:
                 if (!_controllerEnabled)
                 {
-                    return Result(command, CommandOutcome.Rejected, "Controller management is disabled.");
+                    return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                        "Controller management is disabled.");
                 }
 
                 _vibration = command.RequestedValue!.ChoiceValue switch
@@ -283,14 +280,15 @@ internal sealed class AyaneoNativeService(
             case EjectId:
                 if (!_controllerEnabled || !_superJoy.Open())
                 {
-                    return Result(command, CommandOutcome.Rejected,
+                    return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                         "Controller management or the modular HID interface is unavailable.");
                 }
 
                 await EjectAsync(command.InstanceId!, token).ConfigureAwait(false);
                 break;
             default:
-                return Result(command, CommandOutcome.Rejected, "The native capability is not declared by this model.");
+                return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                    "The native capability is not declared by this model.");
         }
 
         if (command.RequestedValue is { } value)
@@ -299,7 +297,7 @@ internal sealed class AyaneoNativeService(
         }
 
         PublishStates();
-        return Result(command, CommandOutcome.Applied);
+        return CommandResults.Applied(command);
     }
 
     private async ValueTask ApplyLightingAsync(CancellationToken token)
@@ -457,7 +455,7 @@ internal sealed class AyaneoNativeService(
                 _modulesRemoved = false;
                 await AcquireControllerPowerAsync(token).ConfigureAwait(false);
             }
-            else if (_journal.PendingOriginalFor<AyaneoRecoveryState>("controller-power") is { } original)
+            else if (_journal.OriginalStateFor<AyaneoRecoveryState>("controller-power") is { } original)
             {
                 await RestorePowerAsync(original.Owner, token).ConfigureAwait(false);
             }
@@ -470,22 +468,18 @@ internal sealed class AyaneoNativeService(
         var state = DeviceServiceState.Idle;
         try
         {
-            if (_ec is not null && _journal.PendingOriginalFor<AyaneoRecoveryState>("lighting-owner") is { } original)
+            foreach (var (id, restore) in new (string, Func<byte, CancellationToken, ValueTask>)[]
+                     {
+                         ("lighting-owner", RestoreOwnerAsync), ("controller-power", RestorePowerAsync)
+                     })
             {
-                await RestoreOwnerAsync(original.Owner, token).ConfigureAwait(false);
-                if (_journal.EntryFor<AyaneoRecoveryState>("lighting-owner") is not null)
+                if (_ec is not null && _journal.OriginalStateFor<AyaneoRecoveryState>(id) is { } original)
                 {
-                    state = DeviceServiceState.ReleasedUnverified;
-                }
-            }
-
-            if (_ec is not null && _journal.PendingOriginalFor<AyaneoRecoveryState>("controller-power") is
-                    { } originalPower)
-            {
-                await RestorePowerAsync(originalPower.Owner, token).ConfigureAwait(false);
-                if (_journal.EntryFor<AyaneoRecoveryState>("controller-power") is not null)
-                {
-                    state = DeviceServiceState.ReleasedUnverified;
+                    await restore(original.Owner, token).ConfigureAwait(false);
+                    if (_journal.EntryFor<AyaneoRecoveryState>(id) is not null)
+                    {
+                        state = DeviceServiceState.ReleasedUnverified;
+                    }
                 }
             }
         }
@@ -503,8 +497,7 @@ internal sealed class AyaneoNativeService(
     private async ValueTask RestoreOwnerAsync(byte original, CancellationToken token)
     {
         _ec!.WriteByte(OwnerAddress, original);
-        await _journal.SetStatusAsync("lighting-owner", DeviceRecoveryStatus.RestoredUnverified, token)
-            .ConfigureAwait(false);
+        await _journal.MarkRestoredAsync("lighting-owner", token).ConfigureAwait(false);
     }
 
     private async ValueTask AcquireControllerPowerAsync(CancellationToken token)
@@ -526,8 +519,7 @@ internal sealed class AyaneoNativeService(
     private async ValueTask RestorePowerAsync(byte original, CancellationToken token)
     {
         _ec!.WriteByte(0x2D, original);
-        await _journal.SetStatusAsync("controller-power", DeviceRecoveryStatus.RestoredUnverified, token)
-            .ConfigureAwait(false);
+        await _journal.MarkRestoredAsync("controller-power", token).ConfigureAwait(false);
     }
 
     private async ValueTask EjectAsync(string side, CancellationToken token)
@@ -624,28 +616,13 @@ internal sealed class AyaneoNativeService(
                 available &= _controllerEnabled && _superJoy.IsOpen;
             }
 
-            return new CapabilityState
-            {
-                CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId, Available = available,
-                ObservedValue = hasValue ? value : null,
-                Quality = hasValue ? HardwareStateQuality.Observed : HardwareStateQuality.Unknown,
-                ObservedAt = hasValue ? DateTimeOffset.UtcNow : null,
-                Reason = available
+            return ProviderControls.State(descriptor.CapabilityId, available, hasValue ? value : null,
+                hasValue ? DateTimeOffset.UtcNow : null,
+                available
                     ? null
                     : new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
-                        "The required AYANEO native interface is unavailable.")
-            };
+                        "The required AYANEO native interface is unavailable."), descriptor.InstanceId);
         }).ToArray());
-    }
-
-    private static CapabilityCommandResult Result(CapabilityCommand command, CommandOutcome outcome,
-        string? detail = null)
-    {
-        return new CapabilityCommandResult
-        {
-            CommandId = command.CommandId, Outcome = outcome, CompletedAt = DateTimeOffset.UtcNow,
-            Reason = detail is null ? null : new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing, detail)
-        };
     }
 
 

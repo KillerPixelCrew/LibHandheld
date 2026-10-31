@@ -1,6 +1,6 @@
 using System.Globalization;
 using LibHandheld.Contracts;
-using LibHandheld.Families.RogAlly;
+using LibHandheld.Families.Asus;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
@@ -106,8 +106,14 @@ internal sealed class GenericAsusService(
 
     internal override bool DescriptorsChanged => _topologyChanged || _aura.DescriptorsChanged;
 
-    private IReadOnlyList<CapabilityDescriptor> FirmwareSurface => Surface.Where(descriptor =>
-        descriptor.InstanceId == "xg" ? XgPresent : firmwareControls).ToArray();
+    private IReadOnlyList<CapabilityDescriptor> FirmwareSurface
+    {
+        get
+        {
+            var xg = XgPresent;
+            return Surface.Where(descriptor => descriptor.InstanceId == "xg" ? xg : firmwareControls).ToArray();
+        }
+    }
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
         Array.AsReadOnly(FirmwareSurface.Concat(_aura.Descriptors).ToArray());
@@ -116,15 +122,7 @@ internal sealed class GenericAsusService(
     {
         var xg = descriptor.CapabilityId.StartsWith("asus.xg", StringComparison.Ordinal) ||
                  descriptor.InstanceId == "xg";
-        var value = _observed.Value(descriptor.CapabilityId, descriptor.InstanceId);
-        return new CapabilityState
-        {
-            CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
-            Available = xg ? _xg is not null : _acpi is not null,
-            ObservedValue = value,
-            Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-            ObservedAt = _observed.Time(descriptor.CapabilityId, descriptor.InstanceId)
-        };
+        return ProviderControls.Observed(descriptor, _observed, xg ? _xg is not null : _acpi is not null);
     }).Concat(_aura.States).ToArray());
 
     public override bool Suspendable => true;
@@ -168,31 +166,20 @@ internal sealed class GenericAsusService(
             {
                 acpi.Dispose();
             }
-        }
 
-        if (firmwareControls)
-        {
             _journal = context.Journal;
             _captureAttempted.Clear();
-        }
-
-        if (_journal is { } journal)
-        {
-            foreach (var entry in journal.Entries<GenericRecoveryState>())
+            foreach (var entry in _journal.Entries<GenericRecoveryState>())
             {
-                await journal.ReconcileAsync<GenericRecoveryState>(entry.ServiceId, context.Firmware,
+                await _journal.ReconcileAsync<GenericRecoveryState>(entry.ServiceId, context.Firmware,
                     (_, ct) => RestoreAsync(entry.ServiceId, ct), token).ConfigureAwait(false);
             }
         }
 
         await RefreshAsync(token).ConfigureAwait(false);
-        return Set(
-            _acpi is not null || _xg is not null || _aura.Available
-                ? DeviceServiceState.Owned
-                : DeviceServiceState.Passive,
-            _acpi is null && _xg is null && !_aura.Available
-                ? Missing("The ASUS firmware and Aura interfaces are unavailable.")
-                : null);
+        var available = _acpi is not null || _xg is not null || _aura.Available;
+        return Set(available ? DeviceServiceState.Owned : DeviceServiceState.Passive,
+            available ? null : Missing("The ASUS firmware and Aura interfaces are unavailable."));
     }
 
     internal override ValueTask RefreshAsync(CancellationToken token)
@@ -273,7 +260,7 @@ internal sealed class GenericAsusService(
                 }
                 else
                 {
-                    if (!AllyFanCapability.TryEncode(value.CurveValue, out var curve, out var error))
+                    if (!AsusFanCurve.TryEncode(value.CurveValue, out var curve, out var error))
                     {
                         return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
                     }
@@ -307,9 +294,9 @@ internal sealed class GenericAsusService(
                     await CaptureAsync("mode", [0], OriginalMode, token).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
                     dispatched = true;
-                    _acpi.Write(AsusAcpiId.PerformanceMode, AllyModels.ScenarioValue(value.ChoiceValue!));
+                    _acpi.Write(AsusAcpiId.PerformanceMode, AsusAcpiProtocol.ScenarioValue(value.ChoiceValue!));
                 }
-                else if (command.CapabilityId == "fan.duty")
+                else if (command.CapabilityId == CapabilityIds.FanDuty)
                 {
                     var fan = command.InstanceId == "gpu" ? AsusAcpiId.GpuFanCurve : AsusAcpiId.CpuFanCurve;
                     await CaptureAsync("mode", [0], OriginalMode, token).ConfigureAwait(false);
@@ -343,7 +330,7 @@ internal sealed class GenericAsusService(
                         foreach (var fan in restored)
                         {
                             _changedFans.Remove(fan);
-                            _observed.Forget("fan.duty", fan);
+                            _observed.Forget(CapabilityIds.FanDuty, fan);
                             _observed.Forget(CapabilityIds.FanCurve, fan);
                         }
 
@@ -366,7 +353,7 @@ internal sealed class GenericAsusService(
                     {
                         foreach (var instance in new[] { "cpu", "gpu" })
                         {
-                            if (_observed.Value("fan.duty", instance)?.IntegerValue is not { } duty)
+                            if (_observed.Value(CapabilityIds.FanDuty, instance)?.IntegerValue is not { } duty)
                             {
                                 continue;
                             }
@@ -387,24 +374,13 @@ internal sealed class GenericAsusService(
                 }
                 else if (command.CapabilityId == CapabilityIds.FanCurve)
                 {
-                    if (!AllyFanCapability.TryEncode(value.CurveValue, out var curve, out var error))
+                    if (!AsusFanCurve.TryEncode(value.CurveValue, out var curve, out var error))
                     {
                         return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
                     }
 
                     var id = command.InstanceId == "gpu" ? AsusAcpiId.GpuFanCurve : AsusAcpiId.CpuFanCurve;
-                    await CaptureAsync("fan-" + command.InstanceId,
-                        [command.InstanceId == "gpu" ? (ushort)2 : (ushort)1], () =>
-                        {
-                            var mode = OriginalMode();
-                            if (mode is null)
-                            {
-                                return null;
-                            }
-
-                            var read = _acpi.ReadBuffer(id, AsusAcpiProtocol.CurveSelector(mode[0]));
-                            return AsusAcpiProtocol.IsValidCurve(read) ? [mode[0], .. read] : null;
-                        }, token).ConfigureAwait(false);
+                    await CaptureFanAsync(command.InstanceId!, id, token).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
                     dispatched = true;
                     _changedFans.Add(command.InstanceId!);
@@ -468,39 +444,29 @@ internal sealed class GenericAsusService(
 
     private async ValueTask RestoreAsync(string id, CancellationToken token)
     {
-        if (_acpi is null || _journal?.PendingOriginalFor<GenericRecoveryState>(id) is not { } original)
+        if (_acpi is null || _journal?.OriginalStateFor<GenericRecoveryState>(id) is not { } original)
         {
             return;
         }
 
-        try
+        token.ThrowIfCancellationRequested();
+        if (id == "mode")
         {
-            token.ThrowIfCancellationRequested();
-            if (id == "mode")
+            _acpi.Write(AsusAcpiId.PerformanceMode, original.Values[0]);
+        }
+        else
+        {
+            var current = _observed.Value(CapabilityIds.Scenario)?.ChoiceValue;
+            _acpi.Write(AsusAcpiId.PerformanceMode, original.Values[0]);
+            _acpi.WriteBuffer(id == "fan-gpu" ? AsusAcpiId.GpuFanCurve : AsusAcpiId.CpuFanCurve,
+                original.Values.AsSpan(1));
+            if (current is not null)
             {
-                _acpi.Write(AsusAcpiId.PerformanceMode, original.Values[0]);
+                _acpi.Write(AsusAcpiId.PerformanceMode, AsusAcpiProtocol.ScenarioValue(current));
             }
-            else
-            {
-                var current = _observed.Value(CapabilityIds.Scenario)?.ChoiceValue;
-                _acpi.Write(AsusAcpiId.PerformanceMode, original.Values[0]);
-                _acpi.WriteBuffer(id == "fan-gpu" ? AsusAcpiId.GpuFanCurve : AsusAcpiId.CpuFanCurve,
-                    original.Values.AsSpan(1));
-                if (current is not null)
-                {
-                    _acpi.Write(AsusAcpiId.PerformanceMode, AllyModels.ScenarioValue(current));
-                }
-            }
+        }
 
-            await _journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
-                .ConfigureAwait(false);
-        }
-        catch
-        {
-            await _journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                .ConfigureAwait(false);
-            throw;
-        }
+        await _journal.MarkRestoredAsync(id, CancellationToken.None).ConfigureAwait(false);
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
@@ -546,27 +512,16 @@ internal sealed class GenericAsusService(
 
     private static CapabilityDescriptor Duty(string instance)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = "fan.duty", InstanceId = instance, Role = CapabilityRole.FanDuty,
-            ValueKind = CapabilityValueKind.Integer, Display = new CapabilityDisplay { Key = DisplayKey.FanSpeed },
-            Minimum = 0, Maximum = 100, Step = 1, Unit = CapabilityUnit.Percent, SupportsWrite = true,
-            Persistence = CapabilityPersistence.Volatile
-        };
+        return CapabilityDescriptors.Integer(CapabilityIds.FanDuty, CapabilityRole.FanDuty,
+            new CapabilityDisplay { Key = DisplayKey.FanSpeed }, minimum: 0, maximum: 100, CapabilityUnit.Percent,
+            read: false, write: true, instance: instance);
     }
 
     private static CapabilityDescriptor Fan(string instance, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = CapabilityIds.FanCurve, InstanceId = instance, Role = CapabilityRole.FanCurve,
-            ValueKind = CapabilityValueKind.Curve,
-            // The same reviewed eight-point ASUS report is used for CPU, GPU and XG channels.
-            CurveInputs = AllyFanCapability.DefaultCpuCurve.Take(AllyFanCapability.PointCount)
-                .Select(value => (int)value).ToArray(),
-            Display = CapabilityDescriptors.Label(label), Minimum = 0, Maximum = 100, Unit = CapabilityUnit.Percent,
-            SupportsWrite = true,
-            Persistence = instance == "xg" ? CapabilityPersistence.Unknown : CapabilityPersistence.Volatile
-        };
+        // The same reviewed eight-point ASUS report is used for CPU, GPU and XG channels.
+        return CapabilityDescriptors.Curve(CapabilityIds.FanCurve, CapabilityDescriptors.Label(label),
+            AsusFanCurve.DefaultCpuCurve.Take(AsusFanCurve.PointCount).Select(value => (int)value).ToArray(),
+            read: false, instance == "xg" ? CapabilityPersistence.Unknown : CapabilityPersistence.Volatile, instance);
     }
 }

@@ -1,6 +1,6 @@
 using LibHandheld.Contracts;
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
@@ -109,35 +109,19 @@ internal static class GenericModels
         Hhd("gpd-g1628-04", "GPD G1628-04", "hhd:power:G1628-04", "G1628-04", 8, 25)
     ]);
 
-    internal static IReadOnlyList<HandheldDefinition> GetDefinitions()
-    {
-        return Array.AsReadOnly(All.Select(model => model.DeclaredDefinition)
-            .ToArray());
-    }
-
     internal static ProfiledDeviceModel? Match(DeviceIdentitySnapshot identity)
     {
         foreach (var model in All)
         {
             if (model.Manufacturers.Count != 0
                     ? model.Matches(identity)
-                    : model.Products.Any(product => Equal(product, identity.SystemProduct)))
+                    : model.Products.Any(product => ProfiledDeviceModel.Equal(product, identity.SystemProduct)))
             {
                 return model;
             }
         }
 
         return null;
-    }
-
-    internal static NativeEngine CreateEngine(HandheldDefinition definition)
-    {
-        return new ProfiledDeviceEngine(All.Single(model => model.Definition.Id == definition.Id));
-    }
-
-    private static bool Equal(string expected, string? actual)
-    {
-        return string.Equals(expected.Trim(), actual?.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     private static ProfiledDeviceModel Loki(string id, string name, string source, string product, int minimum,
@@ -150,13 +134,7 @@ internal static class GenericModels
             CreateOemSource = () => new OemMouseChordSource(), NativeOemReplacesChords = [],
             OemControls =
             [
-                new OemControlDescriptor
-                {
-                    ControlId = "guide-mouse",
-                    Display =
-                        new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "Guide" },
-                    Placement = OemControlPlacement.Front, RequiresControllerAcquisition = true
-                }
+                CapabilityDescriptors.OemControl("guide-mouse", "Guide", OemControlPlacement.Front)
             ],
             ServiceFactories = [context => new AynNativeService(context)],
             NativeRoles = [CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.LightingZoneColor]

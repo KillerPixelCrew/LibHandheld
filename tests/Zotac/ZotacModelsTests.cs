@@ -1,6 +1,5 @@
 using System.Numerics;
 using System.Text;
-using LibHandheld.Families.SteamDeck;
 using LibHandheld.Families.Zotac;
 
 namespace LibHandheld.Tests.Zotac;
@@ -39,6 +38,12 @@ public sealed class ZotacModelsTests
         Assert.Equal((byte)1, color[7]);
         Assert.Equal(new byte[] { 0x12, 0x34, 0x56 }, color[10..13]);
         Assert.Equal(new byte[] { 0x12, 0x34, 0x56 }, color[37..40]);
+        var save = ZotacProtocol.Save();
+        Assert.Equal(65, save.Length);
+        Assert.Equal((byte)0xE1, save[1]);
+        Assert.Equal((byte)60, save[4]);
+        Assert.Equal((byte)0xFB, save[5]);
+        Assert.Equal(0, save[63] | save[64]);
     }
 
     [Fact]
@@ -57,7 +62,7 @@ public sealed class ZotacModelsTests
     [InlineData(32, 12, 176)]
     public void CmosUmaUsesOnlyTheHcIndexAndTheAcknowledgedInpOutPortAbi(uint ram, uint addition, byte allocation)
     {
-        var requests = SteamDeckMemory.ZotacUmaRequests(ZotacNativeService.EncodeVram(ram, addition));
+        var requests = ZotacCmos.UmaRequests(ZotacNativeService.EncodeVram(ram, addition));
         Assert.Equal(new byte[] { 0x70, 0, 0x7A }, requests[0]);
         Assert.Equal(new byte[] { 0x71, 0, allocation }, requests[1]);
     }
@@ -69,6 +74,6 @@ public sealed class ZotacModelsTests
     [InlineData(180)]
     public void CmosUmaRejectsValuesOutsideKnownZoneEncodings(byte allocation)
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => SteamDeckMemory.ZotacUmaRequests(allocation));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ZotacCmos.UmaRequests(allocation));
     }
 }

@@ -28,6 +28,28 @@ namespace LibHandheld.Families.MsiClaw;
 /// </remarks>
 internal sealed class HidDescriptorGamepad : IDisposable
 {
+    /// <summary>HC's DirectInput button indices; 6 and 7 are the triggers' digital bits.</summary>
+    private static readonly CanonicalButtons[] Buttons =
+    [
+        CanonicalButtons.X,
+        CanonicalButtons.A,
+        CanonicalButtons.B,
+        CanonicalButtons.Y,
+        CanonicalButtons.LeftShoulder,
+        CanonicalButtons.RightShoulder,
+        CanonicalButtons.None,
+        CanonicalButtons.None,
+        CanonicalButtons.View,
+        CanonicalButtons.Menu,
+        CanonicalButtons.LeftStick,
+        CanonicalButtons.RightStick,
+        CanonicalButtons.None,
+        CanonicalButtons.None,
+        CanonicalButtons.None,
+        CanonicalButtons.RearPaddle2,
+        CanonicalButtons.RearPaddle1
+    ];
+
     private readonly HidUsageReader _reader;
 
     private HidDescriptorGamepad(HidUsageReader reader)
@@ -57,33 +79,8 @@ internal sealed class HidDescriptorGamepad : IDisposable
     public bool TryDecode(ReadOnlySpan<byte> report, DateTimeOffset timestamp, OemButtonLatch? oemButtons,
         out CanonicalControllerSample sample)
     {
-        sample = default;
-        if (!_reader.TryValue(report, 0x30, out var x) || !_reader.TryValue(report, 0x31, out var y)
-                                                       || !_reader.TryValue(report, 0x32, out var z) ||
-                                                       !_reader.TryValue(report, 0x35, out var rz))
-        {
-            return false;
-        }
-
-        var buttons = oemButtons?.Current(timestamp) ?? CanonicalButtons.None;
-        foreach (var usage in _reader.Usages(report, 9))
-        {
-            buttons |= Button(usage - 1);
-        }
-
-        if (_reader.TryValue(report, 0x39, out var hat))
-        {
-            buttons |= HidUsageReader.Hat((int)(hat.Raw - hat.Minimum));
-        }
-
-        sample = new CanonicalControllerSample
-        {
-            Timestamp = timestamp, Buttons = buttons, LeftStickX = x.Signed, LeftStickY = -y.Signed,
-            RightStickX = z.Signed, RightStickY = -rz.Signed,
-            LeftTrigger = _reader.TryValue(report, 0x33, out var rx) ? rx.Unsigned : 0,
-            RightTrigger = _reader.TryValue(report, 0x34, out var ry) ? ry.Unsigned : 0
-        };
-        return true;
+        return _reader.TryDecodeGamepad(report, timestamp, Buttons,
+            oemButtons?.Current(timestamp) ?? CanonicalButtons.None, out sample);
     }
 
     /// <summary>HC's DirectInput button index to the canonical button.</summary>
@@ -91,29 +88,6 @@ internal sealed class HidDescriptorGamepad : IDisposable
     /// <returns>The mapped button, or None for unrepresented indices, including digital trigger bits.</returns>
     internal static CanonicalButtons Button(int index)
     {
-        return index switch
-        {
-            0 => CanonicalButtons.X,
-            1 => CanonicalButtons.A,
-            2 => CanonicalButtons.B,
-            3 => CanonicalButtons.Y,
-            4 => CanonicalButtons.LeftShoulder,
-            5 => CanonicalButtons.RightShoulder,
-            8 => CanonicalButtons.View,
-            9 => CanonicalButtons.Menu,
-            10 => CanonicalButtons.LeftStick,
-            11 => CanonicalButtons.RightStick,
-            15 => CanonicalButtons.RearPaddle2,
-            16 => CanonicalButtons.RearPaddle1,
-            _ => CanonicalButtons.None
-        };
-    }
-
-    /// <summary>A POV value from the descriptor's logical minimum, clockwise from up in eighths.</summary>
-    /// <param name="position">Hat value relative to its logical minimum; 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“7 run clockwise from up.</param>
-    /// <returns>The cardinal/diagonal D-pad mask, or None outside 0ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“7.</returns>
-    internal static CanonicalButtons DecodeHat(int position)
-    {
-        return HidUsageReader.Hat(position);
+        return (uint)index < (uint)Buttons.Length ? Buttons[index] : CanonicalButtons.None;
     }
 }

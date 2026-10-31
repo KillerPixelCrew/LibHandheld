@@ -47,19 +47,11 @@ internal enum ClawControllerMode : byte
     DirectInput = 2
 }
 
-/// <summary>Cycle identity and provider observations; absence of optional firmware reads is not a model mismatch.</summary>
+/// <summary>The cycle's SMBIOS identity and the AC line; absence of optional firmware reads is not a model mismatch.</summary>
 internal sealed record ClawIdentityState
 {
     // ReSharper disable once UnusedAutoPropertyAccessor.Global
     public required DeviceIdentitySnapshot Snapshot { get; init; }
-
-    public required bool ExactMachineMatch { get; init; }
-
-    /// <summary>The matched model; null exactly when <see cref="ExactMachineMatch" /> is false.</summary>
-    public ClawModel? Model { get; init; }
-
-    /// <summary>The MSI_ACPI provider is present, which is all HC requires.</summary>
-    public bool WmiAvailable { get; init; }
 
     /// <summary>
     ///     The firmware the power and fan journal entries bind to: the SMBIOS BIOS version, for example
@@ -151,11 +143,6 @@ internal interface IClawIdentityReader
 /// <remarks>Cancellation bounds waiting; an in-flight native call retains the lane until it actually exits.</remarks>
 internal interface IMsiWmiTransport : IAsyncDisposable
 {
-    /// <summary>Checks and binds the MSI_ACPI provider without writing device state.</summary>
-    /// <param name="cancellationToken">Cancels gate acquisition or waiting for the provider query.</param>
-    /// <returns>True when the provider has the required getter and its fixed instance can be acquired.</returns>
-    ValueTask<bool> IsProviderAvailableAsync(CancellationToken cancellationToken);
-
     /// <summary>Invokes a reviewed getter and checks its returned success status.</summary>
     /// <param name="methodName">Package-selected MSI_ACPI method beginning with Get_; never user input.</param>
     /// <param name="selector">First byte of the otherwise zero-filled 32-byte request.</param>
@@ -318,7 +305,7 @@ internal interface IFirmwareChordSuppressor : IAsyncDisposable
 }
 
 /// <summary>Instance-owned hardware dependencies composed by ClawDeviceEngine and replaced by fakes in tests.</summary>
-/// <param name="Identity">Read-only model, provider and AC-line observations.</param>
+/// <param name="Identity">AC-line observation.</param>
 /// <param name="Wmi">Serialized power, fan, charge and telemetry transport.</param>
 /// <param name="OemEvents">Attributed MSI firmware event source.</param>
 /// <param name="Mcu">MCU profiles and controller mode transport.</param>

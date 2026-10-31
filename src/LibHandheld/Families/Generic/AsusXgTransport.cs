@@ -1,5 +1,5 @@
 using System.Text;
-using LibHandheld.Families.RogAlly;
+using LibHandheld.Families.Asus;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Generic;

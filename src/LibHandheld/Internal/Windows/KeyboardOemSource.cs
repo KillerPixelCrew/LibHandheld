@@ -144,10 +144,7 @@ internal sealed class KeyboardOemSource(IReadOnlyList<KeyboardOemChord> chords) 
                 continue;
             }
 
-            if (_events?.Writer.TryWrite((index, nowHeld)) != true)
-            {
-                _events?.Writer.TryComplete(new IOException("The OEM keyboard event queue overflowed."));
-            }
+            _events?.Writer.TryWrite((index, nowHeld));
         }
 
         // HC observes these manufacturer chords with silenced:false. Passing both edges also

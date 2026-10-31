@@ -1,45 +1,8 @@
 using System.Text.Json.Serialization;
-using LibHandheld.Internal.Services;
 
 // SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
-
-/// <summary>Keeps the original temporary state WSGM must restore after a crash.</summary>
-/// <remarks>
-///     Narrowed to what the Ally changes temporarily: the power limits and mode, the fan curves, and the
-///     controller configuration. Charge limit and lighting are persistent user choices and are never
-///     journalled or reverted.
-/// </remarks>
-internal static class AllyRecoveryRules
-{
-    internal static AllyReconciliationAction Decide(DeviceRecoveryEntry<AllyRecoveryState> entry, string? firmware)
-    {
-        if (firmware is null)
-        {
-            return AllyReconciliationAction.Wait;
-        }
-
-        return entry.FirmwareIdentity == firmware ? AllyReconciliationAction.Restore : AllyReconciliationAction.Discard;
-    }
-
-    internal static bool IsValidWatts(int? value)
-    {
-        return value is > 0;
-    }
-}
-
-internal enum AllyReconciliationAction
-{
-    /// <summary>Write the original once.</summary>
-    Restore,
-
-    /// <summary>The transport is not available yet: write nothing and keep the entry pending.</summary>
-    Wait,
-
-    /// <summary>The BIOS changed under the entry: drop it without restoring.</summary>
-    Discard
-}
 
 [JsonConverter(typeof(JsonStringEnumConverter<AllyRecoveryStateKind>))]
 internal enum AllyRecoveryStateKind
@@ -51,6 +14,12 @@ internal enum AllyRecoveryStateKind
     ControllerConfiguration
 }
 
+/// <summary>Keeps the original temporary state WSGM must restore after a crash.</summary>
+/// <remarks>
+///     Narrowed to what the Ally changes temporarily: the power limits and mode, the fan curves, and the
+///     controller configuration. Charge limit and lighting are persistent user choices and are never
+///     journalled or reverted.
+/// </remarks>
 internal sealed record AllyRecoveryState
 {
     public required AllyRecoveryStateKind Kind { get; init; }

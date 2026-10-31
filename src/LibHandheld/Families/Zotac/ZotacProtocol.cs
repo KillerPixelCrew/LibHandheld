@@ -1,3 +1,4 @@
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Windows;
 using Microsoft.Win32.SafeHandles;
 
@@ -18,6 +19,16 @@ internal static class ZotacProtocol
         return report;
     }
 
+    /// <summary>HC's SaveConfigData report (command 0xFB), which deliberately carries no CRC bytes.</summary>
+    internal static byte[] Save()
+    {
+        var report = new byte[65];
+        report[1] = 0xE1;
+        report[4] = 60;
+        report[5] = 0xFB;
+        return report;
+    }
+
     internal static byte[] Rear(byte button)
     {
         var report = Command(0xA1, button);
@@ -32,10 +43,7 @@ internal static class ZotacProtocol
         var report = Command(0xAD, 0, zone);
         for (var index = 0; index < 10; index++)
         {
-            var offset = 10 + index * 3;
-            report[offset] = (byte)(rgb >> 16);
-            report[offset + 1] = (byte)(rgb >> 8);
-            report[offset + 2] = (byte)rgb;
+            CapabilityDescriptors.WriteRgb(report.AsSpan(10 + index * 3), rgb);
         }
 
         Seal(report);

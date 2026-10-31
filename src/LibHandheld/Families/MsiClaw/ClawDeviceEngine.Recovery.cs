@@ -39,9 +39,7 @@ internal sealed partial class ClawDeviceEngine
                 continue;
             }
 
-            var action = ClawRecoveryRules.Decide(
-                entry,
-                identity.WmiAvailable ? identity.RecoveryBinding : null);
+            var action = ClawRecoveryRules.Decide(entry, identity.RecoveryBinding);
             switch (action)
             {
                 case ClawReconciliationAction.Wait:
@@ -62,7 +60,6 @@ internal sealed partial class ClawDeviceEngine
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            DeviceRecoveryStatus status;
             try
             {
                 if (ClawRecoveryValues.TryPower(entry.OriginalState, out var power))
@@ -74,22 +71,19 @@ internal sealed partial class ClawDeviceEngine
                     await fanCapability.RestoreAsync(fans!, cancellationToken).ConfigureAwait(false);
                 }
 
-                status = DeviceRecoveryStatus.RestoredVerified;
+                // Retire the restored entry even when cancellation follows the writes.
+                await _journal.MarkRestoredAsync(entry.ServiceId, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 DeviceTrace.Failure("recovery", $"restoring the {entry.ServiceId} entry failed; it is kept", ex);
-                status = DeviceRecoveryStatus.RestoreFailed;
             }
 
-            // Preserve the attempted restore's outcome even when cancellation interrupted the writes.
-            // Leaving it pending would replay an uncertain restore at the next start.
-            await _journal.SetStatusAsync(entry.ServiceId, status, CancellationToken.None).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
         }
     }
 
-    /// <summary>Puts the controller back in the journalled mode, whatever the entry's status.</summary>
+    /// <summary>Puts the controller back in the journalled mode whenever an entry is outstanding.</summary>
     /// <remarks>
     ///     The mode is read before anything is written, so this runs at every start. Otherwise, with controller
     ///     management off, a pad left in DirectInput by a failed release would stay there. A pad that is not
@@ -104,7 +98,7 @@ internal sealed partial class ClawDeviceEngine
             return;
         }
 
-        DeviceRecoveryStatus status;
+        string outcome;
         try
         {
             var current = await _services.Controller.DiscoverAsync(cancellationToken).ConfigureAwait(false);
@@ -114,7 +108,7 @@ internal sealed partial class ClawDeviceEngine
                 return;
             }
 
-            status = DeviceRecoveryStatus.RestoredVerified;
+            outcome = "RestoredVerified";
             if (current.Mode != mode)
             {
                 var restored = await _services.Mcu.SwitchModeAsync(
@@ -125,17 +119,18 @@ internal sealed partial class ClawDeviceEngine
                 if (restored.Mode != mode
                     || !HidDevices.SamePhysicalLocation(restored.PhysicalLocation, current.PhysicalLocation))
                 {
-                    status = DeviceRecoveryStatus.RestoredUnverified;
+                    outcome = "RestoredUnverified";
                 }
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
         {
             DeviceTrace.Failure("recovery", "restoring the controller mode failed; the next start tries again", ex);
-            status = DeviceRecoveryStatus.RestoreFailed;
+            DeviceTrace.Info("recovery", "controller mode entry: RestoreFailed.");
+            return;
         }
 
-        DeviceTrace.Info("recovery", $"controller mode entry: {status}.");
-        await _journal!.SetStatusAsync(entry.ServiceId, status, CancellationToken.None).ConfigureAwait(false);
+        DeviceTrace.Info("recovery", $"controller mode entry: {outcome}.");
+        await _journal!.MarkRestoredAsync(entry.ServiceId, CancellationToken.None).ConfigureAwait(false);
     }
 }

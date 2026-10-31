@@ -7,7 +7,7 @@ using Microsoft.Win32.SafeHandles;
 
 // SPDX-License-Identifier: MIT
 
-namespace LibHandheld.Families.RogAlly;
+namespace LibHandheld.Families.Asus;
 
 /// <summary>The ATKACPI device IDs this plugin reads or writes. Nothing outside this list is sent.</summary>
 /// <remarks>
@@ -175,6 +175,32 @@ internal static class AsusAcpiProtocol
         return true;
     }
 
+    /// <summary>ASUS performance modes, by the value ATKACPI and HC's OEMPowerMode use.</summary>
+    /// <param name="scenario">Performance, Turbo or Silent scenario identifier.</param>
+    /// <returns>The native performance-mode byte: 0, 1 or 2 respectively.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="scenario" /> is unrecognized.</exception>
+    public static byte ScenarioValue(string scenario)
+    {
+        return scenario switch
+        {
+            Scenarios.Performance => 0,
+            Scenarios.Turbo => 1,
+            Scenarios.Silent => 2,
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, null)
+        };
+    }
+
+    public static string? ScenarioName(int value)
+    {
+        return value switch
+        {
+            0 => Scenarios.Performance,
+            1 => Scenarios.Turbo,
+            2 => Scenarios.Silent,
+            _ => null
+        };
+    }
+
     /// <summary>HC AsusACPI.SetFanSpeed's flat duty report; it is a command, not a model's automatic baseline.</summary>
     /// <param name="percent">Requested duty, clamped to the firmware's 0-99 range.</param>
     /// <returns>Eight HC temperatures followed by eight equal duties.</returns>
@@ -184,6 +210,14 @@ internal static class AsusAcpiProtocol
         curve.AsSpan(8, 8).Fill(checked((byte)Math.Clamp(percent, 0, 99)));
         return curve;
     }
+}
+
+/// <summary>The ASUS performance-mode scenario identifiers.</summary>
+internal static class Scenarios
+{
+    public const string Silent = "silent";
+    public const string Performance = "performance";
+    public const string Turbo = "turbo";
 }
 
 /// <summary>The serialized ATKACPI transport.</summary>

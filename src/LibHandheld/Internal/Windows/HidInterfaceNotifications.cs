@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Runtime.InteropServices;
 
 namespace LibHandheld.Internal.Windows;
@@ -58,7 +57,7 @@ internal sealed class HidInterfaceNotifications : IDisposable
             path = path[..terminator];
         }
 
-        if (Parse(path, "VID_") != _vendor || Parse(path, "PID_") is not { } product || !_products.Contains(product))
+        if (!HidDevices.MatchesProduct(path, _vendor, _products))
         {
             return 0;
         }
@@ -72,16 +71,6 @@ internal sealed class HidInterfaceNotifications : IDisposable
         }
 
         return 0;
-    }
-
-    private static ushort? Parse(ReadOnlySpan<char> path, ReadOnlySpan<char> marker)
-    {
-        var index = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        return index >= 0 && index + marker.Length + 4 <= path.Length
-                          && ushort.TryParse(path.Slice(index + marker.Length, 4), NumberStyles.HexNumber,
-                              CultureInfo.InvariantCulture, out var value)
-            ? value
-            : null;
     }
 
     [DllImport("cfgmgr32.dll")]

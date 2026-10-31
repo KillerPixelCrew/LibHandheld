@@ -71,7 +71,6 @@ internal static partial class HidDevices
     private const uint FileShareWrite = 0x00000002;
     private const uint OpenExisting = 3;
     private const uint FileFlagOverlapped = 0x40000000;
-    private const int HidpStatusSuccess = 0x00110000;
 
     /// <summary><c>GUID_DEVCLASS_HIDCLASS</c>.</summary>
     public static readonly Guid HidClass = new("745A17A0-74D3-11D0-B6FE-00A0C90F57DA");
@@ -84,9 +83,9 @@ internal static partial class HidDevices
 
     private static readonly nint InvalidHandleValue = new(-1);
 
-    private static readonly DevPropKey LocationPathsKey = new()
+    private static readonly NativeDevice.DevPropKey LocationPathsKey = new()
     {
-        FormatId = new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),
+        FormatId = NativeDevice.DevicePropertyCategory,
         PropertyId = 37
     };
 
@@ -122,30 +121,10 @@ internal static partial class HidDevices
         try
         {
             DeviceInterfaceData entry = new() { Size = (uint)Marshal.SizeOf<DeviceInterfaceData>() };
-            if (!SetupDiOpenDeviceInterface(set, path, 0, ref entry))
-            {
-                return null;
-            }
-
-            _ = SetupDiGetDeviceInterfaceDetail(set, ref entry, 0, 0, out var required, 0);
-            if (required == 0)
-            {
-                return null;
-            }
-
-            var detail = Marshal.AllocHGlobal(checked((int)required));
-            try
-            {
-                Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);
-                DeviceInfoData info = new() { Size = (uint)Marshal.SizeOf<DeviceInfoData>() };
-                return SetupDiGetDeviceInterfaceDetail(set, ref entry, detail, required, out _, ref info)
-                    ? TryDescribe(path, set, info, static _ => true, out _)
-                    : null;
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(detail);
-            }
+            return SetupDiOpenDeviceInterface(set, path, 0, ref entry)
+                   && TryInterfaceDetail(set, ref entry, out var info, out _)
+                ? TryDescribe(path, set, info, static _ => true, out _)
+                : null;
         }
         finally
         {
@@ -210,9 +189,9 @@ internal static partial class HidDevices
     /// <param name="vendorId">The USB vendor ID.</param>
     /// <param name="productIds">The accepted product IDs.</param>
     /// <returns>True when the path names the vendor and one of the products.</returns>
-    public static bool MatchesProduct(string path, ushort vendorId, IReadOnlyCollection<ushort> productIds)
+    public static bool MatchesProduct(ReadOnlySpan<char> path, ushort vendorId,
+        IReadOnlyCollection<ushort> productIds)
     {
-        ArgumentNullException.ThrowIfNull(path);
         ArgumentNullException.ThrowIfNull(productIds);
         return UsbIds.Parse(path, "VID_") == vendorId && UsbIds.Parse(path, "PID_") is { } product
                                                       && productIds.Contains(product);
@@ -298,18 +277,26 @@ internal static partial class HidDevices
         return
         [
             .. KnownNodes(vendorId, productIds)
-                .Where(node =>
-                    (node.ClassGuid == XnaCompositeClass || node.ClassGuid == XboxCompositeClass
-                                                         || (node.ClassGuid == HidClass
-                                                             && (node.InstancePath.Contains("&IG_",
-                                                                     StringComparison.OrdinalIgnoreCase)
-                                                                 || auxiliaryFragments.Any(fragment =>
-                                                                     node.InstancePath.Contains(fragment,
-                                                                         StringComparison.OrdinalIgnoreCase)))))
-                    && !string.IsNullOrWhiteSpace(node.PhysicalLocation)
-                    && SamePhysicalLocation(node.PhysicalLocation, location))
+                .Where(node => IsControllerNode(node, auxiliaryFragments)
+                               && !string.IsNullOrWhiteSpace(node.PhysicalLocation)
+                               && SamePhysicalLocation(node.PhysicalLocation, location))
                 .Select(PhysicalIdentities.FromNode)
         ];
+    }
+
+    /// <summary>Whether a node is one of a pad's controller nodes: XUSB, Xbox composite or XInput-compatible HID.</summary>
+    /// <param name="node">The node.</param>
+    /// <param name="auxiliaryFragments">Instance-path fragments naming the pad's auxiliary HID leaves.</param>
+    /// <returns>True for a controller node or a named auxiliary leaf.</returns>
+    internal static bool IsControllerNode(DeviceNode node, IReadOnlyList<string> auxiliaryFragments)
+    {
+        return node.ClassGuid == XnaCompositeClass || node.ClassGuid == XboxCompositeClass
+                                                   || (node.ClassGuid == HidClass
+                                                       && (node.InstancePath.Contains("&IG_",
+                                                               StringComparison.OrdinalIgnoreCase)
+                                                           || auxiliaryFragments.Any(fragment =>
+                                                               node.InstancePath.Contains(fragment,
+                                                                   StringComparison.OrdinalIgnoreCase))));
     }
 
     private static IReadOnlyList<DeviceNode> Nodes(ushort vendorId, IReadOnlyCollection<ushort> productIds,
@@ -518,41 +505,20 @@ internal static partial class HidDevices
                     continue;
                 }
 
-                _ = SetupDiGetDeviceInterfaceDetail(set, ref interfaceData, 0, 0, out var required, 0);
-                if (required == 0)
+                if (!TryInterfaceDetail(set, ref interfaceData, out var info, out var path)
+                    || path is null || !acceptsPath(path))
                 {
                     continue;
                 }
 
-                var detail = Marshal.AllocHGlobal(checked((int)required));
-                try
+                var collection = TryDescribe(path, set, info, acceptsAttributes, out var problem);
+                if (collection is not null)
                 {
-                    Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);
-                    DeviceInfoData info = new() { Size = (uint)Marshal.SizeOf<DeviceInfoData>() };
-                    if (!SetupDiGetDeviceInterfaceDetail(set, ref interfaceData, detail, required, out _, ref info))
-                    {
-                        continue;
-                    }
-
-                    var path = Marshal.PtrToStringUni(IntPtr.Add(detail, 4));
-                    if (path is null || !acceptsPath(path))
-                    {
-                        continue;
-                    }
-
-                    var collection = TryDescribe(path, set, info, acceptsAttributes, out var problem);
-                    if (collection is not null)
-                    {
-                        collections.Add(collection);
-                    }
-                    else if (problem is not null)
-                    {
-                        unreadable?.Invoke(path, problem);
-                    }
+                    collections.Add(collection);
                 }
-                finally
+                else if (problem is not null)
                 {
-                    Marshal.FreeHGlobal(detail);
+                    unreadable?.Invoke(path, problem);
                 }
             }
         }
@@ -562,6 +528,37 @@ internal static partial class HidDevices
         }
 
         return collections;
+    }
+
+    // SP_DEVICE_INTERFACE_DETAIL_DATA_W: a size query, then the detail call, whose cbSize counts the
+    // fixed header only (8 on 64-bit, 6 on 32-bit) and which fills the interface's device node.
+    private static bool TryInterfaceDetail(nint set, ref DeviceInterfaceData entry, out DeviceInfoData info,
+        out string? path)
+    {
+        info = new DeviceInfoData { Size = (uint)Marshal.SizeOf<DeviceInfoData>() };
+        path = null;
+        _ = SetupDiGetDeviceInterfaceDetail(set, ref entry, 0, 0, out var required, 0);
+        if (required == 0)
+        {
+            return false;
+        }
+
+        var detail = Marshal.AllocHGlobal(checked((int)required));
+        try
+        {
+            Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);
+            if (!SetupDiGetDeviceInterfaceDetail(set, ref entry, detail, required, out _, ref info))
+            {
+                return false;
+            }
+
+            path = Marshal.PtrToStringUni(IntPtr.Add(detail, 4));
+            return true;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(detail);
+        }
     }
 
     // Opens with no access, which reads attributes and capabilities without claiming the device. A
@@ -602,7 +599,7 @@ internal static partial class HidDevices
         NativeHid.HidCaps caps;
         try
         {
-            if (NativeHid.HidP_GetCaps(preparsed, out caps) != HidpStatusSuccess)
+            if (NativeHid.HidP_GetCaps(preparsed, out caps) != NativeHid.HIDP_STATUS_SUCCESS)
             {
                 problem = "its capabilities could not be read";
                 return null;
@@ -645,7 +642,7 @@ internal static partial class HidDevices
         for (var depth = 0; depth < 6; depth++)
         {
             var length = checked((uint)buffer.Length);
-            if (CM_Get_DevNode_Property(current, ref key, out _, buffer, ref length, 0) == 0)
+            if (NativeDevice.CM_Get_DevNode_Property(current, ref key, out _, buffer, ref length, 0) == 0)
             {
                 var value = Encoding.Unicode.GetString(buffer, 0, checked((int)length)).TrimEnd('\0');
                 var terminator = value.IndexOf('\0');
@@ -660,7 +657,7 @@ internal static partial class HidDevices
                 }
             }
 
-            if (CM_Get_Parent(out current, current, 0) != 0)
+            if (NativeDevice.CM_Get_Parent(out current, current, 0) != 0)
             {
                 break;
             }
@@ -729,13 +726,6 @@ internal static partial class HidDevices
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetupDiDestroyDeviceInfoList(nint deviceInfoSet);
 
-    [LibraryImport("cfgmgr32.dll")]
-    private static partial int CM_Get_Parent(out uint parent, uint deviceInstance, uint flags);
-
-    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_DevNode_PropertyW")]
-    private static partial int CM_Get_DevNode_Property(uint deviceInstance, ref DevPropKey propertyKey,
-        out uint propertyType, [Out] byte[] buffer, ref uint bufferLength, uint flags);
-
 
     [StructLayout(LayoutKind.Sequential)]
     private struct DeviceInterfaceData
@@ -753,13 +743,5 @@ internal static partial class HidDevices
         public Guid ClassGuid;
         public uint DeviceInstance;
         public nuint Reserved;
-    }
-
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct DevPropKey
-    {
-        public Guid FormatId;
-        public uint PropertyId;
     }
 }

@@ -1,9 +1,9 @@
 using LibHandheld.Contracts;
+using LibHandheld.Families.Asus;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Lifecycle;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Windows;
 
 // SPDX-License-Identifier: MIT
 
@@ -27,7 +27,7 @@ internal sealed partial class AllyDeviceEngine
 
         var identity = _cycleIdentity! with
         {
-            OnAcPower = _hardware.OnAcPower?.Invoke() ?? WindowsMachineIdentity.OnAcPower()
+            OnAcPower = OnAcPower()
         };
 
         var refusal = Refusal(service, identity) ?? Validate(command, descriptor, identity.OnAcPower);
@@ -64,11 +64,11 @@ internal sealed partial class AllyDeviceEngine
             // write earns Observed at best). It lives only for this cycle.
             var written = requested;
             if (command.CapabilityId == CapabilityIds.FanCurve
-                && AllyFanCapability.TryEncode(requested.CurveValue, out var encoded, out _))
+                && AsusFanCurve.TryEncode(requested.CurveValue, out var encoded, out _))
             {
-                written = CapabilityValue.Curve(AllyFanCapability.Decode(encoded));
+                written = CapabilityValue.Curve(AsusFanCurve.Decode(encoded));
             }
-            else if (command.CapabilityId == "fan.duty" && requested.IntegerValue is { } duty)
+            else if (command.CapabilityId == CapabilityIds.FanDuty && requested.IntegerValue is { } duty)
             {
                 written = CapabilityValue.Integer(Math.Min(duty, 99));
             }
@@ -86,12 +86,12 @@ internal sealed partial class AllyDeviceEngine
                 _observedValues.Forget(CapabilityIds.PowerSustained);
                 _observedValues.Forget(CapabilityIds.PowerBoost);
                 _observedValues.Forget(CapabilityIds.FanCurve);
-                _observedValues.Forget("fan.duty");
+                _observedValues.Forget(CapabilityIds.FanDuty);
                 _observedValues.Forget(CapabilityIds.FanMode);
             }
             else if (command.CapabilityId == CapabilityIds.FanMode && requested.ChoiceValue == FanModes.Automatic)
             {
-                _observedValues.Forget("fan.duty");
+                _observedValues.Forget(CapabilityIds.FanDuty);
                 _observedValues.Forget(CapabilityIds.FanCurve);
             }
         }
@@ -109,7 +109,7 @@ internal sealed partial class AllyDeviceEngine
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power!
                 .PrepareWriteAsync,
-            CapabilityIds.FanCurve or "fan.duty" => _fans!.PrepareWriteAsync,
+            CapabilityIds.FanCurve or CapabilityIds.FanDuty => _fans!.PrepareWriteAsync,
             CapabilityIds.FanMode when value.ChoiceValue == FanModes.Automatic => _fans!.PrepareWriteAsync,
             _ => null
         };
@@ -148,7 +148,7 @@ internal sealed partial class AllyDeviceEngine
                     .ConfigureAwait(false);
             case CapabilityIds.ChargeLimit:
                 return _charge!.Capability!.Apply(command, value.IntegerValue!.Value);
-            case "fan.duty":
+            case CapabilityIds.FanDuty:
                 return await _fans!.Capability!.ApplyDutyAsync(command, value.IntegerValue!.Value, cancellationToken)
                     .ConfigureAwait(false);
             case CapabilityIds.FanCurve:
@@ -156,7 +156,7 @@ internal sealed partial class AllyDeviceEngine
                 return await _fans!.Capability!.ApplyCurveAsync(command, value.CurveValue, cancellationToken)
                     .ConfigureAwait(false);
             case CapabilityIds.FanMode:
-                return await ApplyFanModeAsync(command, identity, value.ChoiceValue!, cancellationToken)
+                return await ApplyFanModeAsync(command, value.ChoiceValue!, cancellationToken)
                     .ConfigureAwait(false);
             case CapabilityIds.LightingBrightness:
                 return await _lighting!.ApplyAsync(command,
@@ -181,7 +181,6 @@ internal sealed partial class AllyDeviceEngine
 
     private async ValueTask<CapabilityCommandResult> ApplyFanModeAsync(
         CapabilityCommand command,
-        AllyIdentityState identity,
         string mode,
         CancellationToken cancellationToken)
     {
@@ -202,7 +201,8 @@ internal sealed partial class AllyDeviceEngine
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power,
             CapabilityIds.ChargeLimit => _charge,
-            CapabilityIds.FanMode or CapabilityIds.FanCurve or CapabilityIds.FanReading or "fan.duty" => _fans,
+            CapabilityIds.FanMode or CapabilityIds.FanCurve or CapabilityIds.FanReading or CapabilityIds.FanDuty =>
+                _fans,
             CapabilityIds.LightingBrightness or CapabilityIds.LightingEffect or CapabilityIds.LightingSpeed
                 or CapabilityIds.LightingColor => _lighting,
             CapabilityIds.Controller or CapabilityIds.Rumble => _controller,
@@ -241,13 +241,7 @@ internal sealed partial class AllyDeviceEngine
             return new CapabilityReason(CapabilityReasonCode.Unsupported, "Rumble is driven through haptic frames.");
         }
 
-        return _descriptorSet is null
-            ? new CapabilityReason(CapabilityReasonCode.HostUnavailable)
-            : CommandAdmission.Validate(command, descriptor, _descriptorSet.Descriptors, onAcPower);
-    }
-
-    private static CapabilityReason OutOfRange(string detail)
-    {
-        return new CapabilityReason(CapabilityReasonCode.ValueOutOfRange, detail);
+        // The descriptor was found in the published set, so the set exists.
+        return CommandAdmission.Validate(command, descriptor, _descriptorSet!.Descriptors, onAcPower);
     }
 }

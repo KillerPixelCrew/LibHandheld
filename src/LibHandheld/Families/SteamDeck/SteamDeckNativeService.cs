@@ -24,21 +24,14 @@ internal sealed partial class SteamDeckNativeService(
     [
         Source(CapabilityIds.Controller, CapabilityRole.ControllerSource, "Controller source"),
         Source(CapabilityIds.Motion, CapabilityRole.MotionSource, "Motion sensors"),
-        new()
-        {
-            CapabilityId = CapabilityIds.Rumble, Role = CapabilityRole.HapticSink, ValueKind = CapabilityValueKind.None,
-            Display = CapabilityDescriptors.Label("Trackpad haptics"), SupportsAction = true,
-            Persistence = CapabilityPersistence.Volatile
-        }
+        CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
+            CapabilityDescriptors.Label("Trackpad haptics"))
     ];
 
     internal const string RefreshMeasurementsId = "steamdeck.refresh-native-measurements";
-    private static readonly CapabilityDescriptor RefreshMeasurements = new()
-    {
-        CapabilityId = RefreshMeasurementsId, Role = CapabilityRole.GenericAction,
-        ValueKind = CapabilityValueKind.None, Display = CapabilityDescriptors.Label("Refresh native measurements"),
-        SupportsAction = true, Persistence = CapabilityPersistence.Volatile
-    };
+    private static readonly CapabilityDescriptor RefreshMeasurements = CapabilityDescriptors.Action(
+        RefreshMeasurementsId, CapabilityRole.GenericAction,
+        CapabilityDescriptors.Label("Refresh native measurements"));
 
     private readonly StationaryGyroBiasCalibrator _gyroBias = new();
     private readonly Lock _outputGate = new();
@@ -65,9 +58,12 @@ internal sealed partial class SteamDeckNativeService(
     internal bool Connected => _connected;
     public override bool Suspendable => true;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
-        Array.AsReadOnly(ControllerDescriptors.Concat(HardwareDescriptors).Concat(ClockDescriptors)
-            .Append(RefreshMeasurements).ToArray());
+    // Built on first use: the arrays live in other partial files, whose static initialisation order is unspecified.
+    private static IReadOnlyList<CapabilityDescriptor>? _allDescriptors;
+
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _allDescriptors ??=
+        Array.AsReadOnly<CapabilityDescriptor>(
+            [.. ControllerDescriptors, .. HardwareDescriptors, .. ClockDescriptors, RefreshMeasurements]);
 
     internal override IReadOnlyList<CapabilityState> States => ControllerDescriptors.Select(descriptor =>
         new CapabilityState
@@ -474,7 +470,7 @@ internal sealed partial class SteamDeckNativeService(
 
     private async ValueTask RestoreControllerAsync(CancellationToken token)
     {
-        if (_controller is null || _journal?.PendingOriginalFor<SteamDeckOriginal>("neptune") is not { } original)
+        if (_controller is null || _journal?.OriginalStateFor<SteamDeckOriginal>("neptune") is not { } original)
         {
             return;
         }
@@ -490,19 +486,6 @@ internal sealed partial class SteamDeckNativeService(
         {
             if (original.Values[i] is not { } value)
             {
-                // These two firmware switches have HC's documented native desktop baseline; custom mappings are untouched.
-                if (original.Registers[i] is 9 or 71)
-                {
-                    try
-                    {
-                        _controller.WriteSetting(original.Registers[i], 1);
-                    }
-                    catch (Exception exception) when (exception is not OutOfMemoryException)
-                    {
-                        failed = true;
-                    }
-                }
-
                 continue;
             }
 
@@ -516,10 +499,10 @@ internal sealed partial class SteamDeckNativeService(
             }
         }
 
-        await _journal.SetStatusAsync("neptune", failed
-                ? DeviceRecoveryStatus.RestoreFailed
-                : DeviceRecoveryStatus.RestoredUnverified, token)
-            .ConfigureAwait(false);
+        if (!failed)
+        {
+            await _journal.MarkRestoredAsync("neptune", token).ConfigureAwait(false);
+        }
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,

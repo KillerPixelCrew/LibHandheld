@@ -23,11 +23,17 @@ internal static class CapabilityIds
     /// <summary>The battery charge ceiling.</summary>
     public const string ChargeLimit = "battery.charge-limit";
 
+    /// <summary>The firmware's on/off charge protection, where a device has no adjustable ceiling.</summary>
+    public const string ChargeProtection = "battery.charge-protection";
+
     /// <summary>Whether the fans follow the firmware or a custom curve.</summary>
     public const string FanMode = "fan.mode";
 
     /// <summary>The custom fan curve.</summary>
     public const string FanCurve = "fan.curve";
+
+    /// <summary>A fixed fan duty.</summary>
+    public const string FanDuty = "fan.duty";
 
     /// <summary>A fan's measured speed as the MSI Claw reports it.</summary>
     public const string FanRpm = "fan.measured-rpm";
@@ -59,6 +65,9 @@ internal static class CapabilityIds
 
     /// <summary>The rumble sink.</summary>
     public const string Rumble = "haptic.rumble";
+
+    /// <summary>The firmware's rumble strength.</summary>
+    public const string HapticStrength = "haptic.strength";
 
     /// <summary>The action that returns every processor tuning value to its firmware default.</summary>
     public const string ProcessorReset = "processor.reset";

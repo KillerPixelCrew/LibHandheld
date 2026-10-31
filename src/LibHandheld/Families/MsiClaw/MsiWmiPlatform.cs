@@ -4,7 +4,6 @@ using System.Globalization;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Security;
-using System.Text.RegularExpressions;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Windows;
 using Microsoft.Win32;
@@ -21,24 +20,6 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
     private bool _disposed;
     private ManagementObject? _instance;
     private ManagementClass? _packageClass;
-
-    /// <inheritdoc />
-    public ValueTask<bool> IsProviderAvailableAsync(CancellationToken cancellationToken)
-    {
-        return RunSerializedAsync(
-            () =>
-            {
-                // The bound instance is kept: a failed call already drops it in RunSerializedAsync.
-                using ManagementClass definition = new("root\\WMI", "MSI_ACPI", null);
-                if (definition.Methods.Cast<MethodData>().All(method => method.Name != "Get_WMI"))
-                {
-                    return false;
-                }
-
-                return AcquireProvider();
-            },
-            cancellationToken);
-    }
 
     /// <inheritdoc />
     public ValueTask<byte[]> InvokeGetterAsync(
@@ -295,7 +276,7 @@ internal sealed class MsiWmiPlatform : IMsiWmiTransport
     }
 }
 
-internal sealed partial class WindowsClawIdentityReader(Func<bool>? readOnAcPower = null) : IClawIdentityReader
+internal sealed class WindowsClawIdentityReader(Func<bool>? readOnAcPower = null) : IClawIdentityReader
 {
     public bool ReadOnAcPower()
     {
@@ -310,20 +291,6 @@ internal sealed partial class WindowsClawIdentityReader(Func<bool>? readOnAcPowe
             return false;
         }
     }
-
-    internal static string? EcFirmwareVersion(string? field)
-    {
-        if (field is null)
-        {
-            return null;
-        }
-
-        var match = EcBuildStamp().Match(field);
-        return match.Success && match.Index > 0 ? field[..match.Index] : field;
-    }
-
-    [GeneratedRegex(@"\d{10}:\d{2}:\d{2}$", RegexOptions.CultureInvariant)]
-    private static partial Regex EcBuildStamp();
 }
 
 internal sealed class MsiOemEventSource : IMsiOemEventSource

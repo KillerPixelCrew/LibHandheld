@@ -34,8 +34,8 @@ The independent
 [Linux Valve HID driver](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-steam.c) and
 Valve's
 [SDL controller definitions](https://github.com/libsdl-org/SDL/tree/main/src/joystick/hidapi/steam)
-cross-check firmware settings 9 (lizard), 71 (watchdog), 48 (IMU). The backend changes only those
-settings and restores captured values; it never clears digital mappings, factory resets the
+cross-check firmware settings 9 (lizard), 71 (watchdog), 48 (IMU). The backend captures and restores
+only setting 48; it never clears digital mappings, factory resets the
 controller or overwrites Steam's custom mappings. Setting read failures retain unknown originals and
 produce an unverified cleanup result. Firmware defaults enable Neptune motion; an unreadable IMU
 setting is left untouched. Disconnect and release stop haptics, retire the actual read operation and
@@ -68,9 +68,10 @@ three mailbox words can be mapped. Missing mapping/driver/export access fails cl
 denied LpcIO port fallback is used. An offline review of this exact DLL and its embedded x64 driver
 found that `MapPhysToLin` carries the full 64-bit physical address through `HalTranslateBusAddress`
 and `ZwMapViewOfSection`; no 2 GiB address rejection or truncation was found for the zero-extended
-x64 arguments used here. The DLL's void port export drops IOCTL failures, so the adapter sends the
-verified three-byte `0x9C402008` port/value request through the existing driver handle and checks
-its completion. Static evidence is in WSGM's local `artifacts/steamdeck-inpout-exports.log` and
+x64 arguments used here. The DLL's void port export drops IOCTL failures, so the shared
+`Internal/Transports/InpOutTransport` sends the verified three-byte `0x9C402008` port/value request
+through the existing driver handle and checks its completion; the Deck adapter admits the addresses.
+Static evidence is in WSGM's local `artifacts/steamdeck-inpout-exports.log` and
 `artifacts/steamdeck-inpout-driver.log`; no native target or driver was executed. The embedded x64
 PE bytes reviewed hash to `CA4B055ADE3A751AAD0C3CE49C89E2A715582A5BCED9A09A46D63FA8FC307056`.
 

@@ -30,7 +30,6 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     private int _slot = -1;
     private IHidControllerRumble? _hidRumble;
     private CancellationTokenSource? _stop;
-    private ReaderProgress? _progress;
     private Timer? _watchdog;
 
     public ValueTask DisposeAsync()
@@ -49,25 +48,17 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                 continue;
             }
 
-            var nodes = HidDevices.PresentNodes(caps.Vendor, [caps.Product]).Where(node =>
-                node.ClassGuid == HidDevices.XnaCompositeClass || node.ClassGuid == HidDevices.XboxCompositeClass
-                                                               || (node.ClassGuid == HidDevices.HidClass &&
-                                                                   node.InstancePath.Contains("&IG_",
-                                                                       StringComparison.OrdinalIgnoreCase))).ToArray();
+            var nodes = HidDevices.PresentNodes(caps.Vendor, [caps.Product])
+                .Where(node => HidDevices.IsControllerNode(node, [])).ToArray();
             if (nodes.Length == 0 || nodes.Any(node => string.IsNullOrEmpty(node.PhysicalLocation)))
             {
                 continue;
             }
 
             var location = nodes[0].PhysicalLocation!;
-            if (profile.CompanionUsbIds.Count != 0)
+            if (!OnCompanionHub(location))
             {
-                var anchors =
-                    profile.CompanionUsbIds.SelectMany(id => HidDevices.PresentNodes(id.Vendor, [id.Product]));
-                if (!anchors.Any(anchor => SameBuiltInHub(location, anchor.PhysicalLocation)))
-                {
-                    continue;
-                }
+                continue;
             }
 
             // Capabilities-ex does not identify the USB port. Refuse ambiguous identical pads rather
@@ -87,13 +78,9 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             return found;
         }
 
-        if (profile.CompanionUsbIds.Count != 0)
+        if (!OnCompanionHub(hid.PhysicalLocation))
         {
-            var anchors = profile.CompanionUsbIds.SelectMany(id => HidDevices.PresentNodes(id.Vendor, [id.Product]));
-            if (!anchors.Any(anchor => SameBuiltInHub(hid.PhysicalLocation, anchor.PhysicalLocation)))
-            {
-                return null;
-            }
+            return null;
         }
 
         if (string.IsNullOrWhiteSpace(hid.InstancePath) || string.IsNullOrWhiteSpace(hid.PhysicalLocation))
@@ -105,6 +92,14 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             HideSet(new[] { PhysicalIdentities.FromCollection(hid) }
                 .Concat(profile.HidCompanions?.Invoke(hid) ?? []), hid.VendorId, hid.PhysicalLocation), hid,
             profile.OpenHidRumble is not null);
+    }
+
+    // A profile with companion USB IDs claims a pad only when one of them shares its built-in hub.
+    private bool OnCompanionHub(string location)
+    {
+        return profile.CompanionUsbIds.Count == 0
+               || profile.CompanionUsbIds.SelectMany(id => HidDevices.PresentNodes(id.Vendor, [id.Product]))
+                   .Any(anchor => SameBuiltInHub(location, anchor.PhysicalLocation));
     }
 
     /// <summary>The present identities plus the pad's nodes in every other mode Windows has seen it in.</summary>
@@ -191,7 +186,6 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             _stop = new CancellationTokenSource();
             var token = _stop.Token;
             var progress = new ReaderProgress();
-            _progress = progress;
             _reader = new Thread(() => Read(topology.Slot, buttons, motion, publish, fault, token, touchpad, progress))
                 { IsBackground = true, Name = "LibHandheld physical controller" };
             _reader.Start();
@@ -332,7 +326,6 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
         {
             _reader = null;
             _slot = -1;
-            _progress = null;
             _stop?.Dispose();
             _stop = null;
         }

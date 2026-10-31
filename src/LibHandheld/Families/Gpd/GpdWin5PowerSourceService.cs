@@ -11,11 +11,8 @@ internal sealed class GpdWin5PowerSourceService(Func<IEmbeddedController>? open 
     : ProfiledFeatureService("gpd-win5-power-source")
 {
     internal const string CapabilityId = "power.type-c-only";
-    private readonly ObservedValues _observed = new();
-    private IEmbeddedController? _ec;
-    private CapabilityReason? _readFailure;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
+    private static readonly IReadOnlyList<CapabilityDescriptor> Controls =
     [
         new()
         {
@@ -25,17 +22,16 @@ internal sealed class GpdWin5PowerSourceService(Func<IEmbeddedController>? open 
         }
     ];
 
+    private readonly ObservedValues _observed = new();
+    private IEmbeddedController? _ec;
+    private CapabilityReason? _readFailure;
+
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Controls;
+
     internal override IReadOnlyList<CapabilityState> States =>
     [
-        new()
-        {
-            CapabilityId = CapabilityId, Available = _ec is not null,
-            ObservedValue = _observed.Value(CapabilityId), ObservedAt = _observed.Time(CapabilityId),
-            Quality = _observed.Value(CapabilityId) is null
-                ? HardwareStateQuality.Unknown
-                : HardwareStateQuality.Observed,
-            Reason = _readFailure ?? Reason
-        }
+        ProviderControls.State(CapabilityId, _ec is not null, _observed.Value(CapabilityId),
+            _observed.Time(CapabilityId), _readFailure ?? Reason)
     ];
 
     public override bool Suspendable => true;

@@ -7,12 +7,8 @@ namespace LibHandheld.Families.MsiClaw;
 // The capability surface: descriptors, published states and OEM controls.
 internal sealed partial class ClawDeviceEngine
 {
-    /// <summary>The Claw's declared Device overlay layout.</summary>
-    /// <remarks>
-    ///     Titles and icons are WSGM-owned vocabulary; only the grouping is this plugin's. A section a
-    ///     unit leaves empty is dropped by WSGM rather than declared conditionally, so the layout stays
-    ///     one static fact.
-    /// </remarks>
+    /// <summary>The Claw's descriptor set, one static fact for every unit of a model.</summary>
+    /// <remarks>Titles, icons and grouping are WSGM-owned vocabulary; the plugin declares only the capabilities.</remarks>
     private void BuildCapabilitySurface()
     {
         if (_power is null || _chargeLimit is null || _fans is null || _telemetry is null
@@ -27,31 +23,27 @@ internal sealed partial class ClawDeviceEngine
             IntegerDescriptor(CapabilityIds.PowerSustained, CapabilityRole.PowerSustainedLimit,
                     // PL1 shares PL2's ceiling: on the A2VM that is 37 W, not the 30 W it ships at.
                     DisplayKey.SustainedPowerLimit, Model.MinimumWatts, Model.MaximumWatts,
-                    CapabilityUnit.Watt, true,
-                    section: SectionIds.Power, category: CategoryIds.Limits, order: 0) with
+                    CapabilityUnit.Watt, true) with
                 {
                     PowerPresets = Model.PowerPresets,
                     PairedPowerLimitId = CapabilityIds.PowerBoost
                 },
             IntegerDescriptor(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
-                DisplayKey.BoostPowerLimit, Model.MinimumWatts, Model.MaximumWatts, CapabilityUnit.Watt, true,
-                section: SectionIds.Power, category: CategoryIds.Limits, order: 1),
+                DisplayKey.BoostPowerLimit, Model.MinimumWatts, Model.MaximumWatts, CapabilityUnit.Watt, true),
             IntegerDescriptor(CapabilityIds.ChargeLimit, CapabilityRole.ChargeLimit,
                     DisplayKey.ChargeLimit,
                     ClawChargeLimitCapability.MinimumPercent,
                     ClawChargeLimitCapability.MaximumPercent,
                     CapabilityUnit.Percent,
                     true,
-                    persistence: CapabilityPersistence.DevicePersistent,
-                    section: SectionIds.Power,
-                    category: CategoryIds.Charging) with
+                    persistence: CapabilityPersistence.DevicePersistent) with
                 {
                     // HC's BatteryBypassStep: the limit is 60, 80 or 100 percent.
                     Step = ClawChargeLimitCapability.StepPercent
                 },
             new CapabilityDescriptor
             {
-                CapabilityId = ClawChargeLimitCapability.ProtectionId,
+                CapabilityId = CapabilityIds.ChargeProtection,
                 Role = CapabilityRole.ChargeProtectionMode,
                 ValueKind = CapabilityValueKind.Boolean,
                 Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "Battery Master" },
@@ -62,30 +54,26 @@ internal sealed partial class ClawDeviceEngine
                 CapabilityIds.Scenario,
                 CapabilityRole.ScenarioMode,
                 DisplayKey.PerformanceProfile,
-                ["comfort", "green", "eco", "user", "sport", "inactive"],
-                true,
-                SectionIds.Power),
+                CapabilityDescriptors.Choices(["comfort", "green", "eco", "user", "sport", "inactive"]),
+                true),
             ChoiceDescriptor(
                 CapabilityIds.FanMode,
                 CapabilityRole.FanMode,
                 DisplayKey.FanMode,
-                ["automatic", "custom", "full-speed"],
-                true,
-                SectionIds.Power,
-                CategoryIds.Control),
-            FanCurveDescriptor(1),
-            IntegerDescriptor("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100,
-                    CapabilityUnit.Percent, true, section: SectionIds.Power) with
+                CapabilityDescriptors.Choices(["automatic", "custom", "full-speed"]),
+                true),
+            FanCurveDescriptor(),
+            IntegerDescriptor(CapabilityIds.FanDuty, CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100,
+                    CapabilityUnit.Percent, true) with
                 {
                     SupportsRead = false
                 },
             IntegerDescriptor(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness,
                 DisplayKey.Brightness, 0, 100, CapabilityUnit.Percent, true,
-                persistence: CapabilityPersistence.DevicePersistent,
-                section: SectionIds.Lighting),
-            LightingColorDescriptor(CapabilityInstances.LeftRing, "Left ring", 0),
-            LightingColorDescriptor(CapabilityInstances.RightRing, "Right ring", 1),
-            LightingColorDescriptor(CapabilityInstances.Buttons, "Buttons", 2),
+                persistence: CapabilityPersistence.DevicePersistent),
+            LightingColorDescriptor(CapabilityInstances.LeftRing, "Left ring"),
+            LightingColorDescriptor(CapabilityInstances.RightRing, "Right ring"),
+            LightingColorDescriptor(CapabilityInstances.Buttons, "Buttons"),
             // These three carry the value kinds their roles require. ControllerSource and
             // MotionSource are choices because "who owns this source" has more than two answers:
             // the plugin can hold it, the device can still have it, or acquisition can have failed,
@@ -99,42 +87,30 @@ internal sealed partial class ClawDeviceEngine
                 CapabilityIds.Controller,
                 CapabilityRole.ControllerSource,
                 DisplayKey.Controller,
-                SourceOwnership.Choices,
-                false,
-                SectionIds.Info,
-                CategoryIds.Ownership),
+                RawOwnershipChoices(),
+                false),
             ChoiceDescriptor(
                 CapabilityIds.Motion,
                 CapabilityRole.MotionSource,
                 DisplayKey.Motion,
-                SourceOwnership.Choices,
-                false,
-                SectionIds.Info,
-                CategoryIds.Ownership,
-                1),
-            ActionDescriptor(
-                CapabilityIds.Rumble,
-                CapabilityRole.HapticSink,
-                DisplayKey.Rumble,
-                SectionIds.Info,
-                CategoryIds.Ownership,
-                2),
+                RawOwnershipChoices(),
+                false),
+            // A sink offers the invoke as its one operation: rumble is written to it, never read back.
+            CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
+                new CapabilityDisplay { Key = DisplayKey.Rumble }),
             // Readings, not controls. They left the Power page because a person opens it to change
             // how the device behaves, not to watch numbers; the CPU temperature stays published
             // because the fan-curve editor draws the live temperature against the curve.
             IntegerDescriptor(CapabilityIds.Temperature, CapabilityRole.Telemetry,
-                DisplayKey.CpuTemperature, 0, 110, CapabilityUnit.Celsius, false,
-                section: SectionIds.Info, category: CategoryIds.Readings, order: 0),
+                DisplayKey.CpuTemperature, 0, 110, CapabilityUnit.Celsius, false),
             // Both fans are still measured separately even though they are driven together: one
             // failing fan is exactly the fault this page exists to make visible.
             IntegerDescriptor(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
                 DisplayKey.FanLeft, 0, 10_000, CapabilityUnit.Rpm, false,
-                CapabilityInstances.Left,
-                section: SectionIds.Info, category: CategoryIds.Readings, order: 1),
+                CapabilityInstances.Left),
             IntegerDescriptor(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
                 DisplayKey.FanRight, 0, 10_000, CapabilityUnit.Rpm, false,
-                CapabilityInstances.Right,
-                section: SectionIds.Info, category: CategoryIds.Readings, order: 2)
+                CapabilityInstances.Right)
         ];
 
         EnsureUniqueCapabilityKeys(descriptors);
@@ -176,51 +152,23 @@ internal sealed partial class ClawDeviceEngine
     ///         the write would then refuse.
     ///     </para>
     /// </remarks>
-    private static CapabilityDescriptor FanCurveDescriptor(int order)
+    private static CapabilityDescriptor FanCurveDescriptor()
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = CapabilityIds.FanCurve,
-            Role = CapabilityRole.FanCurve,
-
-
-            ValueKind = CapabilityValueKind.Curve,
-            // ClawFanCapability.TryValidateCurve admits six monotonic temperatures within 0..100.
-            // This is a legal first-edit template, not a claim about the firmware's current table.
-            CurveInputs = [0, 20, 40, 60, 80, 100],
-            Display = new CapabilityDisplay { Key = DisplayKey.FanCurve },
-            Minimum = 0,
-            Maximum = 100,
-            Unit = CapabilityUnit.Percent,
-            SupportsRead = true,
-            SupportsWrite = true,
-            Persistence = CapabilityPersistence.Volatile
-        };
+        // ClawFanCapability.TryValidateCurve admits six monotonic temperatures within 0..100.
+        // This is a legal first-edit template, not a claim about the firmware's current table.
+        return CapabilityDescriptors.Curve(CapabilityIds.FanCurve, new CapabilityDisplay { Key = DisplayKey.FanCurve },
+            [0, 20, 40, 60, 80, 100], read: true);
     }
 
-    private static CapabilityDescriptor LightingColorDescriptor(
-        string instance,
-        string label,
-        int order)
+    private static CapabilityDescriptor LightingColorDescriptor(string instance, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = CapabilityIds.LightingColor,
-            InstanceId = instance,
-            Role = CapabilityRole.LightingZoneColor,
-
-
-            ValueKind = CapabilityValueKind.Color,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
-            SupportsRead = true,
-            SupportsWrite = true,
-            Persistence = CapabilityPersistence.DevicePersistent
-        };
+        return CapabilityDescriptors.Color(CapabilityIds.LightingColor, instance, CapabilityDescriptors.Label(label),
+            read: true, CapabilityPersistence.DevicePersistent);
     }
 
     private async ValueTask PublishCapabilityStatesAsync(CancellationToken cancellationToken)
     {
-        if (_host is null || _descriptorSet is null)
+        if (_descriptorSet is null)
         {
             return;
         }
@@ -238,7 +186,7 @@ internal sealed partial class ClawDeviceEngine
             // sink carries availability alone because its declared value shape is None.
             var failed = _observationFailures.TryGetValue(service.ServiceId, out var observationFailure);
             var value = descriptor.ValueKind != CapabilityValueKind.None && !failed ? CurrentState(descriptor) : null;
-            await _host.PublishCapabilityStateAsync(
+            await _publications.PublishCapabilityStateAsync(
                 new CapabilityState
                 {
                     CapabilityId = descriptor.CapabilityId,
@@ -283,14 +231,14 @@ internal sealed partial class ClawDeviceEngine
                     ? CapabilityValue.Integer(value.Percent)
                     : null;
             }
-            case ClawChargeLimitCapability.ProtectionId:
+            case CapabilityIds.ChargeProtection:
                 return _chargeLimitCapability!.WrittenProtection is { } enabled
                     ? CapabilityValue.Boolean(enabled) : null;
             case CapabilityIds.FanMode:
             {
                 return _fanCapability!.WrittenMode is { } value ? CapabilityValue.Choice(value) : null;
             }
-            case "fan.duty":
+            case CapabilityIds.FanDuty:
                 return _fanCapability?.WrittenDuty is { } duty ? CapabilityValue.Integer(duty) : null;
             case CapabilityIds.FanCurve:
             {
@@ -346,9 +294,9 @@ internal sealed partial class ClawDeviceEngine
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => _powerCapability!.LimitsWrittenAt,
             CapabilityIds.Scenario => _powerCapability!.ScenarioWrittenAt,
             CapabilityIds.ChargeLimit => _chargeLimitCapability!.WrittenAt,
-            ClawChargeLimitCapability.ProtectionId => _chargeLimitCapability!.ProtectionWrittenAt,
+            CapabilityIds.ChargeProtection => _chargeLimitCapability!.ProtectionWrittenAt,
             CapabilityIds.FanMode => _fanCapability!.ModeWrittenAt,
-            "fan.duty" => _fanCapability!.DutyWrittenAt,
+            CapabilityIds.FanDuty => _fanCapability!.DutyWrittenAt,
             CapabilityIds.FanCurve => _fanCapability!.CurveWrittenAt,
             CapabilityIds.LightingBrightness or CapabilityIds.LightingColor => _lightingCapability!.WrittenAt,
             CapabilityIds.FanRpm or CapabilityIds.Temperature => _telemetry!.ObservedAt,
@@ -360,32 +308,13 @@ internal sealed partial class ClawDeviceEngine
     {
         return
         [
-            Oem("oem1", "Claw button", OemControlPlacement.Front, false,
-                false) with { ControllerButton = CanonicalButtons.Guide },
-            Oem("oem2", "Quick Settings", OemControlPlacement.Front, true,
-                false) with { ControllerButton = CanonicalButtons.QuickAccess },
-            Oem("oem3", "M1", OemControlPlacement.Rear, false,
-                true),
-            Oem("oem4", "M2", OemControlPlacement.Rear, false,
-                true)
+            CapabilityDescriptors.OemControl("oem1", "Claw button", OemControlPlacement.Front,
+                requiresController: false, CanonicalButtons.Guide),
+            CapabilityDescriptors.OemControl("oem2", "Quick Settings", OemControlPlacement.Front,
+                requiresController: false, CanonicalButtons.QuickAccess) with { SupportsLongPress = true },
+            CapabilityDescriptors.OemControl("oem3", "M1", OemControlPlacement.Rear),
+            CapabilityDescriptors.OemControl("oem4", "M2", OemControlPlacement.Rear)
         ];
-    }
-
-    private static OemControlDescriptor Oem(
-        string id,
-        string label,
-        OemControlPlacement placement,
-        bool supportsLongPress,
-        bool requiresController)
-    {
-        return new OemControlDescriptor
-        {
-            ControlId = id,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
-            Placement = placement,
-            SupportsLongPress = supportsLongPress,
-            RequiresControllerAcquisition = requiresController
-        };
     }
 
     private static CapabilityDescriptor IntegerDescriptor(
@@ -397,100 +326,31 @@ internal sealed partial class ClawDeviceEngine
         CapabilityUnit unit,
         bool writable,
         string? instance = null,
-        CapabilityPersistence persistence = CapabilityPersistence.Volatile,
-        string? section = null,
-        string? category = null,
-        int order = 0)
+        CapabilityPersistence persistence = CapabilityPersistence.Volatile)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id,
-            InstanceId = instance,
-            Role = role,
-
-
-            ValueKind = CapabilityValueKind.Integer,
-            Display = new CapabilityDisplay { Key = display },
-            SupportsRead = true,
-            SupportsWrite = writable,
-            Minimum = minimum,
-            Maximum = maximum,
-            Step = 1,
-            Unit = unit,
-            Persistence = persistence
-        };
+        return CapabilityDescriptors.Integer(id, role, new CapabilityDisplay { Key = display }, minimum, maximum, unit,
+            read: true, writable, persistence, instance: instance);
     }
 
     private static CapabilityDescriptor ChoiceDescriptor(
         string id,
         CapabilityRole role,
         DisplayKey display,
-        IReadOnlyList<string> choices,
-        bool writable,
-        string? section = null,
-        string? category = null,
-        int order = 0)
+        IReadOnlyList<CapabilityChoice> choices,
+        bool writable)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id,
-            Role = role,
-
-
-            ValueKind = CapabilityValueKind.Choice,
-            Display = new CapabilityDisplay { Key = display },
-            SupportsRead = true,
-            SupportsWrite = writable,
-            Choices =
-            [
-                .. choices.Select(choice => new CapabilityChoice(
-                    choice,
-                    new CapabilityDisplay
-                    {
-                        Key = DisplayKey.Custom, CustomText = choice switch
-                        {
-                            "comfort" => "Comfort", "green" => "Green", "eco" => "Eco", "sport" => "Sport",
-                            "user" => "User", "inactive" => "Inactive", "automatic" => "Automatic",
-                            "custom" => "Custom", "full-speed" => "Full speed",
-                            _ => choice
-                        }
-                    }))
-            ],
-            Persistence = CapabilityPersistence.Volatile
-        };
+        return CapabilityDescriptors.Choice(id, role, new CapabilityDisplay { Key = display }, choices, read: true,
+            writable);
     }
 
-    /// <summary>A capability that is invoked rather than read or written.</summary>
-    /// <param name="id">Capability id.</param>
-    /// <param name="role">Semantic role, which must be one the SDK maps to <c>None</c>.</param>
-    /// <param name="display">Display key.</param>
-    /// <param name="section">Overlay section id the row is grouped under, or null for the default.</param>
-    /// <param name="category">Category within that section, or null for its lead group.</param>
-    /// <param name="order">Sort order within the section; lower sorts first.</param>
-    /// <returns>The descriptor.</returns>
-    private static CapabilityDescriptor ActionDescriptor(
-        string id,
-        CapabilityRole role,
-        DisplayKey display,
-        string? section = null,
-        string? category = null,
-        int order = 0)
+    /// <summary>The ownership choices, each labelled with its own id, as this family has always published them.</summary>
+    private static IReadOnlyList<CapabilityChoice> RawOwnershipChoices()
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id,
-            Role = role,
-
-
-            ValueKind = CapabilityValueKind.None,
-            Display = new CapabilityDisplay { Key = display },
-            SupportsRead = false,
-            SupportsWrite = false,
-            // A descriptor has to offer at least one operation, and for a sink the operation is the
-            // invoke: rumble is written to it, never read back from it.
-            SupportsAction = true,
-            Persistence = CapabilityPersistence.Volatile
-        };
+        return
+        [
+            .. SourceOwnership.Choices.Select(choice =>
+                new CapabilityChoice(choice, CapabilityDescriptors.Label(choice)))
+        ];
     }
 
     internal static CapabilityValue? Scenario(byte raw, ClawModel model)

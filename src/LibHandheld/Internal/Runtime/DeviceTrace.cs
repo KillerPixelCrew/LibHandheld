@@ -76,20 +76,6 @@ internal static class DeviceTrace
         Write(DeviceTraceLevel.Error, scope, message);
     }
 
-    /// <summary>Records detail that only matters while investigating a specific problem.</summary>
-    /// <param name="scope">Subsystem producing the line, used as the log prefix.</param>
-    /// <param name="message">The line.</param>
-    /// <remarks>
-    ///     The host suppresses this level unless diagnostics are raised, so it is the right home for
-    ///     values that would drown the default log. It is not a licence to trace per sample: a
-    ///     suppressed line still costs the call and the string that built it, and raising diagnostics
-    ///     must not turn the log into the thing this level exists to prevent.
-    /// </remarks>
-    public static void Debug(string scope, string message)
-    {
-        Write(DeviceTraceLevel.Debug, scope, message);
-    }
-
     /// <summary>Records a polled state, writing only when it differs from that key's last line.</summary>
     /// <param name="scope">Subsystem producing the line, used as the log prefix.</param>
     /// <param name="key">Stable identity of the thing observed, unique within <paramref name="scope" />.</param>

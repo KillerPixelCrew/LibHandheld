@@ -35,6 +35,8 @@ internal enum ClawReconciliationAction
     Discard
 }
 
+// Unknown members are ignored: a record a different build of this package left behind must still
+// load, or the services it covers would stay blocked with nothing in the product able to clear it.
 internal sealed record ClawRecoveryState
 {
     public required ClawRecoveryStateKind Kind { get; init; }
@@ -151,6 +153,3 @@ internal static class ClawRecoveryValues
                && mode is ClawControllerMode.XInput or ClawControllerMode.DirectInput;
     }
 }
-
-// Unknown members are ignored: a record a different build of this package left behind must still
-// load, or the services it covers would stay blocked with nothing in the product able to clear it.

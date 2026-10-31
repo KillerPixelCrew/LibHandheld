@@ -18,10 +18,10 @@ internal sealed class OneXNativeService(
     private readonly Dictionary<string, int> _colors = new(StringComparer.Ordinal)
         { ["primary"] = 0xFFFFFF, ["secondary"] = 0xFFFFFF };
 
-    private readonly Dictionary<(string, string?), CapabilityValue> _observed = [];
-    private readonly Dictionary<(string, string?), DateTimeOffset> _observedAt = [];
+    private readonly ObservedValues _observed = new();
     private int _brightness = 100;
     private bool _chargeSupported;
+    private IReadOnlyList<CapabilityDescriptor>? _descriptors;
     private IEmbeddedController? _ec;
 
     private string _effect = "solid";
@@ -36,29 +36,25 @@ internal sealed class OneXNativeService(
 
     public override bool Suspendable => true;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Describe();
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors ??= Describe();
 
     internal override IReadOnlyList<CapabilityState> States => Array.AsReadOnly(Descriptors.Select(item =>
     {
         var lights = item.Role is CapabilityRole.LightingBrightness or CapabilityRole.LightingEffect
             or CapabilityRole.LightingZoneColor;
-        var available = item.CapabilityId == "haptic.strength" ? _vibration is not null
+        var available = item.CapabilityId == CapabilityIds.HapticStrength ? _vibration is not null
             : lights ? _lights is not null : _ec is not null;
-        var value = _observed.GetValueOrDefault((item.CapabilityId, item.InstanceId));
-        return new CapabilityState
-        {
-            CapabilityId = item.CapabilityId, InstanceId = item.InstanceId,
-            Available = available, ObservedValue = value,
-            Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-            ObservedAt = value is null ? null : _observedAt.GetValueOrDefault((item.CapabilityId, item.InstanceId)),
-
-            Reason = available
-                ? null
-                : Missing("The model's native transport is unavailable.")
-        };
+        return ProviderControls.Observed(item, _observed, available,
+            available ? null : Missing("The model's native transport is unavailable."));
     }).ToArray());
 
     internal override ValueTask DisposeAsync()
+    {
+        CloseTransports();
+        return ValueTask.CompletedTask;
+    }
+
+    private void CloseTransports()
     {
         if (!ReferenceEquals(_takeoverEc, _ec))
         {
@@ -72,7 +68,6 @@ internal sealed class OneXNativeService(
         _lights = null;
         _vibration?.Dispose();
         _vibration = null;
-        return ValueTask.CompletedTask;
     }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
@@ -116,6 +111,7 @@ internal sealed class OneXNativeService(
         // Uncertainty survives suspend/resume. Reopening a handle does not prove that the previous
         // write failed, and must not cause a saved preference to be sent again automatically.
         _chargeSupported = profile.Charge != OneXChargeKind.None && ReadChargeFirmwareSupport();
+        _descriptors = null;
         if (_ec is not null)
         {
             foreach (var entry in _journal.Entries<OneXRegisterState>())
@@ -149,11 +145,19 @@ internal sealed class OneXNativeService(
         {
             await TakeoverAsync(token).ConfigureAwait(false);
         }
-        else if (!enabled && _journal?.PendingOriginalFor<OneXRegisterState>("takeover") is { } original)
+        else if (_journal?.OriginalStateFor<OneXRegisterState>("takeover") is { } original)
         {
             await RestoreAsync("takeover", original, token).ConfigureAwait(false);
         }
-        else if (!enabled && _takeoverActive && profile.Ec == OneXEcKind.Wmi)
+        else
+        {
+            ClearWmiTakeover(token);
+        }
+    }
+
+    private void ClearWmiTakeover(CancellationToken token)
+    {
+        if (_takeoverActive && profile.Ec == OneXEcKind.Wmi)
         {
             token.ThrowIfCancellationRequested();
             WriteTakeoverBit(_takeoverEc!, false);
@@ -210,7 +214,7 @@ internal sealed class OneXNativeService(
         var sent = false;
         var lighting = command.CapabilityId is CapabilityIds.LightingBrightness or CapabilityIds.LightingEffect
             or CapabilityIds.LightingColor;
-        if (command.CapabilityId == "haptic.strength" ? _vibration is null
+        if (command.CapabilityId == CapabilityIds.HapticStrength ? _vibration is null
             : lighting ? _lights is null : _ec is null)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
@@ -222,22 +226,22 @@ internal sealed class OneXNativeService(
             switch (command.CapabilityId)
             {
                 case CapabilityIds.FanMode:
-                case "fan.duty":
+                case CapabilityIds.FanDuty:
                     await CaptureAsync("fan", [profile.FanDuty, profile.FanMode], false, token).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
-                    var mode = command.CapabilityId == "fan.duty" ? "custom" : value.ChoiceValue!;
-                    var percent = command.CapabilityId == "fan.duty" ? value.IntegerValue!.Value : 100;
+                    var mode = command.CapabilityId == CapabilityIds.FanDuty ? "custom" : value.ChoiceValue!;
+                    var percent = command.CapabilityId == CapabilityIds.FanDuty ? value.IntegerValue!.Value : 100;
                     sent = true;
-                    if (command.CapabilityId == "fan.duty" || mode == "full-speed")
+                    if (command.CapabilityId == CapabilityIds.FanDuty || mode == "full-speed")
                     {
                         _ec!.WriteByte(profile.FanDuty, EncodeDuty(profile, percent));
                     }
 
                     _ec!.WriteByte(profile.FanMode, (byte)(mode == "automatic" ? 0 : 1));
                     Observe(CapabilityIds.FanMode, null, CapabilityValue.Choice(mode));
-                    if (command.CapabilityId == "fan.duty" || mode == "full-speed")
+                    if (command.CapabilityId == CapabilityIds.FanDuty || mode == "full-speed")
                     {
-                        Observe("fan.duty", null, CapabilityValue.Integer(percent));
+                        Observe(CapabilityIds.FanDuty, null, CapabilityValue.Integer(percent));
                     }
 
                     break;
@@ -258,34 +262,17 @@ internal sealed class OneXNativeService(
                     break;
                 case CapabilityIds.LightingBrightness:
                     _brightness = value.IntegerValue!.Value;
-                    foreach (var side in PrimarySides().Concat(SecondarySides()))
-                    {
-                        sent = true;
-                        _lights!.Write(OneXCommandCodec.Brightness(profile.Lighting, _brightness, side), token);
-                        await Gap(token).ConfigureAwait(false);
-                    }
-
+                    await WriteBrightnessAsync(_brightness, token, () => sent = true).ConfigureAwait(false);
                     break;
                 case CapabilityIds.LightingEffect:
                     _effect = value.ChoiceValue!;
                     if (_effect == "off")
                     {
-                        foreach (var side in PrimarySides().Concat(SecondarySides()))
-                        {
-                            sent = true;
-                            _lights!.Write(OneXCommandCodec.Brightness(profile.Lighting, 0, side), token);
-                            await Gap(token).ConfigureAwait(false);
-                        }
+                        await WriteBrightnessAsync(0, token, () => sent = true).ConfigureAwait(false);
                     }
                     else
                     {
-                        foreach (var side in PrimarySides().Concat(SecondarySides()))
-                        {
-                            sent = true;
-                            _lights!.Write(OneXCommandCodec.Brightness(profile.Lighting, _brightness, side), token);
-                            await Gap(token).ConfigureAwait(false);
-                        }
-
+                        await WriteBrightnessAsync(_brightness, token, () => sent = true).ConfigureAwait(false);
                         await ApplyColorAsync("primary", token, () => sent = true).ConfigureAwait(false);
                         if (SecondarySides().Count != 0 && profile.Lighting != OneXLightingKind.Serial)
                         {
@@ -299,7 +286,7 @@ internal sealed class OneXNativeService(
                     await ApplyColorAsync(command.InstanceId ?? "primary", token, () => sent = true)
                         .ConfigureAwait(false);
                     break;
-                case "haptic.strength":
+                case CapabilityIds.HapticStrength:
                     sent = true;
                     _vibration!.Write(OneXCommandCodec.Vibration(value.IntegerValue!.Value, profile.SimpleVibration),
                         token);
@@ -326,6 +313,16 @@ internal sealed class OneXNativeService(
                      profile.MinimumDuty;
         // Legacy ACPI overrides cast the PWM value; indexed and X2 paths use a rounded byte.
         return checked((byte)(profile.Ec == OneXEcKind.Acpi ? scaled : Math.Round(scaled)));
+    }
+
+    private async ValueTask WriteBrightnessAsync(int level, CancellationToken token, Action dispatch)
+    {
+        foreach (var side in PrimarySides().Concat(SecondarySides()))
+        {
+            dispatch();
+            _lights!.Write(OneXCommandCodec.Brightness(profile.Lighting, level, side), token);
+            await Gap(token).ConfigureAwait(false);
+        }
     }
 
     private async ValueTask ApplyColorAsync(string zone, CancellationToken token, Action dispatch)
@@ -419,15 +416,13 @@ internal sealed class OneXNativeService(
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            _observed.Remove((id, null));
-            _observedAt.Remove((id, null));
+            _observed.Forget(id);
         }
     }
 
     private void Observe(string id, string? instance, CapabilityValue value)
     {
-        _observed[(id, instance)] = value;
-        _observedAt[(id, instance)] = DateTimeOffset.UtcNow;
+        _observed.Written(id, value, instance);
     }
 
     private bool ReadChargeFirmwareSupport()
@@ -472,12 +467,7 @@ internal sealed class OneXNativeService(
                 }
             }
 
-            if (_takeoverActive && profile.Ec == OneXEcKind.Wmi)
-            {
-                token.ThrowIfCancellationRequested();
-                WriteTakeoverBit(_takeoverEc!, false);
-                _takeoverActive = false;
-            }
+            ClearWmiTakeover(token);
 
             return _unknownOriginal || _journal?.Entries<OneXRegisterState>().Count > 0
                 ? Set(DeviceServiceState.ReleasedUnverified,
@@ -486,18 +476,7 @@ internal sealed class OneXNativeService(
         }
         finally
         {
-            if (!ReferenceEquals(_takeoverEc, _ec))
-            {
-                _takeoverEc?.Dispose();
-            }
-
-            _takeoverEc = null;
-            _ec?.Dispose();
-            _ec = null;
-            _lights?.Dispose();
-            _lights = null;
-            _vibration?.Dispose();
-            _vibration = null;
+            CloseTransports();
         }
     }
 
@@ -509,41 +488,32 @@ internal sealed class OneXNativeService(
             return;
         }
 
-        try
+        var transport = original.Acpi ? _takeoverEc ??= OpenAcpi() : _ec;
+        if (transport is null)
         {
-            var transport = original.Acpi ? _takeoverEc ??= OpenAcpi() : _ec;
-            if (transport is null)
-            {
-                throw new IOException("The original register transport is unavailable.");
-            }
-
-            for (var index = 0; index < original.Addresses.Length; index++)
-            {
-                token.ThrowIfCancellationRequested();
-                if (id == "takeover" && profile.Ec == OneXEcKind.Wmi && original.Addresses[index] == 0x04EB)
-                {
-                    if (original.UnknownOriginal)
-                    {
-                        throw new IOException("The original takeover bit was not captured.");
-                    }
-
-                    WriteTakeoverBit(transport, (original.Values[index] & 0x40) != 0);
-                    _takeoverActive = false;
-                }
-                else
-                {
-                    transport.WriteByte(original.Addresses[index], original.Values[index]);
-                }
-            }
-
-            await _journal!.SetStatusAsync(id, DeviceRecoveryStatus.RestoredUnverified, token).ConfigureAwait(false);
+            throw new IOException("The original register transport is unavailable.");
         }
-        catch
+
+        for (var index = 0; index < original.Addresses.Length; index++)
         {
-            await _journal!.SetStatusAsync(id, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                .ConfigureAwait(false);
-            throw;
+            token.ThrowIfCancellationRequested();
+            if (id == "takeover" && profile.Ec == OneXEcKind.Wmi && original.Addresses[index] == 0x04EB)
+            {
+                if (original.UnknownOriginal)
+                {
+                    throw new IOException("The original takeover bit was not captured.");
+                }
+
+                WriteTakeoverBit(transport, (original.Values[index] & 0x40) != 0);
+                _takeoverActive = false;
+            }
+            else
+            {
+                transport.WriteByte(original.Addresses[index], original.Values[index]);
+            }
         }
+
+        await _journal.MarkRestoredAsync(id, token).ConfigureAwait(false);
     }
 
     private IReadOnlyList<CapabilityDescriptor> Describe()
@@ -552,7 +522,8 @@ internal sealed class OneXNativeService(
         [
             Choice(CapabilityIds.FanMode, CapabilityRole.FanMode, "Fan mode", ["automatic", "custom", "full-speed"],
                 false),
-            Range("fan.duty", CapabilityRole.FanDuty, "Fan speed", 0, 100, CapabilityUnit.Percent, true, false)
+            Range(CapabilityIds.FanDuty, CapabilityRole.FanDuty, "Fan speed", 0, 100, CapabilityUnit.Percent, true,
+                false)
         ];
         if (profile.X2 || profile.Three)
         {
@@ -608,7 +579,7 @@ internal sealed class OneXNativeService(
 
         if (profile.Vibration)
         {
-            descriptors.Add(Range("haptic.strength", CapabilityRole.GenericRange, "Rumble strength", 0, 10,
+            descriptors.Add(Range(CapabilityIds.HapticStrength, CapabilityRole.GenericRange, "Rumble strength", 0, 10,
                     CapabilityUnit.None, true, true) with
                 {
                     SupportsRead = false
@@ -632,39 +603,24 @@ internal sealed class OneXNativeService(
 
     private static CapabilityDescriptor Color(string zone, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = CapabilityIds.LightingColor, InstanceId = zone, Role = CapabilityRole.LightingZoneColor,
-            ValueKind = CapabilityValueKind.Color, Display = CapabilityDescriptors.Label(label), SupportsWrite = true,
-            Persistence = CapabilityPersistence.DevicePersistent
-        };
+        return CapabilityDescriptors.Color(CapabilityIds.LightingColor, zone, CapabilityDescriptors.Label(label),
+            read: false, CapabilityPersistence.DevicePersistent);
     }
 
     private static CapabilityDescriptor Range(string id, CapabilityRole role, string label, int minimum, int maximum,
         CapabilityUnit unit, bool write, bool persistent)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, Display = CapabilityDescriptors.Label(label),
-            ValueKind = CapabilityValueKind.Integer,
-            Minimum = minimum,
-            Maximum = maximum, Step = 1, Unit = unit, SupportsRead = true, SupportsWrite = write,
-            Persistence = persistent ? CapabilityPersistence.DevicePersistent : CapabilityPersistence.Volatile
-        };
+        return CapabilityDescriptors.Integer(id, role, CapabilityDescriptors.Label(label), minimum, maximum, unit,
+            read: true, write,
+            persistent ? CapabilityPersistence.DevicePersistent : CapabilityPersistence.Volatile);
     }
 
     private static CapabilityDescriptor Choice(string id, CapabilityRole role, string label, string[] choices,
         bool persistent)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, Display = CapabilityDescriptors.Label(label),
-            ValueKind = CapabilityValueKind.Choice,
-            SupportsRead = true,
-            SupportsWrite = true,
-            Persistence = persistent ? CapabilityPersistence.DevicePersistent : CapabilityPersistence.Volatile,
-            Choices = CapabilityDescriptors.Choices(choices)
-        };
+        return CapabilityDescriptors.Choice(id, role, CapabilityDescriptors.Label(label),
+            CapabilityDescriptors.Choices(choices), read: true, write: true,
+            persistent ? CapabilityPersistence.DevicePersistent : CapabilityPersistence.Volatile);
     }
 }
 

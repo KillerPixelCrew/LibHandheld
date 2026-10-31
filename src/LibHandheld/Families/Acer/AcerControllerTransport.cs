@@ -26,10 +26,7 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
     {
         _collection = collection;
         _stream = HidDevices.OpenStream(collection);
-        Release = collection.ReleaseNumber;
     }
-
-    internal ushort Release { get; }
 
     private void FlushReplies()
     {

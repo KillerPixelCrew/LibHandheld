@@ -39,30 +39,17 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
         {
             Display = CapabilityDescriptors.Label("Lighting speed")
         },
-        new()
-        {
-            CapabilityId = CapabilityIds.LightingEffect, Role = CapabilityRole.LightingEffect,
-            Display = CapabilityDescriptors.Label("Lighting effect"), ValueKind = CapabilityValueKind.Choice,
-            SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
-            Choices = CapabilityDescriptors.Choices(["solid", "breathing"])
-        },
-        new()
-        {
-            CapabilityId = CapabilityIds.LightingColor, InstanceId = "main", Role = CapabilityRole.LightingZoneColor,
-            Display = CapabilityDescriptors.Label("All ring segments"), ValueKind = CapabilityValueKind.Color,
-            SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
-        },
-        .. Zones.Select(zone => new CapabilityDescriptor
-        {
-            CapabilityId = CapabilityIds.LightingColor, InstanceId = zone.Id, Role = CapabilityRole.LightingZoneColor,
-            Display = CapabilityDescriptors.Label(zone.Name), ValueKind = CapabilityValueKind.Color,
-            SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile
-        })
+        CapabilityDescriptors.Choice(CapabilityIds.LightingEffect, CapabilityRole.LightingEffect,
+            CapabilityDescriptors.Label("Lighting effect"), CapabilityDescriptors.Choices(["solid", "breathing"]),
+            read: true, write: true),
+        CapabilityDescriptors.Color(CapabilityIds.LightingColor, "main", CapabilityDescriptors.Label("All ring segments"),
+            read: true, CapabilityPersistence.Volatile),
+        .. Zones.Select(zone => CapabilityDescriptors.Color(CapabilityIds.LightingColor, zone.Id,
+            CapabilityDescriptors.Label(zone.Name), read: true, CapabilityPersistence.Volatile))
     ];
     private readonly ObservedValues _observed = new();
     private AcerControllerTransport? _controller;
     private byte[]? _lighting;
-    private string _binding = context.Firmware;
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Controls;
     internal override IReadOnlyList<CapabilityState> States => Controls.Select(item =>
@@ -84,7 +71,6 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
             return Set(DeviceServiceState.Passive, Missing("The measured Atlas controller lighting lane is unavailable."));
         }
 
-        _binding = $"{context.Firmware}|controller:{_controller.Release:X4}";
         // Lighting is the user's choice and stays on the controller after WSGM stops; restoring the
         // OEM rainbow on every exit undid it. Earlier builds journaled an original, so drop it unrestored.
         await context.Journal.RetireAsync(ServiceId, "lighting edits are kept after release", token)
@@ -203,9 +189,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
                 }
                 foreach (var zone in shared ? Zones : [Zones[zoneIndex]])
                 {
-                    lighting[offset + 4 + zone.Index * 3] = (byte)((color >> 16) & 0xFF);
-                    lighting[offset + 5 + zone.Index * 3] = (byte)((color >> 8) & 0xFF);
-                    lighting[offset + 6 + zone.Index * 3] = (byte)(color & 0xFF);
+                    CapabilityDescriptors.WriteRgb(lighting.AsSpan(offset + 4 + zone.Index * 3), color);
                 }
                 break;
             default:

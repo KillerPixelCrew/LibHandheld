@@ -27,7 +27,10 @@ restoration is not automatically retried. Lighting persistence first reloads the
 temporary rear mappings cannot be saved as permanent configuration.
 
 UMA allocation is firmware behavior, distinct from GPU-driver tuning in LibGPUDriverInteract. It is
-global and takes effect after Windows restarts. The WMI provider must actually be present; absent
-providers produce unavailable controls. No native writes occur during model detection.
+global and takes effect after Windows restarts. With the pre-installed InpOut driver, `ZotacCmos`
+writes HC's `SetVRamSize` pair (port 0x70 index 0x7A, then port 0x71 allocation) through the shared
+InpOut transport under `Global\Access_ISABUS.HTP.Method`; otherwise the `UMAInterface` WMI provider
+must actually be present. With neither route the control is unavailable. No native writes occur
+during model detection.
 
 These are source-based implementations. No new Zone hardware acceptance has been performed.

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using LibHandheld.Internal.Capabilities;
 
 namespace LibHandheld.Contracts;
 
@@ -48,9 +49,8 @@ public sealed record CapabilityDisplay
             return false;
         }
 
-        if (Description is not null && string.IsNullOrWhiteSpace(Description))
+        if (Description is not null && !PlainText.TryValidate(Description, "description", out error))
         {
-            error = "description must not be blank when supplied.";
             return false;
         }
 

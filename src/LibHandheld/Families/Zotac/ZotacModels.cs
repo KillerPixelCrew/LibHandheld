@@ -1,6 +1,5 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Devices;
-using LibHandheld.Internal.Runtime;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
 using DeviceHardwareAccess = LibHandheld.Contracts.DeviceHardwareAccess;
 
@@ -17,7 +16,7 @@ internal static class ZotacModels
             ["ZotacHandheldDatabaseService", "ZotacHandheldService"], [])
     ];
 
-    private static readonly ProfiledDeviceModel Zone = new()
+    internal static readonly ProfiledDeviceModel Zone = new()
     {
         Definition = new HandheldDefinition("zotac-zone", FamilyId, "ZOTAC GAMING ZONE", "zotac-zone")
             { HardwareAccess = DeviceHardwareAccess.PawnIo | DeviceHardwareAccess.InpOut },
@@ -51,32 +50,11 @@ internal static class ZotacModels
         ServiceFactories = [context => new ZotacNativeService(context)]
     };
 
-    // HHD selects the system product, HC the baseboard. Both represent the same physical model.
-    private static readonly ProfiledDeviceModel HhdZone = Zone with
-    {
-        IdentitySource = ProfileIdentitySource.System, Products = ["ZOTAC GAMING ZONE"]
-    };
-
-    internal static IReadOnlyList<HandheldDefinition> GetDefinitions()
-    {
-        return [Zone.DeclaredDefinition];
-    }
-
+    /// <summary>HC selects the baseboard, HHD the system product; both name the same physical model.</summary>
     internal static ProfiledDeviceModel? Match(DeviceIdentitySnapshot identity)
     {
         return Zone.Matches(identity)
+               || string.Equals(identity.SystemProduct, "ZOTAC GAMING ZONE", StringComparison.OrdinalIgnoreCase)
             ? Zone
-            : string.Equals(identity.SystemProduct, "ZOTAC GAMING ZONE", StringComparison.OrdinalIgnoreCase)
-                ? HhdZone with
-                {
-                    Manufacturers = [identity.SystemManufacturer ?? identity.BaseboardManufacturer ?? ""],
-                    Processors = [identity.ProcessorName ?? ""]
-                }
-                : null;
-    }
-
-    internal static NativeEngine CreateEngine(HandheldDefinition definition)
-    {
-        return new ProfiledDeviceEngine(Zone);
-    }
-}
+            : null;
+    }}

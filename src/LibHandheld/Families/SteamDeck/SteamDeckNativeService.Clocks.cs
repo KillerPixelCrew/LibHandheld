@@ -1,5 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 
 namespace LibHandheld.Families.SteamDeck;
 
@@ -211,13 +212,8 @@ internal sealed partial class SteamDeckNativeService
             var value = known
                 ? CapabilityValue.Integer(written.Megahertz)
                 : null;
-            yield return new CapabilityState
-            {
-                CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
-                Available = _clocks is not null, Reason = _clockReason, ObservedValue = value,
-                Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                ObservedAt = value is null ? null : written.At
-            };
+            yield return ProviderControls.State(descriptor.CapabilityId, _clocks is not null, value, written.At,
+                _clockReason, descriptor.InstanceId);
         }
     }
 

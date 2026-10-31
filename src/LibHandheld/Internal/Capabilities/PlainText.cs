@@ -3,13 +3,13 @@ using LibHandheld.Contracts;
 namespace LibHandheld.Internal.Capabilities;
 
 /// <summary>
-///     The one rule for plugin-supplied plain text, shared by a capability's custom label and a
+///     The one rule for plugin-supplied plain text, shared by a capability's display description and a
 ///     <see cref="CapabilityValueKind.Text" /> value.
 /// </summary>
 /// <remarks>
-///     The rule keeps labels and values non-empty and single-line so logs and controls present the same
-///     text. It sets no length of its own: a text value is held to the maximum its descriptor declares,
-///     and labels and identifiers are as long as the plugin wrote them.
+///     The rule keeps descriptions and values non-empty and single-line so logs and controls present the
+///     same text. It sets no length of its own: a text value is held to the maximum its descriptor
+///     declares, and descriptions and identifiers are as long as the plugin wrote them.
 ///     <para>
 ///         Text validated here is never a format string, never markup, and never a localization key. WSGM
 ///         cannot translate text it did not author, so it renders in whatever language the plugin wrote it.

@@ -158,11 +158,6 @@ internal sealed class StandardControllerHidSource(HidControllerProfile profile)
         return true;
     }
 
-    internal static CanonicalButtons Hat(uint value, int minimum, int maximum)
-    {
-        return value < minimum || value > maximum ? CanonicalButtons.None : HidUsageReader.Hat((int)value - minimum);
-    }
-
     internal async ValueTask StopAsync(CancellationToken token)
     {
         _stop?.Cancel();

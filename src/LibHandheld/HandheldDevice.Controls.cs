@@ -268,12 +268,8 @@ public sealed partial class HandheldDevice
                 catch (Exception exception) when (exception is not (OutOfMemoryException or AccessViolationException))
                 {
                     // Dispatch began. An exception does not prove the command stayed away from the hardware.
-                    result = new CapabilityCommandResult
-                    {
-                        CommandId = item.Command.CommandId, Outcome = CommandOutcome.Indeterminate,
-                        Reason = new CapabilityReason(CapabilityReasonCode.TransportFaulted, exception.Message),
-                        CompletedAt = DateTimeOffset.UtcNow
-                    };
+                    result = CommandResults.Indeterminate(item.Command, CapabilityReasonCode.TransportFaulted,
+                        exception.Message);
                 }
 
                 results.Add(new DeviceControlResult(item.Role, item.Command.InstanceId, result));

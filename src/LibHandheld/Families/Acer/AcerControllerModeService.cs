@@ -68,7 +68,7 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
     }
 
     /// <summary>Writes the retained gamepad/rear pair once and independently classifies query-based restoration.</summary>
-    /// <remarks>An absent observation is RestoredUnverified; a differing pair is RestoreFailed and remains journaled.</remarks>
+    /// <remarks>An absent observation still retires the entry; a differing pair remains journaled.</remarks>
     private async ValueTask RestoreAsync(AcerControllerMode original, CancellationToken token)
     {
         await _transport!.WriteModeAsync(original, token).ConfigureAwait(false);
@@ -83,8 +83,10 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
         }
 
         _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ServiceId, DeviceRecoveryJournal.RestoreStatus(verified),
-            CancellationToken.None).ConfigureAwait(false);
+        if (verified != false)
+        {
+            await context.Journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Restores the captured pair before closing the lane; an incomplete restore cannot become Idle.</summary>

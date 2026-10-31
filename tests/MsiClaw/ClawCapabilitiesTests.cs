@@ -123,16 +123,6 @@ public sealed class ClawCapabilitiesTests
         Assert.Equal(75, lighting.Current?.Brightness);
     }
 
-    [Fact]
-    public async Task InitialReadPreservesCallerCancellation()
-    {
-        using CancellationTokenSource cancellation = new();
-        cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ClawObservation.TryAsync(
-            new ClawPowerCapability(new FakeWmiTransport(), ClawModels.Claw8A2Vm, TestTiming.NoDelay).ReadAsync,
-            "power", cancellation.Token).AsTask());
-    }
-
     [Theory]
     [InlineData(8, 9, 20)]
     [InlineData(30, 37, 12)]
@@ -420,7 +410,7 @@ public sealed class ClawCapabilitiesTests
         var charge = new ClawChargeLimitCapability(wmi);
         await charge.ApplyAsync(Command(CapabilityIds.ChargeLimit, null, CapabilityValue.Integer(80)), 80,
             CancellationToken.None);
-        var command = Command(ClawChargeLimitCapability.ProtectionId, null, CapabilityValue.Boolean(false));
+        var command = Command(CapabilityIds.ChargeProtection, null, CapabilityValue.Boolean(false));
         Assert.Equal(CommandOutcome.Applied,
             (await charge.ApplyProtectionAsync(command, false, CancellationToken.None)).Outcome);
         Assert.Equal(80, wmi.ReadData(ClawHardwareFacts.ChargeLimitAddress));
@@ -437,7 +427,7 @@ public sealed class ClawCapabilitiesTests
     {
         FakeWmiTransport readable = new();
         readable.SetData(ClawHardwareFacts.ChargeLimitAddress, 0x80 | 60);
-        var command = Command(ClawChargeLimitCapability.ProtectionId, null, CapabilityValue.Boolean(false));
+        var command = Command(CapabilityIds.ChargeProtection, null, CapabilityValue.Boolean(false));
         Assert.Equal(CommandOutcome.Applied,
             (await new ClawChargeLimitCapability(readable).ApplyProtectionAsync(command, false,
                 CancellationToken.None)).Outcome);

@@ -93,8 +93,7 @@ internal sealed class ProfiledProcessorService(
                     {
                         ct.ThrowIfCancellationRequested();
                         setting.Write(original.Value);
-                        await featureContext.Journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoredUnverified, ct)
-                            .ConfigureAwait(false);
+                        await featureContext.Journal.MarkRestoredAsync(id, ct).ConfigureAwait(false);
                     }, token).ConfigureAwait(false);
             }
 
@@ -135,14 +134,6 @@ internal sealed class ProfiledProcessorService(
                 "This processor does not support the requested setting.");
         }
 
-        if (automaticGpu ? command.RequestedValue is not null
-            : command.RequestedValue is not { } requested
-              || !CapabilityValueValidation.ValueMatches(requested, setting.Descriptor, out _))
-        {
-            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
-                "The processor setting violates its declared range or step.");
-        }
-
         var dispatched = false;
         try
         {
@@ -165,8 +156,7 @@ internal sealed class ProfiledProcessorService(
                 _amd!.RestoreGpuClockRange(minimumGpuClock, maximumGpuClock);
                 _observed.Remove(settingId);
                 _changedWithoutOriginal.Remove(settingId);
-                await featureContext.Journal.SetStatusAsync(settingId, DeviceRecoveryStatus.RestoredUnverified, token)
-                    .ConfigureAwait(false);
+                await featureContext.Journal.MarkRestoredAsync(settingId, token).ConfigureAwait(false);
             }
             else
             {
@@ -205,12 +195,10 @@ internal sealed class ProfiledProcessorService(
             foreach (var (id, setting) in _settings.ToArray())
             {
                 token.ThrowIfCancellationRequested();
-                var original = featureContext.Journal.PendingOriginalFor<ProcessorSettingOriginal>(id);
-                // Zero removes a curve/undervolt offset. Temperatures and fixed clocks have no
+                var original = featureContext.Journal.OriginalStateFor<ProcessorSettingOriginal>(id);
+                // A curve/undervolt offset returns to its neutral value. Temperatures and fixed clocks have no
                 // universal default: restore the captured original or the documented automatic mode.
-                var neutralOffset = id.Contains("-curve-", StringComparison.Ordinal)
-                                    || id == "processor.gpu-curve"
-                                    || id.EndsWith("-undervolt", StringComparison.Ordinal);
+                var neutralOffset = setting.Neutral is not null;
                 var automaticClock = id == CapabilityIds.ProcessorGpuClock && _automaticGpu is not null;
                 if (original is null && !_changedWithoutOriginal.Contains(id)
                     && !neutralOffset && !automaticClock && setting.Read is not null)
@@ -236,7 +224,7 @@ internal sealed class ProfiledProcessorService(
                     }
                     else
                     {
-                        var value = neutralOffset ? 0 : original!.Value;
+                        var value = setting.Neutral ?? original!.Value;
                         setting.Write(value);
                         _observed[id] = (value, DateTimeOffset.UtcNow);
                     }
@@ -249,8 +237,7 @@ internal sealed class ProfiledProcessorService(
                     continue;
                 }
 
-                await featureContext.Journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoredUnverified, token)
-                    .ConfigureAwait(false);
+                await featureContext.Journal.MarkRestoredAsync(id, token).ConfigureAwait(false);
                 _changedWithoutOriginal.Remove(id);
                 writing = null;
             }
@@ -296,24 +283,14 @@ internal sealed class ProfiledProcessorService(
             {
                 foreach (var (id, setting) in _settings)
                 {
-                    if (featureContext.Journal.PendingOriginalFor<ProcessorSettingOriginal>(id) is not { } original)
+                    if (featureContext.Journal.OriginalStateFor<ProcessorSettingOriginal>(id) is not { } original)
                     {
                         continue;
                     }
 
                     token.ThrowIfCancellationRequested();
-                    try
-                    {
-                        setting.Write(original.Value);
-                        await featureContext.Journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoredUnverified, token)
-                            .ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        await featureContext.Journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoreFailed,
-                            CancellationToken.None).ConfigureAwait(false);
-                        throw;
-                    }
+                    setting.Write(original.Value);
+                    await featureContext.Journal.MarkRestoredAsync(id, token).ConfigureAwait(false);
                 }
             }
 

@@ -1,12 +1,14 @@
 using LibHandheld.Contracts;
+using LibHandheld.Families.Asus;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Services;
 
 // SPDX-License-Identifier: MIT
 
 namespace LibHandheld.Families.RogAlly;
 
-// The capability surface: overlay sections, descriptors and the published states.
+// The capability surface: descriptors and the published states.
 internal sealed partial class AllyDeviceEngine
 {
     private void BuildCapabilitySurface()
@@ -14,98 +16,62 @@ internal sealed partial class AllyDeviceEngine
         var model = _model ?? throw new InvalidOperationException("No model is selected.");
         List<CapabilityDescriptor> descriptors =
         [
-            Integer(CapabilityIds.PowerSustained, CapabilityRole.PowerSustainedLimit, DisplayKey.SustainedPowerLimit,
-                    model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, SectionIds.Power,
-                    CategoryIds.Limits, 0) with
+            CapabilityDescriptors.Integer(CapabilityIds.PowerSustained, CapabilityRole.PowerSustainedLimit,
+                    new CapabilityDisplay { Key = DisplayKey.SustainedPowerLimit }, model.MinimumWatts,
+                    model.MaximumWatts, CapabilityUnit.Watt, read: true, write: true) with
                 {
                     PowerPresets = AllyModels.PowerPresets(model),
                     PairedPowerLimitId = CapabilityIds.PowerBoost
                 },
-            Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit, DisplayKey.BoostPowerLimit,
-                model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, SectionIds.Power,
-                CategoryIds.Limits, 1),
-            Choice(CapabilityIds.Scenario, CapabilityRole.ScenarioMode, DisplayKey.PerformanceProfile,
-                [Scenarios.Silent, Scenarios.Performance, Scenarios.Turbo], true, true, SectionIds.Power,
-                CategoryIds.Limits, 2),
-            Integer(CapabilityIds.ChargeLimit, CapabilityRole.ChargeLimit, DisplayKey.ChargeLimit,
-                    AllyChargeLimitCapability.MinimumPercent, AllyChargeLimitCapability.MaximumPercent,
-                    CapabilityUnit.Percent, true, SectionIds.Power, CategoryIds.Charging, 0) with
-                {
-                    Persistence = CapabilityPersistence.DevicePersistent
-                },
+            CapabilityDescriptors.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
+                new CapabilityDisplay { Key = DisplayKey.BoostPowerLimit }, model.MinimumWatts, model.MaximumWatts,
+                CapabilityUnit.Watt, read: true, write: true),
+            CapabilityDescriptors.Choice(CapabilityIds.Scenario, CapabilityRole.ScenarioMode,
+                new CapabilityDisplay { Key = DisplayKey.PerformanceProfile },
+                CapabilityDescriptors.Choices([Scenarios.Silent, Scenarios.Performance, Scenarios.Turbo]),
+                read: true, write: true),
+            CapabilityDescriptors.Integer(CapabilityIds.ChargeLimit, CapabilityRole.ChargeLimit,
+                new CapabilityDisplay { Key = DisplayKey.ChargeLimit }, AllyChargeLimitCapability.MinimumPercent,
+                AllyChargeLimitCapability.MaximumPercent, CapabilityUnit.Percent, read: true, write: true,
+                CapabilityPersistence.DevicePersistent),
             // Write-only: the firmware has no readable "custom curve active" flag.
-            Choice(CapabilityIds.FanMode, CapabilityRole.FanMode, DisplayKey.FanMode,
-                [FanModes.Automatic, FanModes.Custom], false, true, SectionIds.Power, CategoryIds.Fans, 0),
-            new()
-            {
-                CapabilityId = CapabilityIds.FanCurve,
-                Role = CapabilityRole.FanCurve,
-
-
-                ValueKind = CapabilityValueKind.Curve,
-                CurveInputs = AllyFanCapability.DefaultCpuCurve.Take(AllyFanCapability.PointCount)
-                    .Select(value => (int)value).ToArray(),
-                Display = new CapabilityDisplay { Key = DisplayKey.FanCurve },
-                Minimum = 0,
-                Maximum = 100,
-                Unit = CapabilityUnit.Percent,
-                SupportsRead = true,
-                SupportsWrite = true,
-                Persistence = CapabilityPersistence.Volatile
-            },
-            Integer("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100, CapabilityUnit.Percent,
-                    true, SectionIds.Power, CategoryIds.Fans, 2) with
-                {
-                    SupportsRead = false
-                },
-            Integer(CapabilityIds.FanReading, CapabilityRole.Telemetry, DisplayKey.Custom, 0, 100,
-                    CapabilityUnit.Percent, false, SectionIds.Info, CategoryIds.Readings, 0,
-                    CapabilityInstances.Cpu) with
-                {
-                    Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "CPU fan" }
-                },
-            Integer(CapabilityIds.FanReading, CapabilityRole.Telemetry, DisplayKey.Custom, 0, 100,
-                    CapabilityUnit.Percent, false, SectionIds.Info, CategoryIds.Readings, 1,
-                    CapabilityInstances.Gpu) with
-                {
-                    Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = "GPU fan" }
-                },
+            CapabilityDescriptors.Choice(CapabilityIds.FanMode, CapabilityRole.FanMode,
+                new CapabilityDisplay { Key = DisplayKey.FanMode },
+                CapabilityDescriptors.Choices([FanModes.Automatic, FanModes.Custom]), read: false, write: true),
+            CapabilityDescriptors.Curve(CapabilityIds.FanCurve, new CapabilityDisplay { Key = DisplayKey.FanCurve },
+                AsusFanCurve.DefaultCpuCurve.Take(AsusFanCurve.PointCount).Select(value => (int)value)
+                    .ToArray(), read: true),
+            CapabilityDescriptors.Integer(CapabilityIds.FanDuty, CapabilityRole.FanDuty,
+                new CapabilityDisplay { Key = DisplayKey.FanSpeed }, minimum: 0, maximum: 100,
+                CapabilityUnit.Percent, read: false, write: true),
+            CapabilityDescriptors.Integer(CapabilityIds.FanReading, CapabilityRole.Telemetry,
+                CapabilityDescriptors.Label("CPU fan"), minimum: 0, maximum: 100, CapabilityUnit.Percent,
+                read: true, write: false, instance: CapabilityInstances.Cpu),
+            CapabilityDescriptors.Integer(CapabilityIds.FanReading, CapabilityRole.Telemetry,
+                CapabilityDescriptors.Label("GPU fan"), minimum: 0, maximum: 100, CapabilityUnit.Percent,
+                read: true, write: false, instance: CapabilityInstances.Gpu),
             // Aura is write-only (HC and HHD both only write it), so none of these declare a read.
-            Integer(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness, DisplayKey.Brightness, 0, 100,
-                    CapabilityUnit.Percent, true, SectionIds.Lighting, null, 0) with
-                {
-                    SupportsRead = false,
-                    Persistence = CapabilityPersistence.Unknown
-                },
-            Choice(CapabilityIds.LightingEffect, CapabilityRole.LightingEffect, DisplayKey.LightingEffect,
-                    [Effects.Solid, Effects.Breathing, Effects.ColorCycle, Effects.Rainbow], false, true,
-                    SectionIds.Lighting, null, 1) with
-                {
-                    Persistence = CapabilityPersistence.Unknown
-                },
-            Integer(CapabilityIds.LightingSpeed, CapabilityRole.LightingEffectSpeed, DisplayKey.LightingEffectSpeed,
-                    0, 100, CapabilityUnit.Percent, true, SectionIds.Lighting, null, 2) with
-                {
-                    SupportsRead = false,
-                    Persistence = CapabilityPersistence.Unknown
-                },
-            Color(CapabilityInstances.Left, "Left stick ring", 0),
-            Color(CapabilityInstances.Right, "Right stick ring", 1),
-            Choice(CapabilityIds.Controller, CapabilityRole.ControllerSource, DisplayKey.Controller,
-                SourceOwnership.Choices, true, false, SectionIds.Info, CategoryIds.Ownership, 0),
-            Choice(CapabilityIds.Motion, CapabilityRole.MotionSource, DisplayKey.Motion, SourceOwnership.Choices, true,
-                false, SectionIds.Info, CategoryIds.Ownership, 1),
-            new()
-            {
-                CapabilityId = CapabilityIds.Rumble,
-                Role = CapabilityRole.HapticSink,
-
-
-                ValueKind = CapabilityValueKind.None,
-                Display = new CapabilityDisplay { Key = DisplayKey.Rumble },
-                SupportsAction = true,
-                Persistence = CapabilityPersistence.Volatile
-            }
+            CapabilityDescriptors.Integer(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness,
+                new CapabilityDisplay { Key = DisplayKey.Brightness }, minimum: 0, maximum: 100,
+                CapabilityUnit.Percent, read: false, write: true, CapabilityPersistence.Unknown),
+            CapabilityDescriptors.Choice(CapabilityIds.LightingEffect, CapabilityRole.LightingEffect,
+                new CapabilityDisplay { Key = DisplayKey.LightingEffect }, Effects.Choices, read: false, write: true,
+                CapabilityPersistence.Unknown),
+            CapabilityDescriptors.Integer(CapabilityIds.LightingSpeed, CapabilityRole.LightingEffectSpeed,
+                new CapabilityDisplay { Key = DisplayKey.LightingEffectSpeed }, minimum: 0, maximum: 100,
+                CapabilityUnit.Percent, read: false, write: true, CapabilityPersistence.Unknown),
+            CapabilityDescriptors.Color(CapabilityIds.LightingColor, CapabilityInstances.Left,
+                CapabilityDescriptors.Label("Left stick ring"), read: false, CapabilityPersistence.Unknown),
+            CapabilityDescriptors.Color(CapabilityIds.LightingColor, CapabilityInstances.Right,
+                CapabilityDescriptors.Label("Right stick ring"), read: false, CapabilityPersistence.Unknown),
+            CapabilityDescriptors.Choice(CapabilityIds.Controller, CapabilityRole.ControllerSource,
+                new CapabilityDisplay { Key = DisplayKey.Controller },
+                CapabilityDescriptors.Choices(SourceOwnership.Choices), read: true, write: false),
+            CapabilityDescriptors.Choice(CapabilityIds.Motion, CapabilityRole.MotionSource,
+                new CapabilityDisplay { Key = DisplayKey.Motion }, CapabilityDescriptors.Choices(SourceOwnership.Choices),
+                read: true, write: false),
+            CapabilityDescriptors.Action(CapabilityIds.Rumble, CapabilityRole.HapticSink,
+                new CapabilityDisplay { Key = DisplayKey.Rumble })
         ];
 
         _descriptorSet = new CapabilityDescriptorSet
@@ -116,7 +82,7 @@ internal sealed partial class AllyDeviceEngine
 
     private async ValueTask PublishStatesAsync(CancellationToken cancellationToken)
     {
-        if (_host is null || _descriptorSet is null)
+        if (_descriptorSet is null)
         {
             return;
         }
@@ -138,21 +104,14 @@ internal sealed partial class AllyDeviceEngine
             var value = ownership
                 ? CurrentState(descriptor)
                 : _observedValues.Value(descriptor.CapabilityId, descriptor.InstanceId);
-            await _host.PublishCapabilityStateAsync(new CapabilityState
-            {
-                CapabilityId = descriptor.CapabilityId,
-                InstanceId = descriptor.InstanceId,
-                Available = service.State is DeviceServiceState.Owned,
-                Reason = service.State is DeviceServiceState.Owned
-                    ? null
-                    : service.Reason ?? DeviceServiceLifecycle.ReasonFor(service.State),
-                ObservedValue = value,
-                Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                ObservedAt = value is null ? null
-                    : descriptor.CapabilityId == CapabilityIds.FanReading ? _fans?.TelemetryObservedAt
-                    : ownership ? service.ChangedAt
-                    : _observedValues.Time(descriptor.CapabilityId, descriptor.InstanceId)
-            }, cancellationToken).ConfigureAwait(false);
+            var owned = service.State is DeviceServiceState.Owned;
+            await _publications.PublishCapabilityStateAsync(ProviderControls.State(descriptor.CapabilityId, owned,
+                value,
+                descriptor.CapabilityId == CapabilityIds.FanReading ? _fans?.TelemetryObservedAt
+                : ownership ? service.ChangedAt
+                : _observedValues.Time(descriptor.CapabilityId, descriptor.InstanceId),
+                owned ? null : service.Reason ?? DeviceServiceLifecycle.ReasonFor(service.State),
+                descriptor.InstanceId), cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -180,107 +139,6 @@ internal sealed partial class AllyDeviceEngine
     {
         return value >= descriptor.Minimum && value <= descriptor.Maximum;
     }
-
-    private static CapabilityDescriptor Integer(
-        string id,
-        CapabilityRole role,
-        DisplayKey display,
-        int minimum,
-        int maximum,
-        CapabilityUnit unit,
-        bool writable,
-        string section,
-        string? category,
-        int order,
-        string? instance = null)
-    {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id,
-            InstanceId = instance,
-            Role = role,
-
-
-            ValueKind = CapabilityValueKind.Integer,
-            Display = display is DisplayKey.Custom
-                ? new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = id }
-                : new CapabilityDisplay { Key = display },
-            SupportsRead = true,
-            SupportsWrite = writable,
-            Minimum = minimum,
-            Maximum = maximum,
-            Step = 1,
-            Unit = unit,
-            Persistence = CapabilityPersistence.Volatile
-        };
-    }
-
-    private static CapabilityDescriptor Choice(
-        string id,
-        CapabilityRole role,
-        DisplayKey display,
-        IReadOnlyList<string> choices,
-        bool readable,
-        bool writable,
-        string section,
-        string? category,
-        int order)
-    {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id,
-            Role = role,
-
-
-            ValueKind = CapabilityValueKind.Choice,
-            Display = new CapabilityDisplay { Key = display },
-            SupportsRead = readable,
-            SupportsWrite = writable,
-            Choices =
-            [
-                .. choices.Select(choice => new CapabilityChoice(choice,
-                    new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = Label(choice) }))
-            ],
-            Persistence = CapabilityPersistence.Volatile
-        };
-    }
-
-    private static CapabilityDescriptor Color(string instance, string label, int order)
-    {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = CapabilityIds.LightingColor,
-            InstanceId = instance,
-            Role = CapabilityRole.LightingZoneColor,
-
-
-            ValueKind = CapabilityValueKind.Color,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = label },
-            SupportsRead = false,
-            SupportsWrite = true,
-            Persistence = CapabilityPersistence.Unknown
-        };
-    }
-
-    private static string Label(string choice)
-    {
-        return choice switch
-        {
-            Scenarios.Silent => "Silent",
-            Scenarios.Performance => "Performance",
-            Scenarios.Turbo => "Turbo",
-            FanModes.Automatic => "Automatic",
-            FanModes.Custom => "Custom",
-            Effects.Solid => "Solid",
-            Effects.Breathing => "Breathing",
-            Effects.ColorCycle => "Colour cycle",
-            Effects.Rainbow => "Rainbow",
-            SourceOwnership.Device => "Device",
-            SourceOwnership.Managed => "Plugin",
-            SourceOwnership.Unavailable => "Unavailable",
-            _ => choice
-        };
-    }
 }
 
 internal static class CapabilityInstances
@@ -291,29 +149,20 @@ internal static class CapabilityInstances
     public const string Right = "right";
 }
 
-internal static class SectionIds
-{
-    public const string Power = DeviceSections.PowerId;
-    public const string Lighting = DeviceSections.RgbId;
-    public const string Info = DeviceSections.InfoId;
-}
-
-internal static class CategoryIds
-{
-    public const string Limits = "limits";
-    public const string Charging = "charging";
-    public const string Fans = "fans";
-    public const string Zones = "zones";
-    public const string Ownership = "ownership";
-    public const string Readings = "readings";
-}
-
 internal static class Effects
 {
     public const string Solid = "solid";
     public const string Breathing = "breathing";
     public const string ColorCycle = "color-cycle";
     public const string Rainbow = "rainbow";
+
+    /// <summary>The effect choices in menu order, labelled as the shared choice labels except "Colour cycle".</summary>
+    public static IReadOnlyList<CapabilityChoice> Choices { get; } =
+    [
+        .. CapabilityDescriptors.Choices([Solid, Breathing]),
+        new CapabilityChoice(ColorCycle, CapabilityDescriptors.Label("Colour cycle")),
+        .. CapabilityDescriptors.Choices([Rainbow])
+    ];
 
     public static AuraEffect Parse(string value)
     {

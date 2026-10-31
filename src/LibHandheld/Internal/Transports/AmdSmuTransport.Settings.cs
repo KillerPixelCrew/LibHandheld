@@ -26,14 +26,7 @@ internal sealed partial class AmdSmuTransport
             throw new NotSupportedException("This processor has no supported automatic GPU clock range.");
         }
 
-        Transaction(() =>
-        {
-            var low = checked((uint)minimum);
-            var high = checked((uint)maximum);
-            RequireEcho(0x47, low, SendModuleCore(0x47, [low]));
-            RequireEcho(0x46, high, SendModuleCore(0x46, [high]));
-            return true;
-        });
+        Transaction(() => WriteGpuClockRangeCore(checked((uint)minimum), checked((uint)maximum)));
     }
 
     internal bool SupportsCurve(AmdCurveKind kind)
@@ -97,18 +90,17 @@ internal sealed partial class AmdSmuTransport
         Transaction(() =>
         {
             var encoded = checked((uint)megahertz);
-            if (CodeName is 2 or 6 or 7 or 15)
-            {
-                RequireEcho(0x47, encoded, SendModuleCore(0x47, [encoded]));
-                RequireEcho(0x46, encoded, SendModuleCore(0x46, [encoded]));
-            }
-            else
-            {
-                RequireEcho(0x89, encoded, SendModuleCore(0x89, [encoded]));
-            }
-
-            return true;
+            // Older Raven/Picasso parts expose a min/max pair rather than the fixed-clock command.
+            return SupportsAutomaticGpuClock
+                ? WriteGpuClockRangeCore(encoded, encoded)
+                : RequireEcho(0x89, encoded, SendModuleCore(0x89, [encoded]));
         });
+    }
+
+    private bool WriteGpuClockRangeCore(uint low, uint high)
+    {
+        RequireEcho(0x47, low, SendModuleCore(0x47, [low]));
+        return RequireEcho(0x46, high, SendModuleCore(0x46, [high]));
     }
 
     internal static bool SupportsGpuClockFor(uint codeName)

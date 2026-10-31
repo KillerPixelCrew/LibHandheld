@@ -1,5 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 
 namespace LibHandheld.Families.Generic;
 
@@ -18,7 +19,7 @@ internal sealed class AsusAuraController(
 
     internal IReadOnlyList<CapabilityDescriptor> Descriptors => Array.AsReadOnly(_modules.Values
         .OrderBy(entry => entry.Module.ZoneId, StringComparer.Ordinal)
-        .SelectMany(entry => Describe(entry.Module)).ToArray());
+        .SelectMany(entry => entry.Descriptors).ToArray());
 
     internal IReadOnlyList<CapabilityState> States
     {
@@ -26,17 +27,9 @@ internal sealed class AsusAuraController(
         {
             var states = new List<CapabilityState>();
             foreach (var entry in _modules.Values)
-            foreach (var descriptor in Describe(entry.Module))
+            foreach (var descriptor in entry.Descriptors)
             {
-                var observed = entry.Values.GetValueOrDefault((descriptor.CapabilityId, descriptor.InstanceId));
-                states.Add(new CapabilityState
-                {
-                    CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
-                    Available = entry.Transport is not null,
-                    ObservedValue = observed.Value, ObservedAt = observed.Timestamp,
-                    Quality = observed.Value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                    Reason = null
-                });
+                states.Add(ProviderControls.Observed(descriptor, entry.Values, entry.Transport is not null));
             }
 
             return Array.AsReadOnly(states.ToArray());
@@ -80,6 +73,7 @@ internal sealed class AsusAuraController(
                     entry.Transport = null;
                     entry.Initialized = false;
                     entry.Module = module;
+                    entry.Descriptors = Describe(module);
                     changed = true;
                 }
             }
@@ -111,16 +105,12 @@ internal sealed class AsusAuraController(
 
     internal bool Handles(CapabilityCommand command)
     {
-        return _modules.Values.Any(entry => Describe(entry.Module)
-            .Any(descriptor =>
-                descriptor.CapabilityId == command.CapabilityId && descriptor.InstanceId == command.InstanceId));
+        return _modules.Values.Any(entry => Owns(entry, command));
     }
 
     internal CapabilityCommandResult Execute(CapabilityCommand command, CancellationToken token)
     {
-        var entry = _modules.Values.SingleOrDefault(candidate => Describe(candidate.Module)
-            .Any(descriptor =>
-                descriptor.CapabilityId == command.CapabilityId && descriptor.InstanceId == command.InstanceId));
+        var entry = _modules.Values.SingleOrDefault(candidate => Owns(candidate, command));
         if (entry?.Transport is null)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
@@ -210,7 +200,7 @@ internal sealed class AsusAuraController(
                             : entry.Primary),
                 _ => value
             };
-            entry.Values[(command.CapabilityId, command.InstanceId)] = (observedValue, DateTimeOffset.UtcNow);
+            entry.Values.Written(command.CapabilityId, observedValue, command.InstanceId);
             return CommandResults.Applied(command);
 
             void Power()
@@ -247,7 +237,7 @@ internal sealed class AsusAuraController(
 
             void Observe(string id, string instance, CapabilityValue observed)
             {
-                entry.Values[(id, instance)] = (observed, DateTimeOffset.UtcNow);
+                entry.Values.Written(id, observed, instance);
             }
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -256,6 +246,12 @@ internal sealed class AsusAuraController(
                 entry.Primary, entry.Secondary, entry.Speed, entry.Left) = preferences;
             return CommandResults.TransportFailure(command, dispatched, exception);
         }
+    }
+
+    private static bool Owns(Entry entry, CapabilityCommand command)
+    {
+        return entry.Descriptors.Any(descriptor =>
+            descriptor.CapabilityId == command.CapabilityId && descriptor.InstanceId == command.InstanceId);
     }
 
     private static void Send(Entry entry, byte[] packet, CancellationToken token, Action dispatched)
@@ -364,13 +360,8 @@ internal sealed class AsusAuraController(
 
     private static CapabilityDescriptor Color(string instance, string label)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = CapabilityIds.LightingColor, InstanceId = instance, Role = CapabilityRole.LightingZoneColor,
-            ValueKind = CapabilityValueKind.Color,
-            Display = CapabilityDescriptors.Label(label), SupportsWrite = true,
-            Persistence = CapabilityPersistence.DevicePersistent
-        };
+        return CapabilityDescriptors.Color(CapabilityIds.LightingColor, instance, CapabilityDescriptors.Label(label),
+            read: false, CapabilityPersistence.DevicePersistent);
     }
 
     private sealed class Entry(AsusAuraModule module)
@@ -379,6 +370,7 @@ internal sealed class AsusAuraController(
 
         // HHD's explicit power preference defaults; they are not hardware observations.
         internal bool Boot = true;
+        internal IReadOnlyList<CapabilityDescriptor> Descriptors = Describe(module);
         internal string Effect = "solid";
         internal bool Initialized;
         internal bool Left = true;
@@ -390,7 +382,6 @@ internal sealed class AsusAuraController(
         internal int Speed = 50;
         internal IAsusAuraTransport? Transport;
 
-        internal Dictionary<(string, string?), (CapabilityValue? Value, DateTimeOffset? Timestamp)> Values { get; } =
-            [];
+        internal ObservedValues Values { get; } = new();
     }
 }

@@ -31,7 +31,6 @@ internal sealed class FakeIdentityReader : IClawIdentityReader
         var state = CreateState();
         return ValueTask.FromResult(state with
         {
-            Model = Model,
             Snapshot = state.Snapshot with
             {
                 BaseboardProduct = Model.BoardProduct,
@@ -65,9 +64,6 @@ internal sealed class FakeIdentityReader : IClawIdentityReader
                     }
                 ]
             },
-            ExactMachineMatch = true,
-            Model = ClawModels.Claw8A2Vm,
-            WmiAvailable = true,
             OnAcPower = true
         };
     }
@@ -104,15 +100,6 @@ internal sealed class FakeWmiTransport : IMsiWmiTransport
     public bool SetterTimeout { get; set; }
 
     public Action<string, byte[]>? AfterSetter { get; set; }
-
-    public int ProviderAvailabilityChecks { get; private set; }
-
-    public ValueTask<bool> IsProviderAvailableAsync(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        ProviderAvailabilityChecks++;
-        return ValueTask.FromResult(true);
-    }
 
     public ValueTask<byte[]> InvokeGetterAsync(
         string methodName,

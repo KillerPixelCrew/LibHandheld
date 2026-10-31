@@ -43,12 +43,10 @@ internal sealed partial class AmdSmuTransport : ICpuPowerTransport
     private SmuMailbox _mailbox;
     private bool _moduleMailbox;
 
-    internal AmdSmuTransport(IPawnIoModule module, uint codeName, uint firmwareVersion,
-        bool requirePowerCommands = true)
+    internal AmdSmuTransport(IPawnIoModule module, uint codeName, bool requirePowerCommands = true)
     {
         _module = module;
         CodeName = codeName;
-        FirmwareVersion = firmwareVersion;
         Commands = CommandsFor(codeName) ?? (requirePowerCommands
             ? throw new NotSupportedException($"AMD codename {codeName} has no documented power commands.")
             : default);
@@ -56,7 +54,6 @@ internal sealed partial class AmdSmuTransport : ICpuPowerTransport
     }
 
     internal uint CodeName { get; }
-    internal uint FirmwareVersion { get; }
     internal SmuPowerCommands Commands { get; }
     public bool SupportsIndependentLimits => Commands.Sustained != 0 && Commands.Slow != 0 && Commands.Boost != 0;
 
@@ -74,14 +71,16 @@ internal sealed partial class AmdSmuTransport : ICpuPowerTransport
             throw new NotSupportedException("This AMD processor has no documented package power setters.");
         }
 
-        Validate(limits);
-        // Validate the complete request before the first write. These are independent firmware
+        // Encode the complete request before the first write. These are independent firmware
         // commands; if one fails the caller sees the failure and no uncertain command is retried.
+        var sustained = CpuPowerEncoding.Milliwatts(limits.SustainedWatts);
+        var slow = CpuPowerEncoding.Milliwatts(limits.SlowWatts);
+        var boost = CpuPowerEncoding.Milliwatts(limits.BoostWatts);
         Transaction(() =>
         {
-            SendCore(Commands.Sustained, [CpuPowerEncoding.Milliwatts(limits.SustainedWatts)]);
-            SendCore(Commands.Boost, [CpuPowerEncoding.Milliwatts(limits.BoostWatts)]);
-            SendCore(Commands.Slow, [CpuPowerEncoding.Milliwatts(limits.SlowWatts)]);
+            SendCore(Commands.Sustained, [sustained]);
+            SendCore(Commands.Boost, [boost]);
+            SendCore(Commands.Slow, [slow]);
             return true;
         });
     }
@@ -100,9 +99,13 @@ internal sealed partial class AmdSmuTransport : ICpuPowerTransport
         var module = PawnIoModule.OpenRyzen();
         try
         {
-            var transport = HardwareBus.Run(HardwareBus.Pci, Timeout, () => new AmdSmuTransport(module,
-                checked((uint)module.Execute("ioctl_get_code_name", [], 1)[0]),
-                checked((uint)module.Execute("ioctl_get_smu_version", [], 1)[0]), requirePowerCommands));
+            var transport = HardwareBus.Run(HardwareBus.Pci, Timeout, () =>
+            {
+                var codeName = checked((uint)module.Execute("ioctl_get_code_name", [], 1)[0]);
+                // HC's RyzenSMU initialization also reads the SMU version; nothing here uses the value.
+                _ = checked((uint)module.Execute("ioctl_get_smu_version", [], 1)[0]);
+                return new AmdSmuTransport(module, codeName, requirePowerCommands);
+            });
             transport.SelectMailbox();
             return transport;
         }
@@ -135,28 +138,6 @@ internal sealed partial class AmdSmuTransport : ICpuPowerTransport
         }
 
         return Transaction(() => SendCore(command, arguments));
-    }
-
-    internal void SetGpuClock(int megahertz)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(megahertz);
-        if (CodeName is 2 or 6 or 7 or 15)
-        {
-            // Older Raven/Picasso parts expose a min/max pair rather than the fixed-clock command.
-            Transaction(() =>
-            {
-                SendModuleCore(0x47, [(uint)megahertz]);
-                SendModuleCore(0x46, [(uint)megahertz]);
-                return true;
-            });
-            return;
-        }
-
-        Transaction(() =>
-        {
-            SendModuleCore(0x89, [(uint)megahertz]);
-            return true;
-        });
     }
 
     private void SelectMailbox()
@@ -342,12 +323,5 @@ internal sealed partial class AmdSmuTransport : ICpuPowerTransport
             38 => new SmuMailbox(0x03B10924, 0x03B10970, 0x03B10A40),
             _ => new SmuMailbox(0x03B10A20, 0x03B10A80, 0x03B10A88)
         };
-    }
-
-    private static void Validate(CpuPowerLimits limits)
-    {
-        CpuPowerEncoding.Milliwatts(limits.SustainedWatts);
-        CpuPowerEncoding.Milliwatts(limits.SlowWatts);
-        CpuPowerEncoding.Milliwatts(limits.BoostWatts);
     }
 }

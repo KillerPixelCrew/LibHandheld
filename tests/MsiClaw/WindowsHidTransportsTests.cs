@@ -30,7 +30,10 @@ public sealed class WindowsHidTransportsTests
     [Fact]
     public void RumblePayloadPadsToTheAdvertisedHidOutputLength()
     {
-        var report = ClawControllerCodec.EncodeRumble(0x22, 0x44, 64);
+        var report = new byte[64];
+        Array.Fill(report, value: (byte)0xFF);
+
+        ClawControllerCodec.WriteRumbleReport(report, weak: 0x22, strong: 0x44);
 
         Assert.Equal(64, report.Length);
         Assert.Equal(0x05, report[0]);

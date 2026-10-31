@@ -19,15 +19,8 @@ internal static class AcerModels
 
     /// <summary>The Atlas fan presets, from the 2026-10-29 calibration in PROVENANCE.md.</summary>
     /// <remarks>
-    ///     Duty is an absolute share of full speed, about 70 RPM per percent, and 10 is the lowest speed that
-    ///     spins reliably. The firmware's own automatic mode holds about 3600 RPM (51%) at any idle
-    ///     temperature, while the SoC idles at 52..66 °C with the fans far slower, so these shapes keep the
-    ///     fans near inaudible until 60 °C and reach full speed at the processor's 100 °C limit.
-    ///     <para>
-    ///         Its EC package temperature swings ten or twenty degrees within a second or two at idle, so the
-    ///         curve reads a ten-second average, waits for 3 °C and ramps 5 points up or 2 down per second, a
-    ///         gentle slope against a fan that itself accelerates by about six points a second.
-    ///     </para>
+    ///     Near-inaudible shapes up to 60 °C with slow, averaged smoothing against the noisy EC package
+    ///     temperature; "Fan curve presets (2026-10-29)" in PROVENANCE.md derives every value.
     /// </remarks>
     private static FanCurvePresetDuties AtlasFanCurvePresets { get; } = new()
     {

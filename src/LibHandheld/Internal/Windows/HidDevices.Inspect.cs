@@ -122,7 +122,7 @@ internal static partial class HidDevices
 
         try
         {
-            if (NativeHid.HidP_GetCaps(preparsed, out var caps) != HidpStatusSuccess)
+            if (NativeHid.HidP_GetCaps(preparsed, out var caps) != NativeHid.HIDP_STATUS_SUCCESS)
             {
                 throw new IOException($"The capabilities of {collection.Describe()} could not be read.");
             }
@@ -165,7 +165,7 @@ internal static partial class HidDevices
         var status = buttons
             ? NativeHid.HidP_GetButtonCaps((int)reportType, entries, ref length, preparsed)
             : NativeHid.HidP_GetValueCaps((int)reportType, entries, ref length, preparsed);
-        if (status != HidpStatusSuccess)
+        if (status != NativeHid.HIDP_STATUS_SUCCESS)
         {
             throw new IOException($"The {reportType} {(buttons ? "button" : "value")} capabilities could not be read.");
         }
@@ -229,8 +229,4 @@ internal static partial class HidDevices
         text = (end >= 0 ? text[..end] : text).Trim();
         return text.Length == 0 ? null : text;
     }
-
-
-    // HIDP_BUTTON_CAPS and HIDP_VALUE_CAPS share one 72-byte layout up to offset 16, where the button's
-    // ReportCount and the value's HasNull overlap; the usage range union starts at 56 in both.
 }

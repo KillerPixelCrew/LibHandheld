@@ -48,24 +48,11 @@ internal sealed record DeviceServiceResult(DeviceServiceState State, CapabilityR
 /// <param name="serviceId">Stable service identifier, used in diagnostics and recovery entries.</param>
 internal abstract class DeviceServiceStatus(string serviceId)
 {
-    private DeviceServiceState _state;
-
     /// <summary>Stable service identifier.</summary>
     public string ServiceId { get; } = serviceId;
 
     /// <summary>The current state.</summary>
-    public DeviceServiceState State
-    {
-        get => _state;
-        protected set
-        {
-            if (_state != value)
-            {
-                ChangedAt = DateTimeOffset.UtcNow;
-                _state = value;
-            }
-        }
-    }
+    public DeviceServiceState State { get; private set; }
 
     /// <summary>When this owner's state or reason last actually changed.</summary>
     public DateTimeOffset ChangedAt { get; private set; } = DateTimeOffset.UtcNow;
@@ -103,7 +90,7 @@ internal abstract class DeviceServiceStatus(string serviceId)
             ChangedAt = DateTimeOffset.UtcNow;
         }
 
-        _state = state;
+        State = state;
         Reason = reason;
         return new DeviceServiceResult(state, reason);
     }

@@ -37,11 +37,7 @@ internal sealed partial class ClawDeviceEngine
         // SMBIOS, the model and the firmware binding cannot change within a cycle; start and resume
         // read them. Only the power source changes under a running cycle, so it is read per command.
         var identity = cycleIdentity with { OnAcPower = _services.Identity.ReadOnAcPower() };
-        var refusal = RefusalFor(
-            service,
-            FirmwareForCapability(command.CapabilityId),
-            identity);
-        refusal ??= ValidateCommand(command, descriptor, identity.OnAcPower);
+        var refusal = RefusalFor(service) ?? ValidateCommand(command, descriptor, identity.OnAcPower);
         if (refusal is not null)
         {
             return CommandResults.Rejected(command, refusal);
@@ -97,53 +93,60 @@ internal sealed partial class ClawDeviceEngine
         var lighting = _lightingCapability
                        ?? throw new InvalidOperationException("The lighting capability is unavailable.");
 
-        return command.CapabilityId switch
+        // Every power command journals the same original first, and so does every fan command.
+        ValueTask<CapabilityCommandResult> PowerCommand(ClawCommandHandler apply)
         {
-            CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => JournalCommandAsync(
+            return JournalCommandAsync(
                 ServiceIds.Power,
                 binding,
                 command,
                 async token => ClawRecoveryValues.Power(
                     await power.ReadAsync(token).ConfigureAwait(false)),
-                (journalCommand, token) =>
-                {
-                    var (sustained, boost) = Limits();
-                    return power.ApplyLimitsAsync(journalCommand, sustained, boost, token);
-                },
-                cancellationToken),
-            CapabilityIds.Scenario => JournalCommandAsync(
-                ServiceIds.Power,
-                binding,
-                command,
-                async token => ClawRecoveryValues.Power(
-                    await power.ReadAsync(token).ConfigureAwait(false)),
-                (journalCommand, token) => power.ApplyScenarioAsync(
-                    journalCommand,
-                    journalCommand.RequestedValue!.ChoiceValue!,
-                    token),
-                cancellationToken),
-            CapabilityIds.ChargeLimit => chargeLimit.ApplyAsync(
-                command,
-                command.RequestedValue!.IntegerValue!.Value,
-                cancellationToken),
-            ClawChargeLimitCapability.ProtectionId => chargeLimit.ApplyProtectionAsync(
-                command, command.RequestedValue!.BooleanValue!.Value, cancellationToken),
-            CapabilityIds.FanMode => JournalCommandAsync(
+                apply,
+                cancellationToken);
+        }
+
+        ValueTask<CapabilityCommandResult> FanCommand(ClawCommandHandler apply)
+        {
+            return JournalCommandAsync(
                 ServiceIds.Fans,
                 binding,
                 command,
                 async token => ClawRecoveryValues.Fans(
                     await fans.ReadSnapshotAsync(token).ConfigureAwait(false)),
-                (journalCommand, token) => fans.ApplyModeAsync(
-                    journalCommand,
-                    journalCommand.RequestedValue!.ChoiceValue!,
-                    token),
+                apply,
+                cancellationToken);
+        }
+
+        return command.CapabilityId switch
+        {
+            CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => PowerCommand((journalCommand, token) =>
+            {
+                var (sustained, boost) = Limits();
+                return power.ApplyLimitsAsync(journalCommand, sustained, boost, token);
+            }),
+            CapabilityIds.Scenario => PowerCommand((journalCommand, token) => power.ApplyScenarioAsync(
+                journalCommand,
+                journalCommand.RequestedValue!.ChoiceValue!,
+                token)),
+            CapabilityIds.ChargeLimit => chargeLimit.ApplyAsync(
+                command,
+                command.RequestedValue!.IntegerValue!.Value,
                 cancellationToken),
-            "fan.duty" => JournalCommandAsync(ServiceIds.Fans, binding, command,
-                async token => ClawRecoveryValues.Fans(await fans.ReadSnapshotAsync(token).ConfigureAwait(false)),
-                (request, token) => fans.ApplyDutyAsync(request, request.RequestedValue!.IntegerValue!.Value, token),
-                cancellationToken),
-            CapabilityIds.FanCurve => ApplyFanCurveCommandAsync(command, fans, binding, cancellationToken),
+            CapabilityIds.ChargeProtection => chargeLimit.ApplyProtectionAsync(
+                command, command.RequestedValue!.BooleanValue!.Value, cancellationToken),
+            CapabilityIds.FanMode => FanCommand((journalCommand, token) => fans.ApplyModeAsync(
+                journalCommand,
+                journalCommand.RequestedValue!.ChoiceValue!,
+                token)),
+            CapabilityIds.FanDuty => FanCommand((journalCommand, token) => fans.ApplyDutyAsync(
+                journalCommand,
+                journalCommand.RequestedValue!.IntegerValue!.Value,
+                token)),
+            CapabilityIds.FanCurve => FanCommand((journalCommand, token) => fans.ApplyCurveAsync(
+                journalCommand,
+                journalCommand.RequestedValue!.CurveValue,
+                token)),
             CapabilityIds.LightingBrightness => lighting.ApplyAsync(
                 command,
                 state => state with
@@ -174,32 +177,13 @@ internal sealed partial class ClawDeviceEngine
         };
     }
 
-    private ValueTask<CapabilityCommandResult> ApplyFanCurveCommandAsync(
-        CapabilityCommand command,
-        ClawFanCapability fans,
-        string? binding,
-        CancellationToken cancellationToken)
-    {
-        return JournalCommandAsync(
-            ServiceIds.Fans,
-            binding,
-            command,
-            async token => ClawRecoveryValues.Fans(
-                await fans.ReadSnapshotAsync(token).ConfigureAwait(false)),
-            (journalCommand, token) => fans.ApplyCurveAsync(
-                journalCommand,
-                journalCommand.RequestedValue!.CurveValue,
-                token),
-            cancellationToken);
-    }
-
     private DeviceServiceStatus? ServiceForCapability(string capabilityId)
     {
         return capabilityId switch
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power,
-            CapabilityIds.ChargeLimit or ClawChargeLimitCapability.ProtectionId => _chargeLimit,
-            CapabilityIds.FanMode or CapabilityIds.FanCurve or "fan.duty" => _fans,
+            CapabilityIds.ChargeLimit or CapabilityIds.ChargeProtection => _chargeLimit,
+            CapabilityIds.FanMode or CapabilityIds.FanCurve or CapabilityIds.FanDuty => _fans,
             CapabilityIds.FanRpm or CapabilityIds.Temperature => _telemetry,
             CapabilityIds.LightingBrightness or CapabilityIds.LightingColor => _lighting,
             CapabilityIds.Controller or CapabilityIds.Rumble => _controller,
@@ -208,42 +192,13 @@ internal sealed partial class ClawDeviceEngine
         };
     }
 
-    private static FirmwareKind FirmwareForCapability(string capabilityId)
+    /// <summary>Why the owning service cannot take a command now, or null when it owns its hardware.</summary>
+    /// <remarks>
+    ///     No firmware revision gates a command: the definition matched at start, and MSI ships EC and MCU
+    ///     updates that an allowlist would refuse.
+    /// </remarks>
+    private static CapabilityReason? RefusalFor(DeviceServiceStatus service)
     {
-        return capabilityId switch
-        {
-            // MCU-backed capabilities carry no revision gate. The controller mode switch is not an
-            // addressed write, and lighting takes its address from HC's firmware table and, like HC,
-            // writes without first confirming what the MCU holds.
-            CapabilityIds.LightingBrightness or CapabilityIds.LightingColor
-                or CapabilityIds.Controller or CapabilityIds.Rumble => FirmwareKind.None,
-            // Read from the Windows sensor stack, not MSI firmware, so there is no firmware revision to
-            // gate it on and gating it on the WMI one would refuse it whenever that path is degraded.
-            CapabilityIds.Motion => FirmwareKind.None,
-            _ => FirmwareKind.Wmi
-        };
-    }
-
-    private static CapabilityReason? RefusalFor(
-        DeviceServiceStatus service,
-        FirmwareKind firmwareKind,
-        ClawIdentityState identity)
-    {
-        if (!identity.ExactMachineMatch)
-        {
-            return new CapabilityReason(
-                CapabilityReasonCode.Unsupported,
-                "Exact device identity no longer matches the Claw implementation.",
-                true);
-        }
-
-        if (!FirmwareVerified(identity, firmwareKind))
-        {
-            return new CapabilityReason(
-                CapabilityReasonCode.FirmwareNotVerified,
-                "Current firmware is outside the Claw implementation's verified gate.");
-        }
-
         return service.State switch
         {
             DeviceServiceState.Owned => null,
@@ -273,16 +228,6 @@ internal sealed partial class ClawDeviceEngine
         return _descriptorSet is null
             ? new CapabilityReason(CapabilityReasonCode.HostUnavailable)
             : CommandAdmission.Validate(command, descriptor, _descriptorSet.Descriptors, onAcPower);
-    }
-
-    private static CapabilityReason ValueOutOfRange(string detail)
-    {
-        return new CapabilityReason(CapabilityReasonCode.ValueOutOfRange, detail);
-    }
-
-    private static bool FirmwareVerified(ClawIdentityState identity, FirmwareKind kind)
-    {
-        return kind is not FirmwareKind.Wmi || identity.WmiAvailable;
     }
 
     private async ValueTask<CapabilityCommandResult> JournalCommandAsync(
@@ -321,8 +266,7 @@ internal sealed partial class ClawDeviceEngine
             // Nothing was written, so the entry this command opened has nothing to restore.
             try
             {
-                await _journal!.SetStatusAsync(serviceId, DeviceRecoveryStatus.RestoredVerified, CancellationToken.None)
-                    .ConfigureAwait(false);
+                await _journal!.MarkRestoredAsync(serviceId, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
@@ -358,10 +302,4 @@ internal sealed partial class ClawDeviceEngine
     private delegate ValueTask<CapabilityCommandResult> ClawCommandHandler(
         CapabilityCommand command,
         CancellationToken cancellationToken);
-
-    private enum FirmwareKind
-    {
-        None,
-        Wmi
-    }
 }

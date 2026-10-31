@@ -20,11 +20,7 @@ internal sealed record DeviceFamily(
     string Id,
     IReadOnlyList<HandheldDefinition> Models,
     Func<NativeIdentity, string?> MatchModel,
-    Func<HandheldDefinition, NativeEngine> CreateEngine)
-{
-    /// <summary>The maker's own manager apps for this family's models.</summary>
-    public IReadOnlyList<OemManagerApp> ManagerApps { get; init; } = [];
-}
+    Func<HandheldDefinition, NativeEngine> CreateEngine);
 
 /// <summary>Routes model selection to a family without exposing protocols to consumers.</summary>
 internal static class DeviceFamilies
@@ -33,86 +29,21 @@ internal static class DeviceFamilies
     // family needs another registration; consumer operations never switch on model names.
     private static readonly IReadOnlyList<DeviceFamily> Families = Array.AsReadOnly<DeviceFamily>(
     [
-        new DeviceFamily(ClawHardwareFacts.PackageId,
-            Array.AsReadOnly(ClawModels.All.Select(model => new HandheldDefinition(model.DefinitionId,
-                ClawHardwareFacts.PackageId, model.DisplayName, "msi-claw")
-            {
-                HardwareVerified = model.HardwareVerified,
-                DeclaredRoles = Array.AsReadOnly([
-                    CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ChargeLimit,
-                    CapabilityRole.ChargeProtectionMode,
-                    CapabilityRole.ScenarioMode, CapabilityRole.FanMode, CapabilityRole.FanDuty,
-                    CapabilityRole.LightingBrightness, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
-                    CapabilityRole.HapticSink, CapabilityRole.Telemetry, CapabilityRole.FanMeasuredRpm,
-                    CapabilityRole.FanCurve, CapabilityRole.LightingZoneColor
-                ])
-            }).ToArray()),
-            identity => ClawModels.Find(identity)?.DefinitionId,
-            definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
-                [context => new ClawDeviceEngine(context)])))
-        {
-            ManagerApps = ClawModels.ManagerApps
-        },
-        new DeviceFamily(AllyModels.PackageId,
-            Array.AsReadOnly(AllyModels.All.Select(model => new HandheldDefinition(model.DefinitionId,
-                AllyModels.PackageId, model.DisplayName, model.GlyphProfileId)
-            {
-                DeclaredRoles = Array.AsReadOnly([
-                    CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
-                    CapabilityRole.ChargeLimit, CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanCurve,
-                    CapabilityRole.Telemetry, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
-                    CapabilityRole.LightingEffectSpeed, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
-                    CapabilityRole.HapticSink, CapabilityRole.LightingZoneColor
-                ])
-            }).ToArray()),
-            identity => AllyModels.Match(identity)?.DefinitionId,
-            definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
-                [context => new AllyDeviceEngine(context)])))
-        {
-            ManagerApps = AllyModels.ManagerApps
-        },
-        new DeviceFamily(LegionGoModels.PackageId,
-            Array.AsReadOnly(LegionGoModels.All.Select(model => new HandheldDefinition(model.DefinitionId,
-                LegionGoModels.PackageId, model.DisplayName, model.GlyphProfileId)
-            {
-                DeclaredRoles =
-                [
-                    CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
-                    CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.ChargeProtectionMode,
-                    CapabilityRole.FanMeasuredRpm, CapabilityRole.Telemetry, CapabilityRole.LightingPower,
-                    CapabilityRole.LightingBrightness, CapabilityRole.LightingEffectSpeed,
-                    CapabilityRole.LightingEffect, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
-                    CapabilityRole.HapticSink, CapabilityRole.GenericToggle, CapabilityRole.GenericAction,
-                    CapabilityRole.LightingZoneColor, .. !model.EcFan ? new[] { CapabilityRole.FanCurve } : [],
-                    .. !model.Slim ? new[] { CapabilityRole.GenericChoice } : []
-                ],
-                HardwareAccess = model.EcFan ? DeviceHardwareAccess.PawnIo : DeviceHardwareAccess.None
-            }).ToArray()),
-            identity => LegionGoModels.Match(identity)?.DefinitionId,
-            definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition,
-                [context => new LegionGoDeviceEngine(context)])))
-        {
-            ManagerApps = LegionGoModels.ManagerApps
-        },
-        new DeviceFamily(GpdModels.FamilyId, GpdModels.GetDefinitions(),
-            identity => GpdModels.Match(identity)?.Definition.Id, GpdModels.CreateEngine),
-        new DeviceFamily(AyaneoModels.FamilyId, AyaneoModels.Definitions, AyaneoModels.Match,
-            AyaneoModels.CreateEngine),
-        new DeviceFamily(OneXPlayerModels.FamilyId, OneXPlayerModels.Definitions,
-            identity => OneXPlayerModels.Match(identity)?.Definition.Id, OneXPlayerModels.CreateEngine),
-        new DeviceFamily(ZotacModels.FamilyId, ZotacModels.GetDefinitions(),
-            identity => ZotacModels.Match(identity)?.Definition.Id, ZotacModels.CreateEngine)
-        {
-            ManagerApps = ZotacModels.ManagerApps
-        },
+        Native(ClawHardwareFacts.PackageId, ClawModels.Definitions,
+            identity => ClawModels.Find(identity)?.DefinitionId, context => new ClawDeviceEngine(context)),
+        Native(AllyModels.PackageId, AllyModels.Definitions,
+            identity => AllyModels.Match(identity)?.DefinitionId, context => new AllyDeviceEngine(context)),
+        Native(LegionGoModels.PackageId, LegionGoModels.Definitions,
+            identity => LegionGoModels.Match(identity)?.DefinitionId, context => new LegionGoDeviceEngine(context)),
+        Profiled(GpdModels.FamilyId, GpdModels.All, identity => GpdModels.Match(identity)?.Definition.Id),
+        Profiled(AyaneoModels.FamilyId, AyaneoModels.All.Select(model => model.Profile), AyaneoModels.Match),
+        Profiled(OneXPlayerModels.FamilyId, OneXPlayerModels.All,
+            identity => OneXPlayerModels.Match(identity)?.Definition.Id),
+        Profiled(ZotacModels.FamilyId, [ZotacModels.Zone], identity => ZotacModels.Match(identity)?.Definition.Id),
         new DeviceFamily(SteamDeckModels.FamilyId, SteamDeckModels.Definitions,
             SteamDeckModels.Match, SteamDeckModels.CreateEngine),
-        new DeviceFamily(AcerModels.FamilyId, AcerModels.Definitions, AcerModels.Match, AcerModels.CreateEngine)
-        {
-            ManagerApps = AcerModels.ManagerApps
-        },
-        new DeviceFamily(GenericModels.FamilyId, GenericModels.GetDefinitions(),
-            identity => GenericModels.Match(identity)?.Definition.Id, GenericModels.CreateEngine)
+        new DeviceFamily(AcerModels.FamilyId, AcerModels.Definitions, AcerModels.Match, AcerModels.CreateEngine),
+        Profiled(GenericModels.FamilyId, GenericModels.All, identity => GenericModels.Match(identity)?.Definition.Id)
     ]).Select(family => family with
     {
         Models = Array.AsReadOnly(family.Models.Select(model => model with
@@ -128,8 +59,28 @@ internal static class DeviceFamilies
     internal static IReadOnlyList<HandheldDefinition> Models { get; } = Array.AsReadOnly(
         Families.SelectMany(family => family.Models).ToArray());
 
-    internal static IReadOnlyList<OemManagerApp> ManagerApps { get; } = Array.AsReadOnly(
-        Families.SelectMany(family => family.ManagerApps).ToArray());
+    // Each family's own manager apps, in family order.
+    internal static IReadOnlyList<OemManagerApp> ManagerApps { get; } = Array.AsReadOnly<OemManagerApp>([
+        .. ClawModels.ManagerApps, .. AllyModels.ManagerApps, .. LegionGoModels.ManagerApps,
+        .. ZotacModels.ManagerApps, .. AcerModels.ManagerApps
+    ]);
+
+    /// <summary>A family of standard-transport profiles; the engine runs the profile with the selected id.</summary>
+    private static DeviceFamily Profiled(string id, IEnumerable<ProfiledDeviceModel> models,
+        Func<NativeIdentity, string?> match)
+    {
+        var profiles = models.ToArray();
+        return new DeviceFamily(id, profiles.Select(model => model.DeclaredDefinition).ToArray(), match,
+            definition => new ProfiledDeviceEngine(profiles.Single(model => model.Definition.Id == definition.Id)));
+    }
+
+    /// <summary>A family whose own protocol engine supplies every declared role.</summary>
+    private static DeviceFamily Native(string id, IReadOnlyList<HandheldDefinition> definitions,
+        Func<NativeIdentity, string?> match, Func<ProfiledFeatureContext, ProfiledFeatureService> engine)
+    {
+        return new DeviceFamily(id, definitions, match,
+            definition => new ProfiledDeviceEngine(ProfiledDeviceModel.ForServices(definition, [engine])));
+    }
 
     internal static HandheldDefinition? Detect(NativeIdentity identity)
     {

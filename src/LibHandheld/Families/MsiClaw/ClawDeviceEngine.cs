@@ -29,7 +29,6 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
     private bool _disposed;
     private ClawFanCapability? _fanCapability;
     private FanService? _fans;
-    private IDeviceSink? _host;
     private bool _initialized;
     private DeviceRecoveryJournal? _journal;
     private LightingService? _lighting;
@@ -69,21 +68,16 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
     internal override IReadOnlyList<OemControlDescriptor> OemControls => _publications.OemControls;
     internal override bool DescriptorsChanged => _publications.DescriptorsChanged;
 
-    /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
-    private async ValueTask<EngineStartResult> InitializeAsync(
-        EngineStartContext context,
-        CancellationToken cancellationToken)
+    /// <summary>Starts the first cycle from the plugin context and publishes through <see cref="_publications" />.</summary>
+    private async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(context);
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_active)
         {
             throw new InvalidOperationException("The plugin already owns a device cycle.");
         }
 
-        var definedModel = ClawModels.FindByDefinition(context.DeviceDefinitionId)
+        var definedModel = ClawModels.FindByDefinition(_context.DeviceDefinitionId)
                            ?? throw new InvalidOperationException("WSGM supplied a different device definition.");
 
 
@@ -91,18 +85,12 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
         // tracing happen and an ambient sink installed late traces nothing that mattered.
         DeviceTrace.Info(
             "lifecycle",
-            $"start: definition={context.DeviceDefinitionId}.");
+            $"start: definition={_context.DeviceDefinitionId}.");
 
         var identity = new ClawIdentityState
         {
-            Snapshot = context.Identity, Model = definedModel, ExactMachineMatch = true, WmiAvailable = true,
-            OnAcPower = _services.Identity.ReadOnAcPower()
+            Snapshot = _context.Identity, OnAcPower = _services.Identity.ReadOnAcPower()
         };
-        if (!identity.ExactMachineMatch || identity.Model != definedModel)
-        {
-            DeviceTrace.Error("lifecycle", $"the {definedModel.BoardProduct} activation gate no longer matches.");
-            throw new InvalidOperationException($"The {definedModel.BoardProduct} activation gate no longer matches.");
-        }
 
         DeviceTrace.Info(
             "lifecycle",
@@ -110,8 +98,6 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             + (definedModel.HardwareVerified ? "hardware-verified" : "built from HC, no hardware pass")
             + $"); sku={identity.Snapshot.SystemSku ?? "<none>"}, ec={identity.Snapshot.EcFirmwareVersion ?? "<none>"}, "
             + $"mcu={identity.Snapshot.McuFirmwareVersion ?? "<none>"}.");
-
-        _host = context.Host;
 
         _cycleIdentity = identity;
         _quiescing = false;
@@ -129,8 +115,8 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             _chargeLimitCapability = chargeLimitCapability;
             _fanCapability = fanCapability;
             _lightingCapability = lightingCapability;
-            _journal = context.Journal;
-            _oem = new OemEventService(_services.OemEvents, context.Host, _services.OemButtons);
+            _journal = _context.Journal;
+            _oem = new OemEventService(_services.OemEvents, _publications, _services.OemButtons);
             _power = new PowerService(powerCapability, _journal);
             _chargeLimit = new ChargeLimitService();
             _fans = new FanService(fanCapability, _journal);
@@ -142,17 +128,16 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
                 _services.Mcu,
                 _services.Controller,
                 _motion,
-                context.Host,
+                _publications,
                 _journal,
                 definedModel,
                 _services.Delay)
             {
-                Enabled = context.ControllerManagementEnabled
+                Enabled = _context.ControllerManagementEnabled
             };
             _suppressor = new ChordSuppressorService(
                 _services.ChordSuppressor,
-                _oem,
-                context.Host);
+                _oem);
 
             // Start and resume acquire in this order, and stop releases in reverse. Chord suppression
             // follows the OEM event source it requires, and the controller follows the motion service
@@ -180,9 +165,9 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
                     cancellationToken).ConfigureAwait(false);
             }
 
-            await context.Host.PublishDescriptorsAsync(_descriptorSet!, cancellationToken)
+            await _publications.PublishDescriptorsAsync(_descriptorSet!, cancellationToken)
                 .ConfigureAwait(false);
-            await context.Host.PublishOemControlsAsync(CreateOemControls(), cancellationToken)
+            await _publications.PublishOemControlsAsync(CreateOemControls(), cancellationToken)
                 .ConfigureAwait(false);
 
             // HC repairs a missing MSI_Event class once, when it opens the device. A resume only subscribes
@@ -192,7 +177,6 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
                 .ConfigureAwait(false);
             _active = true;
             await PublishCapabilityStatesAsync(cancellationToken).ConfigureAwait(false);
-            return CurrentStartResult();
         }
         catch
         {
@@ -203,9 +187,6 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
     }
 
     /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
     internal override ValueTask ApplyHapticOutputAsync(
         HapticOutputFrame frame,
         CancellationToken cancellationToken)
@@ -215,10 +196,6 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             : _controller.ApplyHapticsAsync(frame, cancellationToken);
     }
 
-    /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
     /// <inheritdoc />
     /// <remarks>
     ///     The engine awaits <see cref="ReleaseAsync" /> first. Disposal only releases handles and never writes the
@@ -270,12 +247,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
         _quiescing = false;
         if (!_initialized)
         {
-            await InitializeAsync(new EngineStartContext
-            {
-                Host = _publications, Identity = _context.Identity, DeviceDefinitionId = _context.DeviceDefinitionId,
-                StateDirectory = _context.StateDirectory, Journal = _context.Journal, Resources = _context.Resources,
-                ControllerManagementEnabled = _context.ControllerManagementEnabled
-            }, token).ConfigureAwait(false);
+            await InitializeAsync(token).ConfigureAwait(false);
             _initialized = true;
         }
         else
@@ -288,9 +260,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
         }
 
         var state = CurrentStartResult();
-        return Set(state.State == EngineOperationalState.Active ? DeviceServiceState.Owned :
-            state.State == EngineOperationalState.Degraded ? DeviceServiceState.Degraded : DeviceServiceState.Passive,
-            state.Reason);
+        return Set(DeviceServiceLifecycle.ServiceState(state), state.Reason);
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
@@ -301,9 +271,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             .ConfigureAwait(false);
         _active = false;
         var result = DeviceServiceLifecycle.StopResult(Services);
-        return Set(result.Status == EngineStopStatus.Failed ? DeviceServiceState.Faulted :
-            result.Status == EngineStopStatus.Unverified ? DeviceServiceState.ReleasedUnverified :
-            DeviceServiceState.Idle, result.Reason);
+        return Set(DeviceServiceLifecycle.ServiceState(result), result.Reason);
     }
 
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
@@ -339,20 +307,10 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
         }
         else
         {
-            await ReleaseControllerCoreAsync(deadline, token).ConfigureAwait(false);
+            await _controller.ReleaseControllerAsync(deadline, token).ConfigureAwait(false);
         }
 
         await PublishCapabilityStatesAsync(token).ConfigureAwait(false);
-    }
-
-    private async ValueTask ReleaseControllerCoreAsync(
-        Deadline deadline,
-        CancellationToken cancellationToken)
-    {
-        if (_controller is not null)
-        {
-            await _controller.ReleaseControllerAsync(deadline, cancellationToken).ConfigureAwait(false);
-        }
     }
 
     private async ValueTask RollBackFailedStartAsync()
@@ -360,35 +318,13 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
         await DeviceServiceLifecycle.RollBackStartAsync(
             Services,
             OperationContext(Deadline.After(TimeSpan.FromSeconds(12))),
-            _host,
+            _publications,
             _descriptorSet).ConfigureAwait(false);
 
         _journal = null;
         _active = false;
         _descriptorSet = null;
         Services = [];
-    }
-
-    private string DiagnosticCycleState()
-    {
-        if (_disposed)
-        {
-            return "disposed";
-        }
-
-        if (_quiescing)
-        {
-            return _active ? "quiescing" : "stopped";
-        }
-
-        if (_active)
-        {
-            return "started";
-        }
-
-        return _host is not null && _descriptorSet is not null
-            ? "starting"
-            : "stopped";
     }
 
     /// <summary>Acquires every service in start order and clears the observation failure of each one now owned.</summary>
@@ -420,7 +356,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             Services,
             service => service != _controller || _controller.Enabled,
             "No Claw hardware service could be acquired.",
-            _host);
+            _publications);
     }
 
     private static ClawHardwareServices CreateWindowsServices()

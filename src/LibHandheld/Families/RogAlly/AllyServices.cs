@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using LibHandheld.Contracts;
+using LibHandheld.Families.Asus;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Lifecycle;
 using LibHandheld.Internal.Runtime;
@@ -33,8 +34,6 @@ internal sealed class PowerService(
     Func<TimeSpan, CancellationToken, Task> delay,
     DeviceRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Power)
 {
-    private bool _originalCaptureAttempted;
-
     public AllyPowerCapability? Capability { get; private set; }
 
     public override ValueTask<DeviceServiceResult> AcquireAsync(
@@ -57,7 +56,6 @@ internal sealed class PowerService(
         }
 
         Capability = new AllyPowerCapability(acpi, model, delay);
-        _originalCaptureAttempted = false;
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
 
@@ -74,13 +72,7 @@ internal sealed class PowerService(
     /// </returns>
     public async ValueTask PrepareWriteAsync(AllyIdentityState identity, CancellationToken cancellationToken)
     {
-        if (_originalCaptureAttempted)
-        {
-            return;
-        }
-
         cancellationToken.ThrowIfCancellationRequested();
-        _originalCaptureAttempted = true;
         await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
         {
             var original = Capability!.Read();
@@ -98,7 +90,7 @@ internal sealed class PowerService(
             return Set(DeviceServiceState.Idle);
         }
 
-        if (journal.PendingOriginalFor<AllyRecoveryState>(ServiceId)?.ToPower() is { } original)
+        if (journal.OriginalStateFor<AllyRecoveryState>(ServiceId)?.ToPower() is { } original)
         {
             if (!DeviceWriteBudget.IsAvailable(context.Deadline))
             {
@@ -108,8 +100,7 @@ internal sealed class PowerService(
             try
             {
                 await Capability.RestoreAsync(original, cancellationToken).ConfigureAwait(false);
-                await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
-                    .ConfigureAwait(false);
+                await journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
@@ -140,8 +131,6 @@ internal sealed class FanService(
     Func<TimeSpan, CancellationToken, Task> delay,
     DeviceRecoveryJournal journal) : DeviceService<AllyIdentityState>(AllyServiceIds.Fans)
 {
-    private bool _originalCaptureAttempted;
-
     public AllyFanCapability? Capability { get; private set; }
 
     public (int? Cpu, int? Gpu) LastFans { get; private set; }
@@ -169,7 +158,6 @@ internal sealed class FanService(
         }
 
         Capability = new AllyFanCapability(acpi, delay);
-        _originalCaptureAttempted = false;
         RefreshTelemetry();
         return ValueTask.FromResult(Set(DeviceServiceState.Owned));
     }
@@ -198,13 +186,7 @@ internal sealed class FanService(
     /// </returns>
     public async ValueTask PrepareWriteAsync(AllyIdentityState identity, CancellationToken cancellationToken)
     {
-        if (_originalCaptureAttempted)
-        {
-            return;
-        }
-
         cancellationToken.ThrowIfCancellationRequested();
-        _originalCaptureAttempted = true;
         await journal.BeginAsync(ServiceId, identity.FirmwareIdentity, () =>
         {
             Capability!.Probe();
@@ -224,7 +206,7 @@ internal sealed class FanService(
             return Set(DeviceServiceState.Idle);
         }
 
-        if (journal.PendingOriginalFor<AllyRecoveryState>(ServiceId)?.ToFans() is not { } original)
+        if (journal.OriginalStateFor<AllyRecoveryState>(ServiceId)?.ToFans() is not { } original)
         {
             return await ReleaseToFactoryAsync(context, cancellationToken).ConfigureAwait(false);
         }
@@ -237,8 +219,7 @@ internal sealed class FanService(
         try
         {
             await Capability.RestoreAsync(original, cancellationToken).ConfigureAwait(false);
-            await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
-                .ConfigureAwait(false);
+            await journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {

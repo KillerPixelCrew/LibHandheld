@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Numerics;
+using LibHandheld.Families.Asus;
 using LibHandheld.Internal.Input;
+using LibHandheld.Internal.Windows;
 
 // SPDX-License-Identifier: MIT
 
@@ -8,6 +10,9 @@ namespace LibHandheld.Families.RogAlly.Tests;
 
 public sealed class ProtocolTests
 {
+    /// <summary>The guide bit only <c>XInputGetStateEx</c> (ordinal 100) reports.</summary>
+    private const ushort GuideBit = 0x0400;
+
     [Theory]
     [InlineData("rc72la")]
     [InlineData("rc73xa")]
@@ -72,7 +77,7 @@ public sealed class ProtocolTests
         var xbox = AllyModels.ById(definitionId)!;
 
         // The Xbox button is the pad's guide bit and always reaches Steam as the Guide.
-        Assert.Equal(CanonicalButtons.Guide, AllyControllerCodec.Buttons(AllyControllerCodec.Guide));
+        Assert.Equal(CanonicalButtons.Guide, Decode(new StandardXInput.Gamepad { Buttons = GuideBit }).Buttons);
         // Armoury Crate carries no Steam button: WSGM opens its overlay from it.
         Assert.Equal(CanonicalButtons.None, AllyModels.VendorAction(xbox, 0xA6)!.Value.Button);
         Assert.Equal(CanonicalButtons.QuickAccess, AllyModels.VendorAction(xbox, 0x38)!.Value.Button);
@@ -297,7 +302,7 @@ public sealed class ProtocolTests
         Assert.False(AsusAcpiProtocol.IsWritable(AsusAcpiId.CpuFanSpeed));
         Assert.False(AsusAcpiProtocol.IsWritable((AsusAcpiId)0x00090020));
         Assert.True(AsusAcpiProtocol.IsWritable(AsusAcpiId.FastPower));
-        Assert.True(AsusAcpiProtocol.IsValidCurve(AllyFanCapability.DefaultCpuCurve));
+        Assert.True(AsusAcpiProtocol.IsValidCurve(AsusFanCurve.DefaultCpuCurve));
         Assert.False(AsusAcpiProtocol.IsValidCurve(new byte[16]));
     }
 
@@ -342,13 +347,21 @@ public sealed class ProtocolTests
     [Fact]
     public void XInputButtonsDecodeToCanonical()
     {
-        var buttons = (ushort)(AllyControllerCodec.A | AllyControllerCodec.Back | AllyControllerCodec.Guide
-                               | AllyControllerCodec.DPadLeft);
+        // XInput A, Back, Guide and DPad-left, decoded by the codec the Ally pad is read through.
+        var sample = Decode(new StandardXInput.Gamepad
+        {
+            Buttons = 0x1000 | 0x0020 | GuideBit | 0x0004, LeftX = short.MinValue, LeftY = short.MaxValue
+        });
 
         Assert.Equal(CanonicalButtons.A | CanonicalButtons.View | CanonicalButtons.Guide | CanonicalButtons.DPadLeft,
-            AllyControllerCodec.Buttons(buttons));
-        Assert.Equal(-1f, AllyControllerCodec.Axis(short.MinValue));
-        Assert.Equal(1f, AllyControllerCodec.Axis(short.MaxValue));
+            sample.Buttons);
+        Assert.Equal(-1f, sample.LeftStickX);
+        Assert.Equal(1f, sample.LeftStickY);
+    }
+
+    private static CanonicalControllerSample Decode(StandardXInput.Gamepad pad)
+    {
+        return StandardControllerCodec.Decode(pad, CanonicalButtons.None, motion: null, DateTimeOffset.UtcNow);
     }
 
     [Fact]

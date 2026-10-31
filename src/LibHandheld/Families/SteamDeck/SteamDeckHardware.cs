@@ -1,12 +1,8 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Management;
 using System.Runtime.InteropServices;
-using System.Text.Json;
 using LibHandheld.Internal.Transports;
-using LibHandheld.Internal.Windows;
-using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Families.SteamDeck;
 
@@ -18,31 +14,11 @@ internal interface ISteamDeckMemory : IDisposable
     void AuthorizeGpuRange(uint mmioBase);
 }
 
-/// <summary>The pinned InpOut ABI; the pre-existing driver must be ready before DLL loading.</summary>
-internal sealed partial class SteamDeckMemory : ISteamDeckMemory
+/// <summary>Valve's admitted EC fields, GPU mailbox words and fan-mode port over the pinned InpOut transport.</summary>
+internal sealed class SteamDeckMemory(InpOutTransport inpOut) : ISteamDeckMemory
 {
     private readonly Lock _gate = new();
-    private readonly FileStream _held;
-    private readonly nint _library;
-    private readonly MapMemory _map;
-    private readonly SafeFileHandle _readiness;
-    private readonly UnmapMemory _unmap;
-    private bool _disposed;
     private uint? _gpuBase;
-
-    private SteamDeckMemory(FileStream held, SafeFileHandle readiness, nint library)
-    {
-        _held = held;
-        _readiness = readiness;
-        _library = library;
-        _map = Export<MapMemory>("MapPhysToLin");
-        _unmap = Export<UnmapMemory>("UnmapPhysicalMemory");
-        _ = Export<WritePort>("DlPortWritePortUchar");
-        if (!Export<DriverReady>("IsInpOutDriverOpen")())
-        {
-            throw new IOException("The InpOut driver did not open.");
-        }
-    }
 
     public uint Read(uint address, int width)
     {
@@ -76,18 +52,7 @@ internal sealed partial class SteamDeckMemory : ISteamDeckMemory
             throw new ArgumentOutOfRangeException(nameof(mode));
         }
 
-        lock (_gate)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            // The public void export silently discards IOCTL failure. The pinned driver's verified
-            // ABI is a ushort port followed by one byte; acknowledge the actual driver dispatch.
-            var request = new byte[] { 0x6C, 0, mode };
-            if (!NativeDevice.DeviceIoControl(_readiness, 0x9C402008, request, 3, new byte[10], 10, out _, 0))
-            {
-                throw new Win32Exception(Marshal.GetLastPInvokeError(),
-                    "Valve fan-mode dispatch failed; completion is unknown.");
-            }
-        }
+        inpOut.WritePortBytes([[0x6C, 0, mode]], "Valve fan-mode dispatch failed; completion is unknown.");
     }
 
     public void AuthorizeGpuRange(uint mmioBase)
@@ -105,55 +70,12 @@ internal sealed partial class SteamDeckMemory : ISteamDeckMemory
 
     public void Dispose()
     {
-        lock (_gate)
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
-            NativeLibrary.Free(_library);
-            _readiness.Dispose();
-            _held.Dispose();
-        }
+        inpOut.Dispose();
     }
 
     internal static SteamDeckMemory Open(string? path)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        path = Path.GetFullPath(path);
-        using var manifest = File.OpenRead(Path.Combine(Path.GetDirectoryName(path)!, "inpout.lock.json"));
-        using var pin = JsonDocument.Parse(manifest);
-        var digest = pin.RootElement.GetProperty("component").GetProperty("sha256").GetString()
-                     ?? throw new InvalidDataException("The InpOut payload pin is missing.");
-        var held = PinnedPayload.OpenHeld(path, digest);
-        SafeFileHandle? readiness = null;
-        nint library = 0;
-        try
-        {
-            // InpOut's DLL entry point may install a missing driver. Require the existing device first.
-            readiness = NativeDevice.CreateFile(@"\\.\inpoutx64", 0, 3, 0, 3, 0, 0);
-            if (readiness.IsInvalid)
-            {
-                throw new IOException(
-                    "The pre-installed InpOut x64 driver is not ready. The library does not install it.");
-            }
-
-            library = NativeLibrary.Load(path);
-            return new SteamDeckMemory(held, readiness, library);
-        }
-        catch
-        {
-            if (library != 0)
-            {
-                NativeLibrary.Free(library);
-            }
-
-            readiness?.Dispose();
-            held.Dispose();
-            throw;
-        }
+        return new SteamDeckMemory(InpOutTransport.Open(path));
     }
 
     private T Map<T>(uint address, int width, Func<nint, T> action)
@@ -165,36 +87,13 @@ internal sealed partial class SteamDeckMemory : ISteamDeckMemory
 
         lock (_gate)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
             if (!IsAllowed(address, width, _gpuBase))
             {
                 throw new ArgumentOutOfRangeException(nameof(address),
                     "Only the selected Valve mailbox and documented EC fields may be mapped.");
             }
 
-            var pointer = _map(new nint(address), checked((uint)(width / 8)), out var mapping);
-            if (pointer == 0 || mapping == 0)
-            {
-                // The driver can return a section handle without a view after translation fails.
-                if (mapping != 0)
-                {
-                    _unmap(mapping, pointer);
-                }
-
-                throw new IOException("InpOut did not return a physical-memory mapping.");
-            }
-
-            try
-            {
-                return action(pointer);
-            }
-            finally
-            {
-                if (!_unmap(mapping, pointer))
-                {
-                    throw new IOException("The physical-memory mapping could not be released.");
-                }
-            }
+            return inpOut.Map(address, checked((uint)(width / 8)), action);
         }
     }
 
@@ -205,29 +104,8 @@ internal sealed partial class SteamDeckMemory : ISteamDeckMemory
                                                            address == selected + 0x16292 * 4))
                || (address, width) is (0xFE700C4C, 16) or (0xFE7003BD, 8) or (0xFE700C01, 8)
                or (0xFE700B92, 16) or (0xFE700B95, 16) or (0xFE700B97, 16)
-               or (0xFE7003B0, 16) or (0xFE70046E, 16) or (0xFE700B9F, 32) or (0xFE700B9F, 8)
-               or (0xFE700C01, 8);
+               or (0xFE7003B0, 16) or (0xFE70046E, 16) or (0xFE700B9F, 32) or (0xFE700B9F, 8);
     }
-
-    private T Export<T>(string name) where T : Delegate
-    {
-        return Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(_library, name));
-    }
-
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate nint MapMemory(nint address, uint bytes, out nint handle);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private delegate bool UnmapMemory(nint handle, nint pointer);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate void WritePort(ushort port, byte value);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private delegate bool DriverReady();
 }
 
 internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICpuPowerTransport
@@ -246,7 +124,6 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
     ];
 
     private readonly Lock _gate = new();
-    internal uint FirmwareVersion { get; private set; }
 
     public CpuPowerLimits ReadLimits()
     {
@@ -298,10 +175,8 @@ internal sealed class VangoghPower(ISteamDeckMemory memory, uint mmioBase) : ICp
             {
                 memory.AuthorizeGpuRange(candidate.Base);
                 var transport = new VangoghPower(memory, candidate.Base);
-                var version = transport.Exchange(2, 0);
-                if (candidate.Versions.Contains(version))
+                if (candidate.Versions.Contains(transport.Exchange(2, 0)))
                 {
-                    transport.FirmwareVersion = version;
                     return transport;
                 }
             }

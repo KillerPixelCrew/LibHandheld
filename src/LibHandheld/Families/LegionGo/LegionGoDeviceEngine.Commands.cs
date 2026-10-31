@@ -46,10 +46,7 @@ internal sealed partial class LegionGoDeviceEngine
 
         value ??= CapabilityValue.None();
 
-        if (descriptor.Role is CapabilityRole.LightingBrightness or CapabilityRole.LightingEffect
-                or CapabilityRole.LightingEffectSpeed or CapabilityRole.LightingZoneColor
-                or CapabilityRole.LightingPower ||
-            command.CapabilityId is NativeTouchpad or GyroSide or ControllerMode or ControllerReset)
+        if (UsesHid(descriptor))
         {
             if (_hid?.Connected != true)
             {
@@ -84,8 +81,9 @@ internal sealed partial class LegionGoDeviceEngine
                 "The Lenovo fan table provider is unavailable.");
         }
 
-        if (_model!.EcFan && command.CapabilityId is FanDuty or CapabilityIds.FanCurve or CapabilityIds.FanMode &&
-            _ec is null)
+        if (_model!.EcFan
+            && command.CapabilityId is CapabilityIds.FanDuty or CapabilityIds.FanCurve or CapabilityIds.FanMode
+            && _ec is null)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                 "The signed EC transport is unavailable.");
@@ -156,7 +154,7 @@ internal sealed partial class LegionGoDeviceEngine
 
                     Remember(CapabilityIds.FanMode, CapabilityValue.Choice(_fanMode));
                     break;
-                case FanDuty:
+                case CapabilityIds.FanDuty:
                     await CaptureFansAsync(writeToken).ConfigureAwait(false);
                     writeToken.ThrowIfCancellationRequested();
                     dispatched = true;
@@ -199,7 +197,7 @@ internal sealed partial class LegionGoDeviceEngine
                     _fanMode = value.ChoiceValue!;
                     if (_fanMode == "automatic")
                     {
-                        _observed.Forget(FanDuty);
+                        _observed.Forget(CapabilityIds.FanDuty);
                         _observed.Forget(CapabilityIds.FanCurve);
                     }
 
@@ -334,8 +332,7 @@ internal sealed partial class LegionGoDeviceEngine
 
             var observedMode = _wmi!.ReadMode();
             var mode = observedMode is { } known && ModeName(known) is not null ? observedMode : null;
-            return new LegionRecoveryState
-                { Features = values, Mode = mode, UnknownOriginal = values.Count != 4 || mode is null };
+            return new LegionRecoveryState { Features = values, Mode = mode };
         }, token).ConfigureAwait(false);
     }
 
@@ -344,13 +341,10 @@ internal sealed partial class LegionGoDeviceEngine
         await _journal!.BeginAsync("fans", LegionIdentity.Binding(_identity!), () =>
         {
             var full = _wmi!.ReadFeature(LegionProtocol.FullFan);
-            var table = _model!.EcFan ? null : _wmi.ReadFanTable();
-            ushort? rpm = _model.EcFan && _ec is not null ? _ec.ReadUInt16(0xC6C8) : null;
             return new LegionRecoveryState
             {
                 Features = full is { } value ? new Dictionary<int, int> { [LegionProtocol.FullFan] = value } : [],
-                FanTable = table, EcFan = rpm,
-                UnknownOriginal = full is null || (_model.EcFan ? rpm is null : table is null)
+                FanTable = _model!.EcFan ? null : _wmi.ReadFanTable()
             };
         }, token).ConfigureAwait(false);
     }
@@ -387,10 +381,13 @@ internal sealed partial class LegionGoDeviceEngine
             {
                 // Non-custom OEM modes own their limits. Rewriting those limits after the mode
                 // can return Lenovo firmware to Custom; restore raw limits only for a captured custom mode.
-                foreach (var feature in state.Features.Where(_ => state.Mode is null or 255))
+                if (state.Mode is null or 255)
                 {
-                    DeviceWriteBudget.Require(budget ?? Deadline.Never, "Lenovo recovery feature");
-                    _wmi.WriteFeature(feature.Key, feature.Value);
+                    foreach (var feature in state.Features)
+                    {
+                        DeviceWriteBudget.Require(budget ?? Deadline.Never, "Lenovo recovery feature");
+                        _wmi.WriteFeature(feature.Key, feature.Value);
+                    }
                 }
 
                 if (state.Mode is { } mode)
@@ -416,17 +413,11 @@ internal sealed partial class LegionGoDeviceEngine
                     _fansChanged = false;
                 }
 
-                await _journal.SetStatusAsync(entry.ServiceId,
-                        DeviceRecoveryStatus.RestoredUnverified,
-                        token)
-                    .ConfigureAwait(false);
+                await _journal.MarkRestoredAsync(entry.ServiceId, token).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 DeviceTrace.Write(DeviceTraceLevel.Warn, "legion-recovery", ex.Message);
-                await _journal
-                    .SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                    .ConfigureAwait(false);
             }
         }
 

@@ -168,7 +168,7 @@ public sealed class ClawModelLifecycleTests
 
         _ = await controller.AcquireAsync(
             new DeviceCycleContext<ClawIdentityState>(Deadline.After(TimeSpan.FromSeconds(10)),
-                FakeIdentityReader.CreateState() with { Model = ClawModels.Claw8A2Vm }),
+                FakeIdentityReader.CreateState()),
             CancellationToken.None);
 
         Assert.Equal(2, mcu.Writes.Count);
@@ -234,7 +234,7 @@ public sealed class ClawModelLifecycleTests
         OemButtonLatch latch = new();
         OemEventService oem = new(new FakeOemEventSource(), host, latch);
         FakeChordSuppressor suppressor = new();
-        ChordSuppressorService service = new(suppressor, oem, host);
+        ChordSuppressorService service = new(suppressor, oem);
         _ = await service.AcquireAsync(
             new DeviceCycleContext<ClawIdentityState>(Deadline.After(TimeSpan.FromSeconds(10)),
                 FakeIdentityReader.CreateState()),
@@ -366,7 +366,6 @@ public sealed class ClawModelLifecycleTests
         await File.WriteAllTextAsync(Path.Combine(state.Root, "temporary-state.v1.json"), "{invalid legacy data}");
         var journal = await DeviceRecoveryJournal.OpenAsync(state.Root, CancellationToken.None);
         Assert.Empty(journal.OutstandingEntries);
-        Assert.Equal("healthy", journal.DiagnosticState);
     }
 
     [Theory]
@@ -441,7 +440,7 @@ public sealed class ClawModelLifecycleTests
         };
         _ = await controller.AcquireAsync(
             new DeviceCycleContext<ClawIdentityState>(Deadline.After(TimeSpan.FromSeconds(10)),
-                FakeIdentityReader.CreateState() with { Model = model }),
+                FakeIdentityReader.CreateState()),
             CancellationToken.None);
         return controller;
     }

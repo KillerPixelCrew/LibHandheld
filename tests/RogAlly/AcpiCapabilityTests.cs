@@ -1,3 +1,4 @@
+using LibHandheld.Families.Asus;
 using LibHandheld.Families.RogAlly.Tests.Fakes;
 using LibHandheld.Internal.Capabilities;
 
@@ -143,7 +144,7 @@ public sealed class AcpiCapabilityTests
         acpi.SetScalar(AsusAcpiId.FastPower, 25);
 
         var reads = acpi.StatusReads;
-        Assert.True(await power.RestoreAsync(original, CancellationToken.None));
+        await power.RestoreAsync(original, CancellationToken.None);
         Assert.Equal(reads, acpi.StatusReads);
         Assert.Equal(new[]
         {
@@ -194,7 +195,7 @@ public sealed class AcpiCapabilityTests
             new(30, 0), new(40, 10), new(50, 20), new(60, 35), new(70, 50), new(80, 70), new(90, 90), new(100, 100)
         ];
 
-        Assert.True(AllyFanCapability.TryEncode(points, out var curve, out _));
+        Assert.True(AsusFanCurve.TryEncode(points, out var curve, out _));
         Assert.Equal([30, 40, 50, 60, 70, 80, 90, 100, 0, 10, 20, 35, 50, 70, 90, 99], curve);
     }
 
@@ -205,7 +206,7 @@ public sealed class AcpiCapabilityTests
     {
         var points = Enumerable.Range(0, count).Select(index => new CurvePoint(30 + index * 5, 20)).ToArray();
 
-        Assert.False(AllyFanCapability.TryEncode(points, out _, out _));
+        Assert.False(AsusFanCurve.TryEncode(points, out _, out _));
     }
 
     [Fact]
@@ -216,7 +217,7 @@ public sealed class AcpiCapabilityTests
             new(30, 50), new(40, 40), new(50, 50), new(60, 50), new(70, 50), new(80, 50), new(90, 50), new(100, 50)
         ];
 
-        Assert.False(AllyFanCapability.TryEncode(points, out _, out _));
+        Assert.False(AsusFanCurve.TryEncode(points, out _, out _));
     }
 
     [Fact]
@@ -260,10 +261,10 @@ public sealed class AcpiCapabilityTests
     public async Task MidFanWriteDoesNotReadBackAnyChannel()
     {
         var acpi = new FakeAsusAcpi { IgnoreWritesTo = AsusAcpiId.MidFanCurve };
-        acpi.SetCurve(AsusAcpiId.MidFanCurve, [.. AllyFanCapability.DefaultCpuCurve]);
+        acpi.SetCurve(AsusAcpiId.MidFanCurve, [.. AsusFanCurve.DefaultCpuCurve]);
         var fans = new AllyFanCapability(acpi, AllyFakeHardware.NoDelay);
         fans.Probe();
-        var points = AllyFanCapability.Decode(AllyFanCapability.DefaultGpuCurve);
+        var points = AsusFanCurve.Decode(AsusFanCurve.DefaultGpuCurve);
 
         var result = await fans.ApplyCurveAsync(
             Command(CapabilityValue.Curve(points), CapabilityIds.FanCurve), points, CancellationToken.None);
@@ -294,9 +295,9 @@ public sealed class AcpiCapabilityTests
     {
         var acpi = new FakeAsusAcpi();
         var fans = new AllyFanCapability(acpi, AllyFakeHardware.NoDelay);
-        var snapshot = new AllyFanSnapshot(AllyFanCapability.DefaultCpuCurve, AllyFanCapability.DefaultGpuCurve,
-            AllyFanCapability.DefaultCpuCurve, 0);
-        Assert.True(await fans.RestoreAsync(snapshot, CancellationToken.None));
+        var snapshot = new AllyFanSnapshot(AsusFanCurve.DefaultCpuCurve, AsusFanCurve.DefaultGpuCurve,
+            AsusFanCurve.DefaultCpuCurve, 0);
+        await fans.RestoreAsync(snapshot, CancellationToken.None);
         Assert.Equal(0, acpi.StatusReads);
         Assert.Equal(0, acpi.BufferReads);
         Assert.Equal(new[] { AsusAcpiId.CpuFanCurve, AsusAcpiId.GpuFanCurve, AsusAcpiId.MidFanCurve },

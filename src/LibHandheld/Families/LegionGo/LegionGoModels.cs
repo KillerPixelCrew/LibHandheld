@@ -39,6 +39,23 @@ internal static class LegionGoModels
         new LegionGoModel("lenovo.legion-go-s.83q3", "Lenovo Legion Go S Z1 Extreme", "83Q3", true, false, 5, 30)
     ]);
 
+    public static IReadOnlyList<HandheldDefinition> Definitions { get; } = All.Select(model =>
+        new HandheldDefinition(model.DefinitionId, PackageId, model.DisplayName, model.GlyphProfileId)
+        {
+            DeclaredRoles =
+            [
+                CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
+                CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.ChargeProtectionMode,
+                CapabilityRole.FanMeasuredRpm, CapabilityRole.Telemetry, CapabilityRole.LightingPower,
+                CapabilityRole.LightingBrightness, CapabilityRole.LightingEffectSpeed,
+                CapabilityRole.LightingEffect, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
+                CapabilityRole.HapticSink, CapabilityRole.GenericToggle, CapabilityRole.GenericAction,
+                CapabilityRole.LightingZoneColor, .. !model.EcFan ? new[] { CapabilityRole.FanCurve } : [],
+                .. !model.Slim ? new[] { CapabilityRole.GenericChoice } : []
+            ],
+            HardwareAccess = model.EcFan ? DeviceHardwareAccess.PawnIo : DeviceHardwareAccess.None
+        }).ToArray();
+
     public static LegionGoModel? ById(string id)
     {
         return All.FirstOrDefault(m => m.DefinitionId == id);

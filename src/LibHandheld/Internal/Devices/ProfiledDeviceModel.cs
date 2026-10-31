@@ -104,9 +104,23 @@ internal sealed record ProfiledDeviceModel
                    || ProcessorSkus.Any(value => HasSku(identity.ProcessorName, value)));
     }
 
-    private static bool Equal(string expected, string? actual)
+    internal static bool Equal(string expected, string? actual)
     {
         return string.Equals(expected.Trim(), actual?.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Clamps a preset to the model range; only AMD writes fast PPT, defaulting it to the slow target.</summary>
+    internal static DevicePowerPreset ClampToModel(DevicePowerPreset preset, int minimum, int maximum,
+        CpuPowerKind cpu)
+    {
+        return preset with
+        {
+            SustainedWatts = Math.Clamp(preset.SustainedWatts, minimum, maximum),
+            SlowWatts = Math.Clamp(preset.SlowWatts, minimum, maximum),
+            FastWatts = cpu == CpuPowerKind.Amd
+                ? Math.Clamp(preset.FastWatts ?? preset.SlowWatts, minimum, maximum)
+                : null
+        };
     }
 
     private static bool HasSku(string? processor, string sku)

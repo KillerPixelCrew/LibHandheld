@@ -29,7 +29,6 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
     private bool _fansChanged;
     private ILegionHid? _hid;
     private bool _hidFaulted;
-    private IDeviceSink? _host;
     private DeviceIdentitySnapshot? _identity;
     private bool _initialized;
     private DeviceRecoveryJournal? _journal;
@@ -76,7 +75,6 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
             _model = LegionGoModels.ById(_context.DeviceDefinitionId) ??
                      throw new ArgumentException("Unknown Lenovo model.");
             _identity = _context.Identity;
-            _host = _publications;
             _journal = _context.Journal;
             _controllerWanted = _context.ControllerManagementEnabled;
             _wmi = _hardware.Wmi();
@@ -225,7 +223,7 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
                 await _hid.WriteAsync(report, token).ConfigureAwait(false);
             }
 
-            await _hid.StartAsync(_host!, token).ConfigureAwait(false);
+            await _hid.StartAsync(_publications, token).ConfigureAwait(false);
             _hidFaulted = false;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException && ex is not OperationCanceledException)
@@ -263,12 +261,9 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
         }
 
         _controllerBinding = null;
-        if (_host is not null)
-        {
-            await _host.PublishControllerSampleAsync(CanonicalControllerSample.Neutral(DateTimeOffset.UtcNow),
-                CancellationToken.None).ConfigureAwait(false);
-            await _host.PublishPhysicalDevicesAsync([], null, CancellationToken.None).ConfigureAwait(false);
-        }
+        await _publications.PublishControllerSampleAsync(CanonicalControllerSample.Neutral(DateTimeOffset.UtcNow),
+            CancellationToken.None).ConfigureAwait(false);
+        await _publications.PublishPhysicalDevicesAsync([], null, CancellationToken.None).ConfigureAwait(false);
     }
 
     private EngineStartResult StartResult()
@@ -301,7 +296,7 @@ internal sealed partial class LegionGoDeviceEngine : ProfiledFeatureService
             await _hid.WriteAsync([5, 6, 0x69, 9, 1, 2, 1], token).ConfigureAwait(false);
         }
 
-        await _hid.ListenAsync(_host!, token).ConfigureAwait(false);
+        await _hid.ListenAsync(_publications, token).ConfigureAwait(false);
     }
 
     private async ValueTask ReleaseOemAsync()

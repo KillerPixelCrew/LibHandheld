@@ -5,8 +5,8 @@ namespace LibHandheld.Internal.Devices;
 
 internal sealed partial class ProfiledDeviceEngine
 {
-    private readonly Dictionary<(string Id, string? Instance), DeviceService<ProfiledCycleIdentity>>
-        _controlOwners = [];
+    private readonly Dictionary<(string Id, string? Instance),
+        (DeviceService<ProfiledCycleIdentity> Service, CapabilityDescriptor Descriptor)> _controlOwners = [];
 
     private void BuildSurface()
     {
@@ -16,7 +16,7 @@ internal sealed partial class ProfiledDeviceEngine
         {
             foreach (var descriptor in service.Descriptors)
             {
-                if (!_controlOwners.TryAdd((descriptor.CapabilityId, descriptor.InstanceId), service))
+                if (!_controlOwners.TryAdd((descriptor.CapabilityId, descriptor.InstanceId), (service, descriptor)))
                 {
                     throw new InvalidOperationException("Two native services declared the same control identity.");
                 }
@@ -46,7 +46,7 @@ internal sealed partial class ProfiledDeviceEngine
             foreach (var state in states)
             {
                 if (_controlOwners.TryGetValue((state.CapabilityId, state.InstanceId), out var owner) &&
-                    owner == service)
+                    owner.Service == service)
                 {
                     await _sink.PublishCapabilityStateAsync(state, token).AsTask().WaitAsync(token).ConfigureAwait(false);
                 }

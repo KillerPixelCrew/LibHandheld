@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using LibHandheld.Contracts;
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Windows;
@@ -33,14 +34,8 @@ internal sealed class AcerButtonSource : IProfiledOemSource, IHidButtonObserver
             // are already carried by AcerButtonState through the canonical controller sample.
             ("m1", "M1", CanonicalButtons.None, OemControlPlacement.Rear),
             ("m2", "M2", CanonicalButtons.None, OemControlPlacement.Rear)
-        }.Select(control => new OemControlDescriptor
-        {
-            ControlId = control.Item1,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = control.Item2 },
-            ControllerButton = control.Item3,
-            Placement = control.Item4,
-            RequiresControllerAcquisition = true
-        }).ToArray();
+        }.Select(control => CapabilityDescriptors.OemControl(control.Item1, control.Item2, control.Item4,
+            button: control.Item3)).ToArray();
 
     public bool IsConnected => _dinput ? !_hidLost : _vendor.IsConnected && _qam.IsConnected;
 

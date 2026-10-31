@@ -182,19 +182,6 @@ internal static class LegionXInput
         return true;
     }
 
-    public static bool Matches(int slot, LegionGoModel model)
-    {
-        try
-        {
-            return slot >= 0 && StandardXInput.Capabilities(1, (uint)slot, 0, out var capabilities) == 0 &&
-                   capabilities.Vendor == model.VendorId && model.ProductIds.Contains(capabilities.Product);
-        }
-        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
-        {
-            return false;
-        }
-    }
-
     public static void Rumble(int slot, HapticOutputFrame frame)
     {
         if (slot < 0)

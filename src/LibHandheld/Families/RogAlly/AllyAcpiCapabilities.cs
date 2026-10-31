@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using LibHandheld.Contracts;
+using LibHandheld.Families.Asus;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Runtime;
 
@@ -69,7 +70,7 @@ internal sealed class AllyPowerCapability(
             Watts(AsusAcpiId.SustainedPower),
             Watts(AsusAcpiId.SlowPower),
             Watts(AsusAcpiId.FastPower),
-            Scalar(AsusAcpiId.PerformanceMode) is { } mode && AllyModels.ScenarioName(mode) is not null
+            Scalar(AsusAcpiId.PerformanceMode) is { } mode && AsusAcpiProtocol.ScenarioName(mode) is not null
                 ? mode
                 : null);
     }
@@ -98,8 +99,15 @@ internal sealed class AllyPowerCapability(
             return OutOfRange(command);
         }
 
-        return await ApplyLimitsAsync(command, sustained, boost, boost, cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            await WriteLimitsAsync(sustained, boost, boost, cancellationToken).ConfigureAwait(false);
+            return CommandResults.Applied(command);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return AllyApplied.Failed(command, "power limits", ex, cancellationToken);
+        }
     }
 
     public async ValueTask<CapabilityCommandResult> ApplyScenarioAsync(
@@ -110,7 +118,7 @@ internal sealed class AllyPowerCapability(
         byte target;
         try
         {
-            target = AllyModels.ScenarioValue(scenario);
+            target = AsusAcpiProtocol.ScenarioValue(scenario);
         }
         catch (ArgumentOutOfRangeException)
         {
@@ -133,10 +141,10 @@ internal sealed class AllyPowerCapability(
     /// <summary>Restores the captured mode, then SPL, SPPT and FPPT, without any readback.</summary>
     /// <param name="original">Complete captured mode and all three limits.</param>
     /// <param name="cancellationToken">Cancels the settling and spacing delays; completed writes are not undone.</param>
-    /// <returns>True after all native writes return; incomplete snapshots, cancellation and native failures throw.</returns>
+    /// <returns>Completion after all native writes return; incomplete snapshots, cancellation and native failures throw.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="original" /> is null.</exception>
     /// <exception cref="InvalidOperationException">The snapshot lacks any limit or performance mode.</exception>
-    public async ValueTask<bool> RestoreAsync(AllyPowerState original, CancellationToken cancellationToken)
+    public async ValueTask RestoreAsync(AllyPowerState original, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(original);
         if (!original.LimitsReadable || original.Mode is not { } mode)
@@ -148,25 +156,6 @@ internal sealed class AllyPowerCapability(
         await _delay(ModeSettle, cancellationToken).ConfigureAwait(false);
         await WriteLimitsAsync(original.Sustained!.Value, original.Slow!.Value, original.Fast!.Value,
             cancellationToken).ConfigureAwait(false);
-        return true;
-    }
-
-    private async ValueTask<CapabilityCommandResult> ApplyLimitsAsync(
-        CapabilityCommand command,
-        int sustained,
-        int slow,
-        int fast,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await WriteLimitsAsync(sustained, slow, fast, cancellationToken).ConfigureAwait(false);
-            return CommandResults.Applied(command);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            return AllyApplied.Failed(command, "power limits", ex, cancellationToken);
-        }
     }
 
     private async ValueTask WriteLimitsAsync(int sustained, int slow, int fast, CancellationToken cancellationToken)
@@ -185,7 +174,7 @@ internal sealed class AllyPowerCapability(
 
     private int? Watts(AsusAcpiId id)
     {
-        return Scalar(id) is { } watts && AllyRecoveryRules.IsValidWatts(watts) ? watts : null;
+        return Scalar(id) is { } watts && watts > 0 ? watts : null;
     }
 
     private bool InRange(int watts)
@@ -200,50 +189,6 @@ internal sealed class AllyPowerCapability(
     }
 }
 
-/// <summary>Battery charge ceiling over ATKACPI.</summary>
-/// <remarks>HC writes 0-100 through DEVS 0x00120057 (<c>AsusACPI.cs:335-341</c>).</remarks>
-/// <param name="acpi">Shared ATKACPI transport for the persistent charge-limit setting.</param>
-internal sealed class AllyChargeLimitCapability(IAsusAcpi acpi)
-{
-    /// <summary>
-    ///     HC AsusACPI.SetChargeLimit accepts the complete 0-100 percent range.
-    /// </summary>
-    internal const int MinimumPercent = 0;
-
-    internal const int MaximumPercent = 100;
-
-    private readonly IAsusAcpi _acpi = acpi ?? throw new ArgumentNullException(nameof(acpi));
-
-    public int? Read()
-    {
-        return AsusAcpiProtocol.TryDecodeScalar(_acpi.ReadStatus(AsusAcpiId.ChargeLimit), out var value)
-               && value is >= 0 and <= 100
-            ? value
-            : null;
-    }
-
-    public CapabilityCommandResult Apply(CapabilityCommand command, int percent)
-    {
-        if (percent is < MinimumPercent or > MaximumPercent)
-        {
-            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
-                $"The charge limit must be {MinimumPercent}-{MaximumPercent} %.");
-        }
-
-        try
-        {
-            _ = _acpi.Write(AsusAcpiId.ChargeLimit, (uint)percent);
-            return CommandResults.Applied(command);
-        }
-        catch (Exception ex) when (ex is IOException or Win32Exception)
-        {
-            DeviceTrace.Failure("charge-limit", "Charge limit write failed", ex);
-            return CommandResults.Indeterminate(command, CapabilityReasonCode.TransportFaulted,
-                "The charge limit write failed.");
-        }
-    }
-}
-
 /// <summary>Fan curves over ATKACPI.</summary>
 /// <remarks>
 ///     HC converts its curve to sixteen bytes, eight temperatures then eight duties, clamps duties to
@@ -255,16 +200,6 @@ internal sealed class AllyChargeLimitCapability(IAsusAcpi acpi)
 /// <param name="delay">Cancellable spacing between fan-channel writes.</param>
 internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, CancellationToken, Task> delay)
 {
-    internal const int PointCount = 8;
-    internal const int MinimumTemperature = 20;
-    internal const int MaximumTemperature = 110;
-
-    /// <summary>HC's <c>defaultCPUFan</c>, also written to the mid fan (<c>ROGAlly.cs:185-189</c>).</summary>
-    internal static readonly byte[] DefaultCpuCurve = [58, 61, 64, 68, 72, 77, 81, 98, 8, 17, 22, 26, 34, 41, 48, 69];
-
-    /// <summary>HC's <c>defaultGPUFan</c> (<c>ROGAlly.cs:191-195</c>).</summary>
-    internal static readonly byte[] DefaultGpuCurve = [58, 61, 64, 68, 72, 77, 81, 98, 12, 22, 29, 31, 38, 45, 52, 74];
-
     private readonly IAsusAcpi _acpi = acpi ?? throw new ArgumentNullException(nameof(acpi));
 
     private readonly Func<TimeSpan, CancellationToken, Task> _delay =
@@ -278,7 +213,10 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
 
     internal bool HasCustomWrite { get; private set; }
 
-    /// <summary>The CPU curve this cycle last wrote, for firmware that cannot report it.</summary>
+    /// <summary>
+    ///     Queries the mid-fan curve, and the CPU curve when that fails, for the current mode to set
+    ///     <see cref="HasMidFan" /> and <see cref="CurvesReadable" />.
+    /// </summary>
     public void Probe()
     {
         var mode = Mode();
@@ -303,56 +241,6 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
         return (Scalar(AsusAcpiId.CpuFanSpeed), Scalar(AsusAcpiId.GpuFanSpeed));
     }
 
-    public static IReadOnlyList<CurvePoint> Decode(byte[] curve)
-    {
-        return [.. Enumerable.Range(0, PointCount).Select(index => new CurvePoint(curve[index], curve[8 + index]))];
-    }
-
-    /// <summary>Encodes eight semantic points as the firmware's sixteen bytes.</summary>
-    /// <param name="points">Exactly eight increasing temperatures with nondecreasing duties, within the admitted ranges.</param>
-    /// <param name="curve">Sixteen encoded bytes on success; ignore the allocated or partially filled array on failure.</param>
-    /// <param name="error">Null on success, otherwise the validation message.</param>
-    /// <returns>Whether the points form a valid curve with at least one nonzero duty; 100-percent duties are clamped to 99.</returns>
-    public static bool TryEncode(IReadOnlyList<CurvePoint> points, out byte[] curve, out string? error)
-    {
-        curve = new byte[AsusAcpiProtocol.CurveLength];
-        if (points.Count != PointCount)
-        {
-            error = "ASUS fan curves have exactly eight points.";
-            return false;
-        }
-
-        for (var index = 0; index < PointCount; index++)
-        {
-            var point = points[index];
-            if (point.Input is < MinimumTemperature or > MaximumTemperature || point.Output is < 0 or > 100)
-            {
-                error =
-                    $"Fan points must be {MinimumTemperature}-{MaximumTemperature} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°C and 0-100 %.";
-                return false;
-            }
-
-            if (index > 0 && (point.Input <= points[index - 1].Input || point.Output < points[index - 1].Output))
-            {
-                error = "Fan-curve temperatures must rise and duties must not fall.";
-                return false;
-            }
-
-            curve[index] = (byte)point.Input;
-            // HC clamps every duty to 99 before writing (AsusACPI.SetFanCurve).
-            curve[8 + index] = (byte)Math.Min(point.Output, 99);
-        }
-
-        if (!AsusAcpiProtocol.IsValidCurve(curve))
-        {
-            error = "The fan curve needs at least one non-zero duty.";
-            return false;
-        }
-
-        error = null;
-        return true;
-    }
-
     public ValueTask<CapabilityCommandResult> ApplyDutyAsync(CapabilityCommand command, int percent,
         CancellationToken token)
     {
@@ -371,7 +259,7 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
         IReadOnlyList<CurvePoint> points,
         CancellationToken cancellationToken)
     {
-        if (!TryEncode(points, out var curve, out var error))
+        if (!AsusFanCurve.TryEncode(points, out var curve, out var error))
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
         }
@@ -393,8 +281,8 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
         AllyFanSnapshot? original,
         CancellationToken cancellationToken)
     {
-        var cpu = original?.Cpu ?? DefaultCpuCurve;
-        var gpu = original?.Gpu ?? DefaultGpuCurve;
+        var cpu = original?.Cpu ?? AsusFanCurve.DefaultCpuCurve;
+        var gpu = original?.Gpu ?? AsusFanCurve.DefaultGpuCurve;
         var result = await WriteAllAsync(command, cpu, gpu, cancellationToken, original?.Mid).ConfigureAwait(false);
         if (result.Outcome == CommandOutcome.Applied)
         {
@@ -409,12 +297,12 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
     /// <returns>Completion after CPU/GPU and any applicable mid-fan writes; native failures and cancellation propagate.</returns>
     public async ValueTask WriteFactoryAsync(CancellationToken cancellationToken)
     {
-        await WriteChannelsAsync(DefaultCpuCurve, DefaultGpuCurve, DefaultCpuCurve, cancellationToken)
-            .ConfigureAwait(false);
+        await WriteChannelsAsync(AsusFanCurve.DefaultCpuCurve, AsusFanCurve.DefaultGpuCurve,
+            AsusFanCurve.DefaultCpuCurve, cancellationToken).ConfigureAwait(false);
         HasCustomWrite = false;
     }
 
-    public async ValueTask<bool> RestoreAsync(AllyFanSnapshot original, CancellationToken cancellationToken)
+    public async ValueTask RestoreAsync(AllyFanSnapshot original, CancellationToken cancellationToken)
     {
         if (!original.Readable)
         {
@@ -424,7 +312,6 @@ internal sealed class AllyFanCapability(IAsusAcpi acpi, Func<TimeSpan, Cancellat
         await WriteChannelsAsync(original.Cpu!, original.Gpu!, original.Mid, cancellationToken)
             .ConfigureAwait(false);
         HasCustomWrite = false;
-        return true;
     }
 
     private async ValueTask<CapabilityCommandResult> WriteAllAsync(

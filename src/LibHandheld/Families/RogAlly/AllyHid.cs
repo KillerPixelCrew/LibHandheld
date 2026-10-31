@@ -6,34 +6,6 @@ using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.RogAlly;
 
-/// <summary>The controller's device nodes, which WSGM hides while it drives the virtual pad.</summary>
-internal static class AllyControllerNodes
-{
-    /// <summary>Every present device node of the controller that WSGM must hide while it owns it.</summary>
-    /// <remarks>
-    ///     The XInput pad is an XUSB node (HC's XUSB arrival handler matches VID 0B05 with PID 1ABE or
-    ///     1B4C, <c>ControllerManager.cs:2236-2243</c>) and possibly a GIP node on the Xbox models, plus
-    ///     the XInput-compatible HID collection whose instance path carries <c>&amp;IG_</c>. The vendor,
-    ///     keyboard and lighting collections are not hidden: the plugin itself reads them.
-    /// </remarks>
-    /// <param name="productIds">Product IDs admitted for this model under the ASUS vendor ID.</param>
-    /// <returns>
-    ///     Present XUSB, Xbox composite and XInput-compatible HID nodes; vendor, keyboard and lighting collections are
-    ///     excluded.
-    /// </returns>
-    public static IReadOnlyList<DeviceNode> Find(IReadOnlyCollection<ushort> productIds)
-    {
-        return
-        [
-            .. HidDevices.PresentNodes(AllyModels.AsusVendorId, productIds).Where(node =>
-                node.ClassGuid == HidDevices.XnaCompositeClass
-                || node.ClassGuid == HidDevices.XboxCompositeClass
-                || (node.ClassGuid == HidDevices.HidClass
-                    && node.InstancePath.Contains("&IG_", StringComparison.OrdinalIgnoreCase)))
-        ];
-    }
-}
-
 internal interface IAllyVendorHid : IAsyncDisposable
 {
     /// <summary>Finds the collection. False when this model exposes none.</summary>

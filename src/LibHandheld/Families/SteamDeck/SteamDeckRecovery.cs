@@ -6,6 +6,4 @@ internal sealed record SteamDeckOriginal
     public ushort?[] Values { get; init; } = [];
     public uint[] Addresses { get; init; } = [];
     public uint[] Memory { get; init; } = [];
-    public byte? FanMode { get; init; }
-    public string[] ClockIds { get; init; } = [];
 }

@@ -86,7 +86,7 @@ public sealed class GpdModelsTests
         Assert.Equal(CanonicalButtons.LeftPadTouch | CanonicalButtons.LeftPadClick, sample.Buttons);
         Assert.Equal(0.25f, sample.LeftPadX);
         Assert.Equal(-0.5f, sample.LeftPadY);
-        Assert.Equal(CanonicalButtons.DPadUp | CanonicalButtons.DPadLeft, StandardControllerHidSource.Hat(7, 0, 7));
-        Assert.Equal(CanonicalButtons.None, StandardControllerHidSource.Hat(8, 0, 7));
+        Assert.Equal(CanonicalButtons.DPadUp | CanonicalButtons.DPadLeft, HidUsageReader.Hat(7));
+        Assert.Equal(CanonicalButtons.None, HidUsageReader.Hat(8));
     }
 }

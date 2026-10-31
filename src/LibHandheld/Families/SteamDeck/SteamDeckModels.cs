@@ -1,4 +1,5 @@
 using LibHandheld.Contracts;
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 using HandheldDefinition = LibHandheld.Contracts.HandheldDefinition;
@@ -67,11 +68,6 @@ internal static class SteamDeckModels
             : new ProfiledDeviceEngine(Profile(definition));
     }
 
-    internal static IReadOnlyList<HandheldDefinition> GetDefinitions()
-    {
-        return Definitions;
-    }
-
     internal static ProfiledDeviceModel Profile(HandheldDefinition definition)
     {
         return new ProfiledDeviceModel
@@ -82,18 +78,14 @@ internal static class SteamDeckModels
             OpenPower = context => VangoghPower.Open(context.Resources.InpOutPath),
             ServiceFactories = [context => new SteamDeckNativeService(context, NeptuneDevice.Open)],
             OemControls = new[] { "steam", "quick-access", "l4", "r4", "l5", "r5" }.Select(id =>
-                new OemControlDescriptor
-                {
-                    ControlId = id, Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = id },
-                    Placement = id is "steam" or "quick-access" ? OemControlPlacement.Front : OemControlPlacement.Rear,
-                    RequiresControllerAcquisition = true,
-                    ControllerButton = id switch
+                CapabilityDescriptors.OemControl(id, id,
+                    id is "steam" or "quick-access" ? OemControlPlacement.Front : OemControlPlacement.Rear,
+                    button: id switch
                     {
                         "steam" => CanonicalButtons.Guide,
                         "quick-access" => CanonicalButtons.QuickAccess,
                         _ => CanonicalButtons.None
-                    }
-                }).ToArray()
+                    })).ToArray()
         };
     }
 }

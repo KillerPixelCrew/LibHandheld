@@ -136,7 +136,8 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             }
 
             _accessoryCollections.Clear();
-            if (GenericAsusService.MatchesAccessoryIdentity(context.Identity))
+            var accessoryIdentity = GenericAsusService.MatchesAccessoryIdentity(context.Identity);
+            if (accessoryIdentity)
             {
                 foreach (var collection in AsusAuraTransport.DiscoverCollections())
                 {
@@ -144,19 +145,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                 }
             }
 
-            foreach (var asus in _nativeServices.OfType<GenericAsusService>())
-            {
-                asus.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
-            }
-
-            if (!_nativeServices.Any(service => service is GenericAsusService)
-                && GenericAsusService.MatchesAccessoryIdentity(context.Identity))
-            {
-                var accessories = new GenericAsusService(featureContext, firmwareControls: false);
-                accessories.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
-                _nativeServices.Add(accessories);
-                _services.Add(accessories);
-            }
+            UpdateAccessoryService(featureContext, accessoryIdentity);
 
             if (_profile.Motion is { } motion)
             {
@@ -216,14 +205,13 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     {
         return _commands.ExecuteAsync(command, async cancellation =>
         {
-            var descriptor = _surface?.Descriptors.SingleOrDefault(item =>
-                item.CapabilityId == command.CapabilityId && item.InstanceId == command.InstanceId);
-            if (descriptor is null || (!descriptor.SupportsWrite && !descriptor.SupportsAction))
+            if (_surface is null
+                || !_controlOwners.TryGetValue((command.CapabilityId, command.InstanceId), out var owner)
+                || (!owner.Descriptor.SupportsWrite && !owner.Descriptor.SupportsAction))
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
                     "This model has no writable capability with that identity.");
             }
-
 
             if (!DeviceWriteBudget.IsAvailable(command.Deadline) || cancellation.IsCancellationRequested)
             {
@@ -231,15 +219,13 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                     "The device command has expired.", true);
             }
 
-            if (CommandAdmission.Validate(command, descriptor, _surface!.Descriptors) is { } invalid)
+            if (CommandAdmission.Validate(command, owner.Descriptor, _surface.Descriptors) is { } invalid)
             {
                 return CommandResults.Rejected(command, invalid);
             }
 
-            return _controlOwners.TryGetValue((command.CapabilityId, command.InstanceId), out var owner)
-                ? await owner.ExecuteAsync(command, _cycleIdentity.Firmware, cancellation).ConfigureAwait(false)
-                : CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
-                    "The native service no longer owns this control.");
+            return await owner.Service.ExecuteAsync(command, _cycleIdentity.Firmware, cancellation)
+                .ConfigureAwait(false);
         }, token);
     }
 
@@ -315,17 +301,13 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                 return;
             }
 
-            foreach (var service in _services
-                         .Where(service => service.RequiresControllerOwnership || service is ProfiledOemService)
-                         .Reverse())
+            foreach (var service in _services.Where(IsInputReader).Reverse())
             {
                 await DeviceServiceLifecycle.ReleaseAsync(service, Context(context.Deadline), token)
                     .ConfigureAwait(false);
             }
 
-            if (_services.Any(service =>
-                    (service.RequiresControllerOwnership || service is ProfiledOemService) &&
-                    service.State != DeviceServiceState.Idle))
+            if (_services.Any(service => IsInputReader(service) && service.State != DeviceServiceState.Idle))
             {
                 throw new InvalidOperationException(
                     "Physical input ownership has not been released; a second reader cannot be acquired.");
@@ -343,8 +325,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                 await native.SetControllerManagementAsync(context.Enabled, token).ConfigureAwait(false);
             }
 
-            foreach (var service in WantedServices()
-                         .Where(service => service.RequiresControllerOwnership || service is ProfiledOemService))
+            foreach (var service in WantedServices().Where(IsInputReader))
             {
                 await DeviceServiceLifecycle.AcquireAsync(service, Context(context.Deadline), token)
                     .ConfigureAwait(false);
@@ -452,6 +433,12 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     private IEnumerable<DeviceService<ProfiledCycleIdentity>> WantedServices()
     {
         return _services.Where(IsWanted);
+    }
+
+    // The services that read physical input, released and reacquired together when controller management changes.
+    private static bool IsInputReader(DeviceService<ProfiledCycleIdentity> service)
+    {
+        return service.RequiresControllerOwnership || service is ProfiledOemService;
     }
 
     private bool IsWanted(DeviceServiceStatus service)
@@ -627,22 +614,33 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             }
         }
 
-        var asus = _nativeServices.OfType<GenericAsusService>().SingleOrDefault();
-        if (asus is null && _accessoryCollections.Count > 0)
+        if (UpdateAccessoryService(_featureContext, _accessoryCollections.Count > 0) is { } created)
         {
-            asus = new GenericAsusService(_featureContext, firmwareControls: false);
-            _nativeServices.Add(asus);
-            _services.Add(asus);
-            asus.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
-            await DeviceServiceLifecycle.AcquireAsync(asus, Context(Deadline.After(TimeSpan.FromSeconds(2))), token)
+            await DeviceServiceLifecycle.AcquireAsync(created, Context(Deadline.After(TimeSpan.FromSeconds(2))), token)
                 .ConfigureAwait(false);
             BuildSurface();
             await _sink!.PublishDescriptorsAsync(_surface!, token).ConfigureAwait(false);
         }
-        else
+    }
+
+    /// <summary>
+    ///     Hands the current accessory collections to the model's one ASUS service, first adding an
+    ///     accessory-only service when the model has none and <paramref name="create" /> asks for it.
+    /// </summary>
+    /// <returns>The accessory-only service this call added, which the caller acquires; otherwise null.</returns>
+    private GenericAsusService? UpdateAccessoryService(ProfiledFeatureContext featureContext, bool create)
+    {
+        var asus = _nativeServices.OfType<GenericAsusService>().SingleOrDefault();
+        GenericAsusService? created = null;
+        if (asus is null && create)
         {
-            asus?.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
+            asus = created = new GenericAsusService(featureContext, firmwareControls: false);
+            _nativeServices.Add(created);
+            _services.Add(created);
         }
+
+        asus?.SetAccessoryCollections(_accessoryCollections.Values.ToArray());
+        return created;
     }
 
     private ValueTask PublishOemDescriptorsAsync(CancellationToken token)
@@ -653,17 +651,13 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                 .Concat(_nativeServices.SelectMany(service => service.OemControls))
                 .Concat(_profile.KeyboardChords.Where(chord => _manageController || !chord.RequiresController)
                     .GroupBy(chord => chord.Id, StringComparer.Ordinal).Select(group => group.First()).Select(chord =>
-                        new OemControlDescriptor
-                        {
-                            ControlId = chord.Id,
-                            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = chord.Label },
-                            Placement = chord.Button is CanonicalButtons.RearPaddle1 or CanonicalButtons.RearPaddle2
+                        CapabilityDescriptors.OemControl(chord.Id, chord.Label,
+                            chord.Button is CanonicalButtons.RearPaddle1 or CanonicalButtons.RearPaddle2
                                 or CanonicalButtons.RearPaddle3 or CanonicalButtons.RearPaddle4
                                 ? OemControlPlacement.Rear
                                 : OemControlPlacement.Front,
-                            RequiresControllerAcquisition = chord.RequiresController,
-                            ControllerButton = chord.Button & (CanonicalButtons.Guide | CanonicalButtons.QuickAccess)
-                        })).GroupBy(control => control.ControlId, StringComparer.Ordinal).Select(group =>
+                            chord.RequiresController,
+                            chord.Button & (CanonicalButtons.Guide | CanonicalButtons.QuickAccess)))).GroupBy(control => control.ControlId, StringComparer.Ordinal).Select(group =>
                 {
                     var control = group.First();
                     return control.ControllerButton != CanonicalButtons.None

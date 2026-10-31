@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Transports;
 
@@ -50,7 +51,7 @@ internal sealed partial class SteamDeckNativeService
             Persistence = CapabilityPersistence.Volatile,
             Choices = CapabilityDescriptors.Choices(new[] { "automatic", "custom", "full-speed" })
         },
-        Range("fan.duty", CapabilityRole.FanDuty, "Target fan speed", 0, 100, CapabilityUnit.Percent, true),
+        Range(CapabilityIds.FanDuty, CapabilityRole.FanDuty, "Target fan speed", 0, 100, CapabilityUnit.Percent, true),
         Range("fan.target-rpm", CapabilityRole.FanTargetRpm, "Target fan RPM", 0, MaximumFanRpm, CapabilityUnit.Rpm,
             true),
         Range("fan.rpm", CapabilityRole.FanMeasuredRpm, "Fan RPM", 0, 65535, CapabilityUnit.Rpm, false),
@@ -185,12 +186,12 @@ internal sealed partial class SteamDeckNativeService
             switch (command.CapabilityId)
             {
                 case "fan.mode":
-                case "fan.duty":
+                case CapabilityIds.FanDuty:
                 case "fan.target-rpm":
                     var mode = command.CapabilityId == "fan.mode" ? command.RequestedValue!.ChoiceValue! : "custom";
                     var target = command.CapabilityId switch
                     {
-                        "fan.duty" => checked((int)Math.Round(command.RequestedValue!.IntegerValue!.Value *
+                        CapabilityIds.FanDuty => checked((int)Math.Round(command.RequestedValue!.IntegerValue!.Value *
                             MaximumFanRpm / 100d)),
                         "fan.target-rpm" => command.RequestedValue!.IntegerValue,
                         _ => mode == "full-speed" ? MaximumFanRpm : _fanTarget
@@ -280,39 +281,27 @@ internal sealed partial class SteamDeckNativeService
                 continue;
             }
 
-            try
+            HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
             {
-                HardwareBus.Run(HardwareBus.IndexedIo, TimeSpan.FromSeconds(2), () =>
+                if (id == "deck-fan")
                 {
-                    if (id == "deck-fan")
+                    _memory.WriteFanMode(0xCD);
+                }
+
+                for (var i = 0; i < entry.OriginalState.Addresses.Length; i++)
+                {
+                    if (entry.OriginalState.Memory[i] == uint.MaxValue)
                     {
-                        _memory.WriteFanMode(0xCD);
+                        continue;
                     }
 
-                    for (var i = 0; i < entry.OriginalState.Addresses.Length; i++)
-                    {
-                        if (entry.OriginalState.Memory[i] == uint.MaxValue)
-                        {
-                            continue;
-                        }
+                    _memory.Write(entry.OriginalState.Addresses[i], entry.OriginalState.Memory[i],
+                        id == "deck-charge" ? 32 : 16);
+                }
 
-                        _memory.Write(entry.OriginalState.Addresses[i], entry.OriginalState.Memory[i],
-                            id == "deck-charge" ? 32 : 16);
-                    }
-
-                    return true;
-                });
-                await _journal.SetStatusAsync(id,
-                        DeviceRecoveryStatus.RestoredUnverified,
-                        token)
-                    .ConfigureAwait(false);
-            }
-            catch
-            {
-                await _journal.SetStatusAsync(id, DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                    .ConfigureAwait(false);
-                throw;
-            }
+                return true;
+            });
+            await _journal.MarkRestoredAsync(id, token).ConfigureAwait(false);
         }
     }
 
@@ -364,7 +353,7 @@ internal sealed partial class SteamDeckNativeService
             var value = descriptor.CapabilityId switch
             {
                 "fan.mode" => _fanMode is null ? null : CapabilityValue.Choice(_fanMode),
-                "fan.duty" => _fanTarget is { } target
+                CapabilityIds.FanDuty => _fanTarget is { } target
                     ? CapabilityValue.Integer(Math.Clamp((int)Math.Round(target * 100d / MaximumFanRpm), 0, 100))
                     : null,
                 "fan.target-rpm" => _fanTarget is { } rpm
@@ -377,33 +366,21 @@ internal sealed partial class SteamDeckNativeService
                 "battery.temperature" => _batteryTemperature is { } temp ? CapabilityValue.Integer(temp) : null,
                 _ => null
             };
-            yield return new CapabilityState
-            {
-                CapabilityId = descriptor.CapabilityId, Available = available,
-                Reason = available ? null : _hardwareReason ?? Missing("This firmware has no charge-ceiling support."),
-                ObservedValue = value,
-                Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-                ObservedAt = value is null
-                    ? null
-                    : descriptor.CapabilityId switch
-                    {
-                        "fan.mode" => _modeAt, "fan.duty" or "fan.target-rpm" => _targetAt, "fan.rpm" => _rpmAt,
-                        "charge.limit" => _chargeAt, "battery.measured-charge-ceiling" => _measuredChargeAt,
-                        "battery.temperature" => _temperatureAt, _ => null
-                    }
-            };
+            yield return ProviderControls.State(descriptor.CapabilityId, available, value,
+                descriptor.CapabilityId switch
+                {
+                    "fan.mode" => _modeAt, CapabilityIds.FanDuty or "fan.target-rpm" => _targetAt, "fan.rpm" => _rpmAt,
+                    "charge.limit" => _chargeAt, "battery.measured-charge-ceiling" => _measuredChargeAt,
+                    "battery.temperature" => _temperatureAt, _ => null
+                },
+                available ? null : _hardwareReason ?? Missing("This firmware has no charge-ceiling support."));
         }
     }
 
     private static CapabilityDescriptor Range(string id, CapabilityRole role, string label, int minimum, int maximum,
         CapabilityUnit unit, bool write)
     {
-        return new CapabilityDescriptor
-        {
-            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.Integer,
-            Display = CapabilityDescriptors.Label(label),
-            Minimum = minimum, Maximum = maximum, Step = 1, Unit = unit, SupportsRead = true, SupportsWrite = write,
-            Persistence = CapabilityPersistence.Volatile
-        };
+        return CapabilityDescriptors.Integer(id, role, CapabilityDescriptors.Label(label), minimum, maximum, unit,
+            read: true, write);
     }
 }

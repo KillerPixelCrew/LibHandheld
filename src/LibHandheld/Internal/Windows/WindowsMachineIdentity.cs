@@ -80,9 +80,7 @@ internal static class WindowsMachineIdentity
                 VendorId = collection.VendorId.ToString("X4", CultureInfo.InvariantCulture),
                 ProductId = collection.ProductId.ToString("X4", CultureInfo.InvariantCulture),
                 DeviceRelease = collection.ReleaseNumber.ToString("X4", CultureInfo.InvariantCulture),
-                InterfaceNumber = Hex(collection.InstancePath, "MI_", 2) is { } interfaceId
-                    ? int.Parse(interfaceId, NumberStyles.HexNumber, CultureInfo.InvariantCulture)
-                    : null,
+                InterfaceNumber = UsbIds.Parse(collection.InstancePath, "MI_", digits: 2),
                 LocationPath = collection.PhysicalLocation,
                 ReportLengths = new[] { (int)collection.InputLength, collection.OutputLength, collection.FeatureLength }
                     .Where(length => length > 0).Distinct().ToArray()
@@ -111,18 +109,6 @@ internal static class WindowsMachineIdentity
         }
 
         return string.Create(CultureInfo.InvariantCulture, $"{family}-{model}-{signature & 0xF}");
-    }
-
-    private static string? Hex(string value, string marker, int length)
-    {
-        var start = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        if (start < 0 || start + marker.Length + length > value.Length)
-        {
-            return null;
-        }
-
-        var hex = value.Substring(start + marker.Length, length);
-        return hex.All(Uri.IsHexDigit) ? hex.ToUpperInvariant() : null;
     }
 
     [StructLayout(LayoutKind.Sequential)]

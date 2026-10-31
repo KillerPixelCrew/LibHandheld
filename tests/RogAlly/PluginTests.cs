@@ -1,3 +1,4 @@
+using LibHandheld.Families.Asus;
 using LibHandheld.Families.RogAlly.Tests.Fakes;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Runtime;
@@ -53,7 +54,7 @@ public sealed class PluginTests
             CancellationToken.None);
         var command = fan
             ? AcpiCapabilityTests.Command(
-                CapabilityValue.Curve(AllyFanCapability.Decode(AllyFanCapability.DefaultGpuCurve)),
+                CapabilityValue.Curve(AsusFanCurve.Decode(AsusFanCurve.DefaultGpuCurve)),
                 CapabilityIds.FanCurve)
             : AcpiCapabilityTests.Command(CapabilityValue.Integer(22));
         _ = await plugin.ExecuteCommandAsync(command, CancellationToken.None);
@@ -154,7 +155,7 @@ public sealed class PluginTests
         };
         var command = fan
             ? AcpiCapabilityTests.Command(
-                CapabilityValue.Curve(AllyFanCapability.Decode(AllyFanCapability.DefaultGpuCurve)),
+                CapabilityValue.Curve(AsusFanCurve.Decode(AsusFanCurve.DefaultGpuCurve)),
                 CapabilityIds.FanCurve)
             : AcpiCapabilityTests.Command(CapabilityValue.Integer(22));
         var result = await plugin.ExecuteCommandAsync(command, cancellation.Token);
@@ -290,14 +291,14 @@ public sealed class PluginTests
     }
 
     [Theory]
-    [InlineData("RC71L", "rc71l")]
-    [InlineData("RC72LA", "rc72la")]
-    [InlineData("RC73YA", "rc73ya")]
-    [InlineData("RC73XA", "rc73xa")]
-    public async Task StartPublishesAValidSurfaceForEachModel(string board, string definition)
+    [InlineData("rc71l")]
+    [InlineData("rc72la")]
+    [InlineData("rc73ya")]
+    [InlineData("rc73xa")]
+    public async Task StartPublishesAValidSurfaceForEachModel(string definition)
     {
         using var directory = new TemporaryDirectory();
-        var hardware = new AllyFakeHardware(board);
+        var hardware = new AllyFakeHardware();
         var host = new TestPluginHostAdapter(1);
         await using var plugin = hardware.CreatePlugin();
 
@@ -316,22 +317,6 @@ public sealed class PluginTests
         Assert.Equal(model.MaximumWatts, sustained.Maximum);
         Assert.Equal(model.Layout is AllyFrontLayout.Classic ? 5 : 4, host.OemControlSets.Last().Count);
         Assert.Single(host.PhysicalDeviceSets);
-    }
-
-    [Fact]
-    public async Task StartUsesTheCallerIdentityWithoutReadingAnotherMachine()
-    {
-        using var directory = new TemporaryDirectory();
-        var hardware = new AllyFakeHardware("RC71L");
-        await using var plugin = hardware.CreatePlugin();
-
-        var host = new TestPluginHostAdapter(1);
-        var result = await plugin.StartAsync(Start(host, directory, "rc72la"), CancellationToken.None);
-        Assert.Equal(EngineOperationalState.Active, result.State);
-        Assert.Equal(0, hardware.Identity.Reads);
-        Assert.Equal(AllyModels.ById("rc72la")!.MaximumWatts,
-            host.DescriptorSets.Last().Descriptors.Single(item => item.CapabilityId == CapabilityIds.PowerSustained)
-                .Maximum);
     }
 
     [Fact]
@@ -356,7 +341,7 @@ public sealed class PluginTests
     public async Task XboxAllyXRearKeysWorkEvenWhenEveryTableIsRefused()
     {
         using var directory = new TemporaryDirectory();
-        var hardware = new AllyFakeHardware("RC73XA");
+        var hardware = new AllyFakeHardware();
         hardware.Vendor.FailWrites = true;
         var host = new TestPluginHostAdapter(1);
         await using var plugin = hardware.CreatePlugin();
@@ -423,7 +408,7 @@ public sealed class PluginTests
 
         Assert.Equal(CommandOutcome.Applied, result.Outcome);
         Assert.Empty(hardware.Acpi.BufferWrites);
-        Assert.Equal(AllyFanCapability.DefaultGpuCurve, hardware.Acpi.Curve(AsusAcpiId.GpuFanCurve));
+        Assert.Equal(AsusFanCurve.DefaultGpuCurve, hardware.Acpi.Curve(AsusAcpiId.GpuFanCurve));
     }
 
     [Fact]
@@ -436,7 +421,7 @@ public sealed class PluginTests
         var host = new TestPluginHostAdapter(1);
         await using var plugin = hardware.CreatePlugin();
         _ = await plugin.StartAsync(Start(host, directory, "rc72la"), CancellationToken.None);
-        var custom = AllyFanCapability.Decode(AllyFanCapability.DefaultGpuCurve);
+        var custom = AsusFanCurve.Decode(AsusFanCurve.DefaultGpuCurve);
 
         var power = await plugin.ExecuteCommandAsync(
             AcpiCapabilityTests.Command(CapabilityValue.Integer(20)), CancellationToken.None);
@@ -467,7 +452,7 @@ public sealed class PluginTests
         _ = await plugin.StopAsync(new EngineStopContext(
             Deadline.After(TimeSpan.FromSeconds(10))), CancellationToken.None);
         Assert.Contains(hardware.Acpi.BufferWrites, write =>
-            write.Id == AsusAcpiId.CpuFanCurve && write.Data.SequenceEqual(AllyFanCapability.DefaultCpuCurve));
+            write.Id == AsusAcpiId.CpuFanCurve && write.Data.SequenceEqual(AsusFanCurve.DefaultCpuCurve));
     }
 
     [Fact]
@@ -475,7 +460,7 @@ public sealed class PluginTests
     {
         using var directory = new TemporaryDirectory();
         var hardware = new AllyFakeHardware();
-        var points = AllyFanCapability.Decode(AllyFanCapability.DefaultGpuCurve);
+        var points = AsusFanCurve.Decode(AsusFanCurve.DefaultGpuCurve);
         await using (var first = hardware.CreatePlugin())
         {
             _ = await first.StartAsync(Start(new TestPluginHostAdapter(1), directory, "rc72la"),
@@ -617,7 +602,7 @@ public sealed class PluginTests
     public async Task XboxModelsClaimTheirFrontKeysWithoutTheController()
     {
         using var directory = new TemporaryDirectory();
-        var hardware = new AllyFakeHardware("RC73XA");
+        var hardware = new AllyFakeHardware();
         var host = new TestPluginHostAdapter(1);
         await using var plugin = hardware.CreatePlugin();
         _ = await plugin.StartAsync(Start(host, directory, "rc73xa", false), CancellationToken.None);
@@ -634,7 +619,7 @@ public sealed class PluginTests
     public async Task XboxArmouryCrateIsTheCompanionButtonAndCarriesNoSteamButton()
     {
         using var directory = new TemporaryDirectory();
-        var hardware = new AllyFakeHardware("RC73XA");
+        var hardware = new AllyFakeHardware();
         var host = new TestPluginHostAdapter(1);
         await using var plugin = hardware.CreatePlugin();
         _ = await plugin.StartAsync(Start(host, directory, "rc73xa"), CancellationToken.None);
@@ -696,7 +681,7 @@ public sealed class PluginTests
     public async Task LightingIsWriteOnlyAndReportedUnverified()
     {
         using var directory = new TemporaryDirectory();
-        var hardware = new AllyFakeHardware("RC73YA");
+        var hardware = new AllyFakeHardware();
         var host = new TestPluginHostAdapter(1);
         await using var plugin = hardware.CreatePlugin();
         _ = await plugin.StartAsync(Start(host, directory, "rc73ya"), CancellationToken.None);
@@ -939,7 +924,7 @@ public sealed class PluginTests
     public async Task OneFrontPressReportedOnBothTransportsIsPublishedOnce()
     {
         using var directory = new TemporaryDirectory();
-        var hardware = new AllyFakeHardware("RC73XA");
+        var hardware = new AllyFakeHardware();
         var host = new TestPluginHostAdapter(1);
         await using var plugin = hardware.CreatePlugin();
         _ = await plugin.StartAsync(Start(host, directory, "rc73xa"), CancellationToken.None);

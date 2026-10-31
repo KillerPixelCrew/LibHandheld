@@ -10,7 +10,18 @@ namespace LibHandheld.Families.Generic;
 internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmbeddedController>? open = null)
     : ProfiledFeatureService("ayn-controls")
 {
-    private bool _captureAttempted;
+    private static readonly IReadOnlyList<CapabilityDescriptor> Surface =
+    [
+        CapabilityDescriptors.Choice(CapabilityIds.FanMode, CapabilityRole.FanMode,
+            CapabilityDescriptors.Label("Fan mode"),
+            CapabilityDescriptors.Choices(["automatic", "custom", "full-speed"]), read: false, write: true),
+        CapabilityDescriptors.Integer(CapabilityIds.FanDuty, CapabilityRole.FanDuty,
+            CapabilityDescriptors.Label("Fan speed"), minimum: 0, maximum: 100, CapabilityUnit.Percent, read: false,
+            write: true),
+        CapabilityDescriptors.Color(CapabilityIds.LightingColor, instance: null,
+            CapabilityDescriptors.Label("Lighting color"), read: false, CapabilityPersistence.Unknown)
+    ];
+
     private CapabilityValue? _color;
     private DateTimeOffset? _colorWrittenAt;
     private int? _duty;
@@ -20,52 +31,17 @@ internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmb
     private string? _mode;
     private bool _unknownOriginal;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
-    [
-        new()
-        {
-            CapabilityId = CapabilityIds.FanMode, Role = CapabilityRole.FanMode, ValueKind = CapabilityValueKind.Choice,
-            Display = CapabilityDescriptors.Label("Fan mode"), SupportsWrite = true,
-            Persistence = CapabilityPersistence.Volatile,
-            Choices =
-            [
-                new CapabilityChoice("automatic", CapabilityDescriptors.Label("Automatic")),
-                new CapabilityChoice("custom", CapabilityDescriptors.Label("Custom")),
-                new CapabilityChoice("full-speed", CapabilityDescriptors.Label("Full speed"))
-            ]
-        },
-        new()
-        {
-            CapabilityId = "fan.duty", Role = CapabilityRole.FanDuty, ValueKind = CapabilityValueKind.Integer,
-            Display = CapabilityDescriptors.Label("Fan speed"), Minimum = 0, Maximum = 100, Step = 1,
-            SupportsWrite = true,
-            Unit = CapabilityUnit.Percent, Persistence = CapabilityPersistence.Volatile
-        },
-        new()
-        {
-            CapabilityId = CapabilityIds.LightingColor, Role = CapabilityRole.LightingZoneColor,
-            ValueKind = CapabilityValueKind.Color,
-            Display = CapabilityDescriptors.Label("Lighting color"), SupportsWrite = true,
-            Persistence = CapabilityPersistence.Unknown
-        }
-    ];
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Surface;
 
-    internal override IReadOnlyList<CapabilityState> States => Array.AsReadOnly(Descriptors.Select(descriptor =>
+    internal override IReadOnlyList<CapabilityState> States => Array.AsReadOnly(Surface.Select(descriptor =>
     {
         var value = descriptor.CapabilityId switch
         {
             CapabilityIds.FanMode => _mode is null ? null : CapabilityValue.Choice(_mode),
-            "fan.duty" => _duty is null ? null : CapabilityValue.Integer(_duty.Value), _ => _color
+            CapabilityIds.FanDuty => _duty is null ? null : CapabilityValue.Integer(_duty.Value), _ => _color
         };
-        return new CapabilityState
-        {
-            CapabilityId = descriptor.CapabilityId,
-            Available = _ec is not null,
-            ObservedValue = value,
-            ObservedAt = value is null ? null
-                : descriptor.CapabilityId == CapabilityIds.LightingColor ? _colorWrittenAt : _fanWrittenAt,
-            Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed
-        };
+        return ProviderControls.State(descriptor.CapabilityId, _ec is not null, value,
+            descriptor.CapabilityId == CapabilityIds.LightingColor ? _colorWrittenAt : _fanWrittenAt);
     }).ToArray());
 
     public override bool Suspendable => true;
@@ -92,7 +68,6 @@ internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmb
         await _journal.ReconcileAsync<GenericRecoveryState>("ayn-fan", context.Firmware,
             (_, ct) => RestoreAsync(ct), token).ConfigureAwait(false);
 
-        _captureAttempted = false;
         return Set(DeviceServiceState.Owned);
     }
 
@@ -109,17 +84,13 @@ internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmb
         try
         {
             var value = command.RequestedValue!;
-            if (command.CapabilityId is CapabilityIds.FanMode or "fan.duty")
+            if (command.CapabilityId is CapabilityIds.FanMode or CapabilityIds.FanDuty)
             {
-                if (!_captureAttempted)
-                {
-                    _captureAttempted = true;
-                    var captured = await _journal!.BeginAsync("ayn-fan", firmware,
-                            () => new GenericRecoveryState
-                                { Addresses = [0x11, 0x10], Values = [_ec.ReadByte(0x11), _ec.ReadByte(0x10)] }, token)
-                        .ConfigureAwait(false);
-                    _unknownOriginal |= captured is null;
-                }
+                var captured = await _journal!.BeginAsync("ayn-fan", firmware,
+                        () => new GenericRecoveryState
+                            { Addresses = [0x11, 0x10], Values = [_ec.ReadByte(0x11), _ec.ReadByte(0x10)] }, token)
+                    .ConfigureAwait(false);
+                _unknownOriginal |= captured is null;
 
                 var mode = command.CapabilityId == CapabilityIds.FanMode ? value.ChoiceValue! : "custom";
                 token.ThrowIfCancellationRequested();
@@ -127,7 +98,7 @@ internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmb
                 _ec.Transaction(() =>
                 {
                     _ec.WriteByte(0x10, mode == "automatic" ? (byte)1 : (byte)0);
-                    if (mode == "full-speed" || command.CapabilityId == "fan.duty")
+                    if (mode == "full-speed" || command.CapabilityId == CapabilityIds.FanDuty)
                     {
                         _ec.WriteByte(0x11, EncodeDuty(mode == "full-speed" ? 100 : value.IntegerValue!.Value));
                     }
@@ -135,7 +106,7 @@ internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmb
                     return true;
                 });
                 _mode = mode;
-                if (mode == "full-speed" || command.CapabilityId == "fan.duty")
+                if (mode == "full-speed" || command.CapabilityId == CapabilityIds.FanDuty)
                 {
                     _duty = mode == "full-speed" ? 100 : value.IntegerValue!.Value;
                 }
@@ -187,31 +158,21 @@ internal sealed class AynNativeService(ProfiledFeatureContext context, Func<IEmb
 
     private async ValueTask RestoreAsync(CancellationToken token)
     {
-        if (_ec is null || _journal?.PendingOriginalFor<GenericRecoveryState>("ayn-fan") is not { } original)
+        if (_ec is null || _journal?.OriginalStateFor<GenericRecoveryState>("ayn-fan") is not { } original)
         {
             return;
         }
 
-        try
+        _ec.Transaction(() =>
         {
-            _ec.Transaction(() =>
+            for (var index = 0; index < original.Addresses.Length; index++)
             {
-                for (var index = 0; index < original.Addresses.Length; index++)
-                {
-                    _ec.WriteByte(original.Addresses[index], original.Values[index]);
-                }
+                _ec.WriteByte(original.Addresses[index], original.Values[index]);
+            }
 
-                return true;
-            });
-            await _journal.SetStatusAsync("ayn-fan", DeviceRecoveryStatus.RestoredUnverified, token)
-                .ConfigureAwait(false);
-        }
-        catch
-        {
-            await _journal.SetStatusAsync("ayn-fan", DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                .ConfigureAwait(false);
-            throw;
-        }
+            return true;
+        });
+        await _journal.MarkRestoredAsync("ayn-fan", token).ConfigureAwait(false);
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,

@@ -34,21 +34,20 @@ internal sealed partial class AllyDeviceEngine
                 current = _hardware.Acpi.TryOpen() ? identity.FirmwareIdentity : null;
             }
 
-            switch (AllyRecoveryRules.Decide(entry, current))
+            if (current is null)
             {
-                case AllyReconciliationAction.Wait:
-                    DeviceTrace.Info("recovery", $"'{entry.ServiceId}' waits: its transport is not available yet.");
-                    continue;
-                case AllyReconciliationAction.Discard:
-                    DeviceTrace.Warn("recovery",
-                        $"dropped the '{entry.ServiceId}' entry bound to {entry.FirmwareIdentity}: the firmware now "
-                        + $"reads {current}, so its captured state is not restored.");
-                    await _journal.RetireAsync(entry.ServiceId, "firmware changed",
-                        CancellationToken.None).ConfigureAwait(false);
-                    continue;
-                case AllyReconciliationAction.Restore:
-                default:
-                    break;
+                DeviceTrace.Info("recovery", $"'{entry.ServiceId}' waits: its transport is not available yet.");
+                continue;
+            }
+
+            if (entry.FirmwareIdentity != current)
+            {
+                DeviceTrace.Warn("recovery",
+                    $"dropped the '{entry.ServiceId}' entry bound to {entry.FirmwareIdentity}: the firmware now "
+                    + $"reads {current}, so its captured state is not restored.");
+                await _journal.RetireAsync(entry.ServiceId, "firmware changed",
+                    CancellationToken.None).ConfigureAwait(false);
+                continue;
             }
 
             try
@@ -61,8 +60,7 @@ internal sealed partial class AllyDeviceEngine
                 continue;
             }
 
-            await _journal.SetStatusAsync(entry.ServiceId, DeviceRecoveryStatus.RestoredUnverified,
-                CancellationToken.None).ConfigureAwait(false);
+            await _journal.MarkRestoredAsync(entry.ServiceId, CancellationToken.None).ConfigureAwait(false);
             DeviceTrace.Info("recovery", $"outstanding '{entry.ServiceId}' restored.");
         }
     }
@@ -75,12 +73,12 @@ internal sealed partial class AllyDeviceEngine
         switch (entry.ServiceId)
         {
             case AllyServiceIds.Power when entry.OriginalState.ToPower() is { } power:
-                _ = await new AllyPowerCapability(_hardware.Acpi, _model!, _hardware.Delay)
+                await new AllyPowerCapability(_hardware.Acpi, _model!, _hardware.Delay)
                     .RestoreAsync(power, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             case AllyServiceIds.Fans when entry.OriginalState.ToFans() is { } fans:
-                _ = await new AllyFanCapability(_hardware.Acpi, _hardware.Delay)
+                await new AllyFanCapability(_hardware.Acpi, _hardware.Delay)
                     .RestoreAsync(fans, cancellationToken)
                     .ConfigureAwait(false);
                 return;

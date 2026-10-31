@@ -1,6 +1,5 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Lifecycle;
-using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -53,43 +52,9 @@ internal abstract class ClawJournalledService(string serviceId) : DeviceService<
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        try
-        {
-            await restoreAsync(restoreSnapshot, cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            await journal.SetStatusAsync(
-                ServiceId,
-                DeviceRecoveryStatus.RestoreFailed,
-                CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
-
-        await journal.SetStatusAsync(ServiceId, DeviceRecoveryStatus.RestoredVerified, CancellationToken.None)
-            .ConfigureAwait(false);
+        await restoreAsync(restoreSnapshot, cancellationToken).ConfigureAwait(false);
+        await journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
         return Set(DeviceServiceState.Idle);
-    }
-}
-
-/// <summary>A first read that may be refused without keeping a service from starting.</summary>
-internal static class ClawObservation
-{
-    public static async ValueTask<T?> TryAsync<T>(
-        Func<CancellationToken, ValueTask<T>> read,
-        string scope,
-        CancellationToken cancellationToken)
-        where T : class
-    {
-        try
-        {
-            return await read(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException && !cancellationToken.IsCancellationRequested)
-        {
-            DeviceTrace.Failure(scope, "The initial read failed; the value stays unknown until a write", ex);
-            return null;
-        }
     }
 }
 

@@ -36,7 +36,7 @@ public enum HardwareStateQuality
 /// <remarks>
 ///     Versioned separately from the descriptor because it changes constantly while the descriptor does
 ///     not. It carries only what the plugin observed; WSGM's desired value and UI progress live in
-///     WSGM's capability projection and are never mixed in here â€” a plugin does not own what the
+///     WSGM's capability projection and are never mixed in here; a plugin does not own what the
 ///     user asked for.
 /// </remarks>
 public sealed record CapabilityState

@@ -55,7 +55,7 @@ internal static class CapabilityDescriptors
         };
     }
 
-    internal static CapabilityDescriptor Color(string id, string instance, CapabilityDisplay display, bool read,
+    internal static CapabilityDescriptor Color(string id, string? instance, CapabilityDisplay display, bool read,
         CapabilityPersistence persistence)
     {
         return new CapabilityDescriptor
@@ -63,5 +63,51 @@ internal static class CapabilityDescriptors
             CapabilityId = id, InstanceId = instance, Role = CapabilityRole.LightingZoneColor, Display = display,
             ValueKind = CapabilityValueKind.Color, SupportsRead = read, SupportsWrite = true, Persistence = persistence
         };
+    }
+
+    /// <summary>
+    ///     A writable fan curve whose duties run from 0 to 100 percent; its inputs are the editor's starting
+    ///     temperatures, a template and never an observed value.
+    /// </summary>
+    internal static CapabilityDescriptor Curve(string id, CapabilityDisplay display, IReadOnlyList<int> inputs,
+        bool read, CapabilityPersistence persistence = CapabilityPersistence.Volatile, string? instance = null)
+    {
+        return new CapabilityDescriptor
+        {
+            CapabilityId = id, InstanceId = instance, Role = CapabilityRole.FanCurve,
+            ValueKind = CapabilityValueKind.Curve, CurveInputs = inputs, Display = display, Minimum = 0,
+            Maximum = 100, Unit = CapabilityUnit.Percent, SupportsRead = read, SupportsWrite = true,
+            Persistence = persistence
+        };
+    }
+
+    /// <summary>A capability that is invoked rather than read or written, such as a rumble sink.</summary>
+    internal static CapabilityDescriptor Action(string id, CapabilityRole role, CapabilityDisplay display,
+        CapabilityPersistence persistence = CapabilityPersistence.Volatile)
+    {
+        return new CapabilityDescriptor
+        {
+            CapabilityId = id, Role = role, ValueKind = CapabilityValueKind.None, Display = display,
+            SupportsAction = true, Persistence = persistence
+        };
+    }
+
+    /// <summary>An OEM control labelled with its printed name.</summary>
+    internal static OemControlDescriptor OemControl(string id, string label, OemControlPlacement placement,
+        bool requiresController = true, CanonicalButtons button = CanonicalButtons.None)
+    {
+        return new OemControlDescriptor
+        {
+            ControlId = id, Display = Label(label), Placement = placement,
+            RequiresControllerAcquisition = requiresController, ControllerButton = button
+        };
+    }
+
+    /// <summary>Writes a 0xRRGGBB colour as its red, green and blue bytes.</summary>
+    internal static void WriteRgb(Span<byte> target, int rgb)
+    {
+        target[0] = (byte)(rgb >> 16);
+        target[1] = (byte)(rgb >> 8);
+        target[2] = (byte)rgb;
     }
 }

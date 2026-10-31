@@ -74,39 +74,39 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
             _fans = Discover(health);
             _cpuTemperature = (health & 1) != 0;
             _topologyDecided = true;
-        }
-        _descriptors = _fans.SelectMany<AcerFan, CapabilityDescriptor>(fan =>
-        [
-            new CapabilityDescriptor
-            {
-                CapabilityId = CapabilityIds.FanMode, InstanceId = fan.Id, Role = CapabilityRole.FanMode,
-                Display = CapabilityDescriptors.Label($"{fan.Name} fan mode"), ValueKind = CapabilityValueKind.Choice,
-                SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
-                Choices = CapabilityDescriptors.Choices(["automatic", "full-speed", "custom"])
-            },
-            ProviderControls.Integer("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed,
-                minimum: AcerFan.MinimumDuty, maximum: 100, CapabilityUnit.Percent, write: true) with
-            {
-                InstanceId = fan.Id, Display = CapabilityDescriptors.Label($"{fan.Name} fan speed")
-            },
-            .. fan.RpmIndex is null ? Array.Empty<CapabilityDescriptor>() : new[]
-            {
-                ProviderControls.Integer(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm, DisplayKey.FanSpeed,
-                    minimum: 0, maximum: 65535, CapabilityUnit.Rpm, write: false) with
-                {
-                    InstanceId = fan.Id, Display = CapabilityDescriptors.Label($"{fan.Name} fan RPM")
-                }
-            }
-        ]).ToArray();
-        if (_cpuTemperature)
-        {
-            _descriptors =
+            _descriptors = _fans.SelectMany<AcerFan, CapabilityDescriptor>(fan =>
             [
-                .. _descriptors,
-                ProviderControls.Integer(CapabilityIds.Temperature, CapabilityRole.Telemetry, DisplayKey.CpuTemperature,
-                    minimum: 0, maximum: 150, CapabilityUnit.Celsius, write: false)
-            ];
+                CapabilityDescriptors.Choice(CapabilityIds.FanMode, CapabilityRole.FanMode,
+                    CapabilityDescriptors.Label($"{fan.Name} fan mode"),
+                    CapabilityDescriptors.Choices(["automatic", "full-speed", "custom"]), read: true, write: true) with
+                {
+                    InstanceId = fan.Id
+                },
+                ProviderControls.Integer(CapabilityIds.FanDuty, CapabilityRole.FanDuty, DisplayKey.FanSpeed,
+                    minimum: AcerFan.MinimumDuty, maximum: 100, CapabilityUnit.Percent, write: true) with
+                {
+                    InstanceId = fan.Id, Display = CapabilityDescriptors.Label($"{fan.Name} fan speed")
+                },
+                .. fan.RpmIndex is null ? Array.Empty<CapabilityDescriptor>() : new[]
+                {
+                    ProviderControls.Integer(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm, DisplayKey.FanSpeed,
+                        minimum: 0, maximum: 65535, CapabilityUnit.Rpm, write: false) with
+                    {
+                        InstanceId = fan.Id, Display = CapabilityDescriptors.Label($"{fan.Name} fan RPM")
+                    }
+                }
+            ]).ToArray();
+            if (_cpuTemperature)
+            {
+                _descriptors =
+                [
+                    .. _descriptors,
+                    ProviderControls.Integer(CapabilityIds.Temperature, CapabilityRole.Telemetry,
+                        DisplayKey.CpuTemperature, minimum: 0, maximum: 150, CapabilityUnit.Celsius, write: false)
+                ];
+            }
         }
+
         foreach (var fan in _fans)
         {
             await context.Journal.ReconcileAsync<AcerFanOriginal>(RecoveryId(fan), context.Firmware,
@@ -281,7 +281,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
             var original = Capture(fan);
             _observed.Read(CapabilityIds.FanMode,
                 original.Behavior is { } behavior ? CapabilityValue.Choice(ModeName(behavior)) : null, fan.Id);
-            _observed.Read("fan.duty", original.Speed is { } speed ? CapabilityValue.Integer(speed) : null, fan.Id);
+            _observed.Read(CapabilityIds.FanDuty, original.Speed is { } speed ? CapabilityValue.Integer(speed) : null,
+                fan.Id);
         }
     }
 
@@ -306,12 +307,14 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
         var dispatched = false;
         try
         {
-            var behavior = command.CapabilityId == "fan.duty" ? 3 : command.RequestedValue?.ChoiceValue switch
-            {
-                "automatic" => 1, "full-speed" => 2, "custom" => 3,
-                _ => throw new ArgumentException("Unknown Acer fan mode.")
-            };
-            if (command.CapabilityId == "fan.duty"
+            var behavior = command.CapabilityId == CapabilityIds.FanDuty
+                ? 3
+                : command.RequestedValue?.ChoiceValue switch
+                {
+                    "automatic" => 1, "full-speed" => 2, "custom" => 3,
+                    _ => throw new ArgumentException("Unknown Acer fan mode.")
+                };
+            if (command.CapabilityId == CapabilityIds.FanDuty
                 && command.RequestedValue?.IntegerValue is not (>= AcerFan.MinimumDuty and <= 100))
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
@@ -327,11 +330,11 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
 
             Write("SetGamingFanBehavior", fan.PackBehavior(behavior), token, () => dispatched = true);
             _observed.Written(CapabilityIds.FanMode, CapabilityValue.Choice(ModeName(behavior)), fan.Id);
-            if (command.CapabilityId == "fan.duty")
+            if (command.CapabilityId == CapabilityIds.FanDuty)
             {
                 var speed = command.RequestedValue!.IntegerValue!.Value;
                 Write("SetGamingFanSpeed", fan.PackSpeed(speed), token, () => dispatched = true);
-                _observed.Written("fan.duty", CapabilityValue.Integer(speed), fan.Id);
+                _observed.Written(CapabilityIds.FanDuty, CapabilityValue.Integer(speed), fan.Id);
             }
 
             await HoldAsync(fan, behavior == 3).ConfigureAwait(false);
@@ -342,7 +345,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
             if (dispatched)
             {
                 _observed.Forget(CapabilityIds.FanMode, fan.Id);
-                _observed.Forget("fan.duty", fan.Id);
+                _observed.Forget(CapabilityIds.FanDuty, fan.Id);
                 await HoldAsync(fan, false).ConfigureAwait(false);
             }
 
@@ -483,7 +486,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
         while (_lostHolds.TryDequeue(out var id))
         {
             _observed.Forget(CapabilityIds.FanMode, id);
-            _observed.Forget("fan.duty", id);
+            _observed.Forget(CapabilityIds.FanDuty, id);
         }
     }
 
@@ -510,9 +513,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
                        && exact;
         _inexactRestore |= !verified;
 
-        await context.Journal.SetStatusAsync(RecoveryId(fan),
-            verified ? DeviceRecoveryStatus.RestoredVerified : DeviceRecoveryStatus.RestoredUnverified,
-            CancellationToken.None).ConfigureAwait(false);
+        await context.Journal.MarkRestoredAsync(RecoveryId(fan), CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>Stops the hold loop, reconciles every fan, then disposes both native providers.</summary>

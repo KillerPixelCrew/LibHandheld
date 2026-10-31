@@ -215,6 +215,21 @@ internal static class ClawModels
 
     public static IReadOnlyList<ClawModel> All { get; } = [A1M, Claw7A2Vm, Claw8A2Vm, A8Bz2Em, Claw8ExCg3Em];
 
+    public static IReadOnlyList<HandheldDefinition> Definitions { get; } = All.Select(model =>
+        new HandheldDefinition(model.DefinitionId, ClawHardwareFacts.PackageId, model.DisplayName, "msi-claw")
+        {
+            HardwareVerified = model.HardwareVerified,
+            DeclaredRoles =
+            [
+                CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ChargeLimit,
+                CapabilityRole.ChargeProtectionMode,
+                CapabilityRole.ScenarioMode, CapabilityRole.FanMode, CapabilityRole.FanDuty,
+                CapabilityRole.LightingBrightness, CapabilityRole.ControllerSource, CapabilityRole.MotionSource,
+                CapabilityRole.HapticSink, CapabilityRole.Telemetry, CapabilityRole.FanMeasuredRpm,
+                CapabilityRole.FanCurve, CapabilityRole.LightingZoneColor
+            ]
+        }).ToArray();
+
     /// <summary>
     ///     Matches HC's identity switch: the baseboard manufacturer (Win32_BaseBoard, upper-cased by HC)
     ///     and the exact baseboard product, the same fields the manifest's hardware rules use. The SKU

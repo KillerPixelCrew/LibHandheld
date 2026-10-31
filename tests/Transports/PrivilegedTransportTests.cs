@@ -117,7 +117,7 @@ public sealed class PrivilegedTransportTests
     public void RejectedSmuCommandIsNotRetried()
     {
         using var module = new RecordingModule { SmuStatus = 0xFD };
-        using var smu = new AmdSmuTransport(module, 23, 1);
+        using var smu = new AmdSmuTransport(module, codeName: 23);
         var error = Assert.Throws<SmuCommandException>(() => smu.WriteLimit(CpuPowerLimit.Sustained, 15));
         Assert.Equal(0xFDu, error.Status);
         Assert.Single(module.Calls, call => call.Function == "ioctl_write_smu_register" && call.Input[0] == 0x03B10528);
@@ -127,7 +127,7 @@ public sealed class PrivilegedTransportTests
     public void AmdReadbackNeverSendsZeroValuedSetMessages()
     {
         using var module = new RecordingModule();
-        using var smu = new AmdSmuTransport(module, 23, 1);
+        using var smu = new AmdSmuTransport(module, codeName: 23);
         Assert.Throws<NotSupportedException>(() => smu.ReadLimits());
         Assert.Empty(module.Calls);
     }
@@ -136,7 +136,7 @@ public sealed class PrivilegedTransportTests
     public void InvalidPowerRequestDoesNotReachHardware()
     {
         using var module = new RecordingModule();
-        using var smu = new AmdSmuTransport(module, 23, 1);
+        using var smu = new AmdSmuTransport(module, codeName: 23);
         Assert.Throws<ArgumentOutOfRangeException>(() => smu.WriteLimits(new CpuPowerLimits(15, double.NaN, 20)));
         Assert.Empty(module.Calls);
         Assert.Equal(15000u, CpuPowerEncoding.Milliwatts(15));

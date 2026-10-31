@@ -28,10 +28,9 @@ internal sealed class PawnIoEmbeddedController : IEmbeddedController
         _indexed = indexed;
         _indexPort = indexPort;
         _dataPort = dataPort;
-        if (indexed && (indexPort is not (0x2E or 0x4E) || dataPort != indexPort + 1))
+        if (indexed)
         {
-            throw new ArgumentException(
-                "Only the signed module's 0x2E/0x2F and 0x4E/0x4F SuperIO slots are supported.");
+            ValidateSlot(indexPort, dataPort);
         }
     }
 
@@ -95,11 +94,8 @@ internal sealed class PawnIoEmbeddedController : IEmbeddedController
 
     internal static PawnIoEmbeddedController OpenIndexed(ushort indexPort = 0x4E, ushort dataPort = 0x4F)
     {
-        if (indexPort is not (0x2E or 0x4E) || dataPort != indexPort + 1)
-        {
-            throw new ArgumentException("The signed module supports only the standard SuperIO slots.");
-        }
-
+        // Checked before the module is loaded, so a rejected slot never opens a PawnIO session.
+        ValidateSlot(indexPort, dataPort);
         return new PawnIoEmbeddedController(PawnIoModule.OpenModule("LpcIO"), true, indexPort, dataPort);
     }
 
@@ -118,32 +114,46 @@ internal sealed class PawnIoEmbeddedController : IEmbeddedController
         }
 
         ArgumentOutOfRangeException.ThrowIfNegative(responseLength);
-        return Transaction(() =>
+        return Transaction(() => ExchangeCore(command, arguments, responseLength));
+    }
+
+    private static void ValidateSlot(ushort indexPort, ushort dataPort)
+    {
+        if (indexPort is not (0x2E or 0x4E) || dataPort != indexPort + 1)
         {
-            var deadline = Stopwatch.GetTimestamp() + (long)(Timeout.TotalSeconds * Stopwatch.Frequency);
-            WaitStatus(2, false, deadline);
-            WritePort(0x66, command);
-            foreach (var value in arguments)
-            {
-                WaitStatus(2, false, deadline);
-                WritePort(0x62, value);
-            }
+            throw new ArgumentException(
+                "Only the signed module's 0x2E/0x2F and 0x4E/0x4F SuperIO slots are supported.");
+        }
+    }
 
+    // Runs inside a held Transaction: register accesses already own the bus for the whole access.
+    private byte[] ExchangeCore(byte command, byte[] arguments, int responseLength)
+    {
+        var deadline = Stopwatch.GetTimestamp() + (long)(Timeout.TotalSeconds * Stopwatch.Frequency);
+        WaitStatus(2, false, deadline);
+        WritePort(0x66, command);
+        foreach (var value in arguments)
+        {
             WaitStatus(2, false, deadline);
-            var result = new byte[responseLength];
-            for (var i = 0; i < result.Length; i++)
-            {
-                WaitStatus(1, true, deadline);
-                result[i] = ReadPort(0x62);
-            }
+            WritePort(0x62, value);
+        }
 
-            return result;
-        });
+        WaitStatus(2, false, deadline);
+        var result = new byte[responseLength];
+        for (var i = 0; i < result.Length; i++)
+        {
+            WaitStatus(1, true, deadline);
+            result[i] = ReadPort(0x62);
+        }
+
+        return result;
     }
 
     private byte ReadCore(ushort address)
     {
-        return _indexed ? Indexed(address, false, 0) : AcpiBank(address, () => Exchange(0x80, [(byte)address], 1)[0]);
+        return _indexed
+            ? Indexed(address, false, 0)
+            : AcpiBank(address, () => ExchangeCore(0x80, [(byte)address], 1)[0]);
     }
 
     private void WriteCore(ushort address, byte value)
@@ -156,7 +166,7 @@ internal sealed class PawnIoEmbeddedController : IEmbeddedController
         {
             AcpiBank(address, () =>
             {
-                Exchange(0x81, [(byte)address, value], 0);
+                ExchangeCore(0x81, [(byte)address, value], 0);
                 return true;
             });
         }
@@ -169,15 +179,15 @@ internal sealed class PawnIoEmbeddedController : IEmbeddedController
             return operation();
         }
 
-        var previous = Exchange(0x80, [0xFF], 1)[0];
-        Exchange(0x81, [0xFF, (byte)(address >> 8)], 0);
+        var previous = ExchangeCore(0x80, [0xFF], 1)[0];
+        ExchangeCore(0x81, [0xFF, (byte)(address >> 8)], 0);
         try
         {
             return operation();
         }
         finally
         {
-            Exchange(0x81, [0xFF, previous], 0);
+            ExchangeCore(0x81, [0xFF, previous], 0);
         }
     }
 

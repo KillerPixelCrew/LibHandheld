@@ -282,6 +282,32 @@ internal static class DeviceServiceLifecycle
             : new EngineStopResult { Status = EngineStopStatus.Clean };
     }
 
+    /// <summary>The state a feature service reports for its cycle's aggregate start or resume result.</summary>
+    /// <param name="result">The aggregate from <see cref="StartResult" />.</param>
+    /// <returns>Owned when active, Degraded when degraded, otherwise Passive.</returns>
+    public static DeviceServiceState ServiceState(EngineStartResult result)
+    {
+        return result.State switch
+        {
+            EngineOperationalState.Active => DeviceServiceState.Owned,
+            EngineOperationalState.Degraded => DeviceServiceState.Degraded,
+            _ => DeviceServiceState.Passive
+        };
+    }
+
+    /// <summary>The state a feature service reports for its cycle's aggregate stop result.</summary>
+    /// <param name="result">The aggregate from <see cref="StopResult" />.</param>
+    /// <returns>Faulted when failed, ReleasedUnverified when unverified, otherwise Idle.</returns>
+    public static DeviceServiceState ServiceState(EngineStopResult result)
+    {
+        return result.Status switch
+        {
+            EngineStopStatus.Failed => DeviceServiceState.Faulted,
+            EngineStopStatus.Unverified => DeviceServiceState.ReleasedUnverified,
+            _ => DeviceServiceState.Idle
+        };
+    }
+
     /// <summary>The reason a capability state carries for a service that set none of its own.</summary>
     /// <param name="state">The service's state.</param>
     /// <returns>Null for an owned service, otherwise a reason code without detail.</returns>

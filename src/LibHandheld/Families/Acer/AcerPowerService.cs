@@ -111,13 +111,9 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
 
         List<CapabilityDescriptor> descriptors =
         [
-            new()
-            {
-                CapabilityId = ModeId, Role = CapabilityRole.ScenarioMode,
-                Display = new CapabilityDisplay { Key = DisplayKey.PerformanceProfile }, ValueKind = CapabilityValueKind.Choice,
-                SupportsRead = true, SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
-                Choices = CapabilityDescriptors.Choices(["turbo", "balanced", "quiet", "manual"])
-            }
+            CapabilityDescriptors.Choice(ModeId, CapabilityRole.ScenarioMode,
+                new CapabilityDisplay { Key = DisplayKey.PerformanceProfile },
+                CapabilityDescriptors.Choices(["turbo", "balanced", "quiet", "manual"]), read: true, write: true)
         ];
         // Maxima are firmware capabilities, not desktop fallback values or guessed CPU limits.
         try
@@ -287,6 +283,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
                 {
                     DeviceTrace.Warn(ServiceId, $"Selected profile limits unavailable: {exception.Message}");
                 }
+
+                await CaptureModeAsync(token).ConfigureAwait(false);
             }
             else
             {
@@ -327,7 +325,6 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
                 selected = 3;
             }
 
-            await CaptureModeAsync(token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             SelectMode(selected, token, () => dispatched = true);
             _mode = selected;
@@ -413,8 +410,10 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         }
 
         _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ProfileRecoveryId, DeviceRecoveryJournal.RestoreStatus(verified),
-            CancellationToken.None).ConfigureAwait(false);
+        if (verified != false)
+        {
+            await context.Journal.MarkRestoredAsync(ProfileRecoveryId, CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Restores a known firmware mode once; missing observation is unverified, mismatch is failed.</summary>
@@ -437,8 +436,10 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         }
 
         _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ModeRecoveryId, DeviceRecoveryJournal.RestoreStatus(verified),
-            CancellationToken.None).ConfigureAwait(false);
+        if (verified != false)
+        {
+            await context.Journal.MarkRestoredAsync(ModeRecoveryId, CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Reconciles both originals before closing EC access, preserving incomplete recovery in the journal.</summary>

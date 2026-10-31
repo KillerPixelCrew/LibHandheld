@@ -196,7 +196,6 @@ internal sealed partial class ProfiledControllerService(
                     _ownershipAt = DateTimeOffset.UtcNow;
                 },
                 touchpad, hidButtons);
-            _readerStarted = true;
         }
         catch
         {

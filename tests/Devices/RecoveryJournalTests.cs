@@ -16,12 +16,14 @@ public sealed class RecoveryJournalTests
             captures++;
             return new Original(15);
         }, CancellationToken.None);
-        await journal.BeginAsync("power", "bios1", () =>
+        var repeated = await journal.BeginAsync("power", "bios1", () =>
         {
             captures++;
             return new Original(25);
         }, CancellationToken.None);
         Assert.Equal(1, captures);
+        Assert.False(repeated!.Opened);
+        Assert.Equal(15, repeated.Entry.OriginalState.Value);
         var reopened = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
         Assert.Equal(15, reopened.OriginalStateFor<Original>("power")?.Value);
     }
@@ -49,15 +51,16 @@ public sealed class RecoveryJournalTests
     }
 
     [Fact]
-    public async Task AcceptedRestoreRetiresOriginalAndFailedRestoreRetainsIt()
+    public async Task AcceptedRestoreRetiresTheOriginalDurably()
     {
         using var directory = new TemporaryDirectory();
         var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
         await journal.BeginAsync("power", "bios1", new Original(15), CancellationToken.None);
-        await journal.SetStatusAsync("power", DeviceRecoveryStatus.RestoreFailed, CancellationToken.None);
-        Assert.Equal(15, journal.PendingOriginalFor<Original>("power")?.Value);
-        await journal.SetStatusAsync("power", DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None);
+        Assert.Equal(15, journal.OriginalStateFor<Original>("power")?.Value);
+        await journal.MarkRestoredAsync("power", CancellationToken.None);
         Assert.Null(journal.OriginalStateFor<Original>("power"));
+        var reopened = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        Assert.Empty(reopened.OutstandingEntries);
     }
 
     [Theory]
@@ -101,8 +104,8 @@ public sealed class RecoveryJournalTests
     {
         using var directory = new TemporaryDirectory();
         var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        // A failed restore leaves the original in place.
         await journal.BeginAsync("power", "bios1", new Original(15), CancellationToken.None);
-        await journal.SetStatusAsync("power", DeviceRecoveryStatus.RestoreFailed, CancellationToken.None);
         await journal.BeginCycleAsync(CancellationToken.None);
         var captures = 0;
         var pending = await journal.BeginAsync("power", "bios1", () =>
@@ -112,7 +115,7 @@ public sealed class RecoveryJournalTests
         }, CancellationToken.None);
         Assert.Equal(0, captures);
         Assert.Equal(15, pending!.Entry.OriginalState.Value);
-        Assert.Equal(15, journal.PendingOriginalFor<Original>("power")!.Value);
+        Assert.Equal(15, journal.OriginalStateFor<Original>("power")!.Value);
     }
 
     [Fact]
@@ -126,7 +129,7 @@ public sealed class RecoveryJournalTests
             captures++;
             return new Original(15);
         }, CancellationToken.None);
-        await journal.SetStatusAsync("power", DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None);
+        await journal.MarkRestoredAsync("power", CancellationToken.None);
         var reenlisted = await journal.BeginAsync("power", "bios1", () =>
         {
             captures++;
@@ -134,7 +137,7 @@ public sealed class RecoveryJournalTests
         }, CancellationToken.None);
         Assert.Equal(1, captures);
         Assert.Equal(15, reenlisted!.Entry.OriginalState.Value);
-        Assert.Equal(15, journal.PendingOriginalFor<Original>("power")!.Value);
+        Assert.Equal(15, journal.OriginalStateFor<Original>("power")!.Value);
     }
 
     private sealed record Original(int Value);

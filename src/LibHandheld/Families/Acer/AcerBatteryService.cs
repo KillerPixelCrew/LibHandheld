@@ -18,12 +18,11 @@ namespace LibHandheld.Families.Acer;
 /// </remarks>
 internal sealed class AcerBatteryService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-battery")
 {
-    internal const string ProtectionId = "battery.charge-protection";
     private static readonly IReadOnlyList<CapabilityDescriptor> Controls =
     [
         new()
         {
-            CapabilityId = ProtectionId, Role = CapabilityRole.ChargeProtectionMode,
+            CapabilityId = CapabilityIds.ChargeProtection, Role = CapabilityRole.ChargeProtectionMode,
             Display = CapabilityDescriptors.Label("Optimized battery charging"),
             ValueKind = CapabilityValueKind.Boolean, SupportsRead = true, SupportsWrite = true,
             Persistence = CapabilityPersistence.DevicePersistent
@@ -38,8 +37,9 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
 
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _supported ? Controls : [];
     internal override IReadOnlyList<CapabilityState> States => _supported
-        ? [ProviderControls.State(ProtectionId, State == DeviceServiceState.Owned,
-            _observed.Value(ProtectionId), _observed.Time(ProtectionId), Reason)] : [];
+        ? [ProviderControls.State(CapabilityIds.ChargeProtection, State == DeviceServiceState.Owned,
+            _observed.Value(CapabilityIds.ChargeProtection), _observed.Time(CapabilityIds.ChargeProtection), Reason)]
+        : [];
     public override bool Suspendable => true;
 
     /// <summary>Opens BatteryControl, reconciles saved state, and decides firmware support once per service lifetime.</summary>
@@ -64,7 +64,8 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             {
                 _supported = status.Supported;
             }
-            _observed.Read(ProtectionId, status.Enabled is { } enabled ? CapabilityValue.Boolean(enabled) : null);
+            _observed.Read(CapabilityIds.ChargeProtection,
+                status.Enabled is { } enabled ? CapabilityValue.Boolean(enabled) : null);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -146,14 +147,14 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
                 .ConfigureAwait(false);
             _unknownOriginalChanged |= recovery is null;
             Write(enabled, token, () => dispatched = true);
-            _observed.Written(ProtectionId, CapabilityValue.Boolean(enabled));
+            _observed.Written(CapabilityIds.ChargeProtection, CapabilityValue.Boolean(enabled));
             return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             if (dispatched)
             {
-                _observed.Forget(ProtectionId);
+                _observed.Forget(CapabilityIds.ChargeProtection);
             }
 
             return CommandResults.TransportFailure(command, dispatched, exception);
@@ -175,8 +176,10 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         }
 
         _restoreUnverified |= verified != true;
-        await context.Journal.SetStatusAsync(ServiceId, DeviceRecoveryJournal.RestoreStatus(verified),
-            CancellationToken.None).ConfigureAwait(false);
+        if (verified != false)
+        {
+            await context.Journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Restores a captured original before closing WMI; unknown originals remain ReleasedUnverified.</summary>

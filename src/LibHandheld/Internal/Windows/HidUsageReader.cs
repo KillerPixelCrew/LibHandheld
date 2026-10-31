@@ -114,6 +114,49 @@ internal sealed unsafe class HidUsageReader : IDisposable
         return _usages.AsSpan(0, (int)Math.Min(count, (uint)_usages.Length));
     }
 
+    /// <summary>Decodes a DirectInput gamepad: X/Y left stick, Z/Rz right stick, optional Rx/Ry triggers, 0x39 hat.</summary>
+    /// <param name="report">One input report.</param>
+    /// <param name="timestamp">The sample's timestamp.</param>
+    /// <param name="buttons">The family's button map, indexed by page-9 usage minus one.</param>
+    /// <param name="initial">Buttons already held from another source, such as an OEM latch.</param>
+    /// <param name="sample">The decoded sample.</param>
+    /// <returns>False when the report carries no X, Y, Z and Rz values.</returns>
+    internal bool TryDecodeGamepad(ReadOnlySpan<byte> report, DateTimeOffset timestamp,
+        ReadOnlySpan<CanonicalButtons> buttons, CanonicalButtons initial, out CanonicalControllerSample sample)
+    {
+        sample = default;
+        if (!TryValue(report, 0x30, out var x) || !TryValue(report, 0x31, out var y)
+                                               || !TryValue(report, 0x32, out var z) ||
+                                               !TryValue(report, 0x35, out var rz))
+        {
+            return false;
+        }
+
+        var held = initial;
+        foreach (var usage in Usages(report, 9))
+        {
+            var index = usage - 1;
+            if ((uint)index < (uint)buttons.Length)
+            {
+                held |= buttons[index];
+            }
+        }
+
+        if (TryValue(report, 0x39, out var hat))
+        {
+            held |= Hat((int)(hat.Raw - hat.Minimum));
+        }
+
+        sample = new CanonicalControllerSample
+        {
+            Timestamp = timestamp, Buttons = held, LeftStickX = x.Signed, LeftStickY = -y.Signed,
+            RightStickX = z.Signed, RightStickY = -rz.Signed,
+            LeftTrigger = TryValue(report, 0x33, out var rx) ? rx.Unsigned : 0,
+            RightTrigger = TryValue(report, 0x34, out var ry) ? ry.Unsigned : 0
+        };
+        return true;
+    }
+
     internal static CanonicalButtons Hat(int position)
     {
         return position switch

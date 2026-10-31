@@ -1,4 +1,5 @@
 using LibHandheld.Contracts;
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Windows;
 
@@ -19,13 +20,8 @@ internal sealed class TecnoButtonSource : IProfiledOemSource
     private Action<string, CanonicalButtons, bool>? _publish;
 
     internal static IReadOnlyList<OemControlDescriptor> Controls { get; } = Fields.Select(field =>
-        new OemControlDescriptor
-        {
-            ControlId = field.Id,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = field.Label },
-            Placement = OemControlPlacement.Front, RequiresControllerAcquisition = true,
-            ControllerButton = field.Button
-        }).ToArray();
+        CapabilityDescriptors.OemControl(field.Id, field.Label, OemControlPlacement.Front, button: field.Button))
+        .ToArray();
 
     public bool IsConnected => _source.IsConnected;
 

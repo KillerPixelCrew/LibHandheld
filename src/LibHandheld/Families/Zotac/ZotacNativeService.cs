@@ -1,11 +1,11 @@
 using System.Management;
 using System.Runtime.InteropServices;
 using LibHandheld.Contracts;
-using LibHandheld.Families.SteamDeck;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Transports;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Zotac;
@@ -14,13 +14,19 @@ namespace LibHandheld.Families.Zotac;
 internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
     : ProfiledFeatureService("zotac-controls")
 {
-    private static readonly IReadOnlyList<CapabilityDescriptor> Lighting =
+    private const string VramId = "firmware.vram-addition";
+
+    private static readonly IReadOnlyList<CapabilityDescriptor> Controls =
     [
         Choice(CapabilityIds.LightingEffect, CapabilityRole.LightingEffect, "Lighting effect",
             ["off", "solid", "breathing", "rainbow", "gradient"]),
         Range(CapabilityIds.LightingBrightness, CapabilityRole.LightingBrightness, "Lighting brightness", 0, 100, 25),
         Range(CapabilityIds.LightingSpeed, CapabilityRole.LightingEffectSpeed, "Lighting speed", 0, 100, 1),
-        Color("main", "Main lighting color"), Color("secondary", "Secondary lighting color")
+        Color("main", "Main lighting color"), Color("secondary", "Secondary lighting color"),
+        Range(VramId, CapabilityRole.GenericRange, "Additional reserved video memory (GB)", 0, 12, 1) with
+        {
+            ApplyTiming = CapabilityApplyTiming.SystemRestart, ProfileScope = CapabilityProfileScope.GlobalOnly
+        }
     ];
 
     private readonly ObservedValues _observed = new();
@@ -28,37 +34,27 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
     private DeviceRecoveryJournal? _journal;
     private bool _manage = context.ControllerManagementEnabled;
     private uint _ram;
-    private SteamDeckMemory? _cmos;
+    private InpOutTransport? _cmos;
     private ManagementObject? _uma;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Array.AsReadOnly(Lighting.Concat(new[]
-    {
-        Range("firmware.vram-addition", CapabilityRole.GenericRange, "Additional reserved video memory (GB)", 0, 12,
-                1) with
-            {
-                ApplyTiming = CapabilityApplyTiming.SystemRestart, ProfileScope = CapabilityProfileScope.GlobalOnly
-            }
-    }).ToArray());
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Controls;
 
-    internal override IReadOnlyList<CapabilityState> States => Array.AsReadOnly(Descriptors.Select(descriptor =>
+    internal override IReadOnlyList<CapabilityState> States => Array.AsReadOnly(Controls.Select(descriptor =>
     {
-        var available = descriptor.CapabilityId == "firmware.vram-addition"
-            ? (_cmos is not null || _uma is not null) && _ram < 64
-            : State == DeviceServiceState.Owned;
-        var value = _observed.Value(descriptor.CapabilityId, descriptor.InstanceId);
-        return new CapabilityState
+        var vram = descriptor.CapabilityId == VramId;
+        var routeMissing = _cmos is null && _uma is null;
+        var reason = !vram ? null
+            : _ram >= 64 ? new CapabilityReason(CapabilityReasonCode.Unsupported,
+                "The 8-bit UMA encoding cannot represent a 64 GB base allocation.")
+            : routeMissing ? new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
+                "The pre-installed InpOut CMOS route and Zone UMAInterface WMI alternative are unavailable.")
+            : null;
+        return ProviderControls.State(descriptor.CapabilityId,
+            vram ? !routeMissing && _ram < 64 : State == DeviceServiceState.Owned,
+            _observed.Value(descriptor.CapabilityId, descriptor.InstanceId),
+            _observed.Time(descriptor.CapabilityId, descriptor.InstanceId), reason) with
         {
-            CapabilityId = descriptor.CapabilityId, InstanceId = descriptor.InstanceId,
-            Available = available, ObservedValue = value,
-            Reason = descriptor.CapabilityId == "firmware.vram-addition" && _ram >= 64
-                ? new CapabilityReason(CapabilityReasonCode.Unsupported,
-                    "The 8-bit UMA encoding cannot represent a 64 GB base allocation.")
-                : descriptor.CapabilityId == "firmware.vram-addition" && _cmos is null && _uma is null
-                    ? new CapabilityReason(CapabilityReasonCode.PrerequisiteMissing,
-                        "The pre-installed InpOut CMOS route and Zone UMAInterface WMI alternative are unavailable.")
-                : null,
-            Quality = value is null ? HardwareStateQuality.Unknown : HardwareStateQuality.Observed,
-            ObservedAt = _observed.Time(descriptor.CapabilityId, descriptor.InstanceId)
+            InstanceId = descriptor.InstanceId
         };
     }).ToArray());
 
@@ -73,7 +69,7 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         {
             try
             {
-                _cmos = SteamDeckMemory.Open(context.Resources.InpOutPath);
+                _cmos = InpOutTransport.Open(context.Resources.InpOutPath);
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
@@ -103,14 +99,8 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         _journal = context.Journal;
         if (_hid is not null)
         {
-            var prior = _journal.EntryFor<ZotacRecoveryState>("rear-profile");
-            if (prior is not null)
-            {
-                await _journal.ReconcileAsync<ZotacRecoveryState>("rear-profile", Binding(),
-                    (_, ct) => RestoreRearAsync(ct), token).ConfigureAwait(false);
-            }
-
-
+            await _journal.ReconcileAsync<ZotacRecoveryState>("rear-profile", Binding(),
+                (_, ct) => RestoreRearAsync(ct), token).ConfigureAwait(false);
             if (_manage)
             {
                 await RemapRearAsync(token).ConfigureAwait(false);
@@ -155,7 +145,7 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
 
     private async ValueTask RestoreRearAsync(CancellationToken token)
     {
-        if (_hid is null || _journal?.PendingOriginalFor<ZotacRecoveryState>("rear-profile") is null)
+        if (_hid is null || _journal?.OriginalStateFor<ZotacRecoveryState>("rear-profile") is null)
         {
             return;
         }
@@ -166,19 +156,8 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
             return;
         }
 
-        try
-        {
-            _hid.Write(ZotacProtocol.Command(0xF1), token);
-            await _journal
-                .SetStatusAsync("rear-profile", DeviceRecoveryStatus.RestoredUnverified, CancellationToken.None)
-                .ConfigureAwait(false);
-        }
-        catch
-        {
-            await _journal.SetStatusAsync("rear-profile", DeviceRecoveryStatus.RestoreFailed, CancellationToken.None)
-                .ConfigureAwait(false);
-            throw;
-        }
+        _hid.Write(ZotacProtocol.Command(0xF1), token);
+        await _journal.MarkRestoredAsync("rear-profile", CancellationToken.None).ConfigureAwait(false);
     }
 
     internal override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
@@ -192,7 +171,7 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         var dispatched = false;
         try
         {
-            if (command.CapabilityId == "firmware.vram-addition")
+            if (command.CapabilityId == VramId)
             {
                 if (_cmos is null && _uma is null)
                 {
@@ -205,7 +184,7 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
                 {
                     token.ThrowIfCancellationRequested();
                     dispatched = true;
-                    _cmos.WriteZotacUma(allocation);
+                    ZotacCmos.WriteUma(_cmos, allocation);
                     _observed.Written(command.CapabilityId, command.RequestedValue!, command.InstanceId);
                     return CommandResults.Applied(command);
                 }
@@ -254,18 +233,13 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
                         "Unknown Zone vendor command.");
             }
 
-            // HC's save command deliberately has no CRC bytes.
-            var save = new byte[65];
-            save[1] = 0xE1;
-            save[4] = 60;
-            save[5] = 0xFB;
-            _hid.Write(save, token);
+            _hid.Write(ZotacProtocol.Save(), token);
             _observed.Written(command.CapabilityId, value, command.InstanceId);
             return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            if (command.CapabilityId != "firmware.vram-addition")
+            if (command.CapabilityId != VramId)
             {
                 _hid?.Dispose();
                 _hid = null;
@@ -304,16 +278,9 @@ internal sealed partial class ZotacNativeService(ProfiledFeatureContext context)
         }
         finally
         {
-            _hid?.Dispose();
-            _hid = null;
-            _uma?.Dispose();
-            _uma = null;
-            _cmos?.Dispose();
-            _cmos = null;
-            _observed.Clear();
+            await DisposeAsync().ConfigureAwait(false);
         }
     }
-
 
     internal override ValueTask DisposeAsync()
     {

@@ -102,6 +102,8 @@ internal static unsafe partial class NativeHid
         public ushort VersionNumber;
     }
 
+    // HIDP_BUTTON_CAPS and HIDP_VALUE_CAPS share one 72-byte layout up to offset 16, where the button's
+    // ReportCount and the value's HasNull overlap; the usage range union starts at 56 in both.
     [StructLayout(LayoutKind.Explicit, Size = 72)]
     public struct HidpCapsEntry
     {

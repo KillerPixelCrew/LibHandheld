@@ -1,4 +1,5 @@
 using LibHandheld.Contracts;
+using LibHandheld.Families.Asus;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
@@ -9,7 +10,6 @@ using LibHandheld.Internal.Windows;
 namespace LibHandheld.Families.RogAlly;
 
 /// <summary>The hardware transports one plugin instance uses; replaced by fakes in tests.</summary>
-/// <param name="Identity">Side-effect-free machine identity reader used for admission and firmware binding.</param>
 /// <param name="Acpi">Shared serialized ATKACPI transport owned by the plugin.</param>
 /// <param name="Vendor">Factory for the exact model's vendor HID transport.</param>
 /// <param name="Aura">Factory for the exact model's lighting transport.</param>
@@ -19,7 +19,6 @@ namespace LibHandheld.Families.RogAlly;
 /// <param name="Delay">Cancellable timing dependency used for hardware write spacing.</param>
 /// <param name="OnAcPower">Optional read-only power-source callback for an injected hardware fixture.</param>
 internal sealed record AllyHardwareServices(
-    IAllyIdentityReader Identity,
     IAsusAcpi Acpi,
     Func<AllyModel, IAllyVendorHid> Vendor,
     Func<AllyModel, IAllyAuraHid> Aura,
@@ -47,7 +46,6 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
 
     private readonly ServicePublications _publications;
 
-    private bool _active;
     private IAllyAuraHid? _aura;
     private AllyOemButtonState? _buttons;
     private ChargeLimitService? _charge;
@@ -56,7 +54,6 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
     private CapabilityDescriptorSet? _descriptorSet;
     private bool _disposed;
     private FanService? _fans;
-    private IDeviceSink? _host;
     private bool _initialized;
     private DeviceRecoveryJournal? _journal;
     private KeyboardOemService? _keyboard;
@@ -84,49 +81,27 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
         _hardware = services;
     }
 
-
     public override bool Suspendable => true;
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptorSet?.Descriptors ?? [];
     internal override IReadOnlyList<CapabilityState> States => _publications.States;
     internal override IReadOnlyList<OemControlDescriptor> OemControls => _publications.OemControls;
     internal override bool DescriptorsChanged => _publications.DescriptorsChanged;
 
-
-    /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
-    private async ValueTask<EngineStartResult> InitializeAsync(
-        EngineStartContext context,
-        CancellationToken cancellationToken)
+    /// <summary>Builds the cycle's services for the detected model, reconciles the journal and acquires them.</summary>
+    private async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(context);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_active)
-        {
-            throw new InvalidOperationException("The plugin already owns a device cycle.");
-        }
-
-        if (AllyModels.ById(context.DeviceDefinitionId) is not { } definition)
+        if (AllyModels.ById(_context.DeviceDefinitionId) is not { } definition)
         {
             throw new InvalidOperationException("WSGM supplied a device definition this package does not own.");
         }
-
 
         DeviceTrace.Info("lifecycle", $"start: definition={definition.DefinitionId}.");
 
         var identity = new AllyIdentityState
         {
-            Snapshot = context.Identity, Model = definition,
-            OnAcPower = _hardware.OnAcPower?.Invoke() ?? WindowsMachineIdentity.OnAcPower()
+            Snapshot = _context.Identity, Model = definition, OnAcPower = OnAcPower()
         };
-        if (identity.Model != definition)
-        {
-            DeviceTrace.Error("lifecycle",
-                $"live identity {identity.Snapshot.BaseboardProduct ?? "<none>"} is not {definition.DefinitionId}.");
-            throw new InvalidOperationException("The live SMBIOS identity no longer matches the detected Ally model.");
-        }
-
-        _host = context.Host;
         _model = definition;
 
         _observedValues.Clear();
@@ -134,42 +109,36 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
         _quiescing = false;
         try
         {
-            _journal = context.Journal;
+            _journal = _context.Journal;
             _buttons = new AllyOemButtonState();
             _vendor = _hardware.Vendor(definition);
             _aura = _hardware.Aura(definition);
             _source = _hardware.Controller(definition, _buttons);
             _motionSource = _hardware.Motion(definition);
-            _vendorEvents = new VendorEventService(_vendor, context.Host, _buttons);
-            _keyboard = new KeyboardOemService(_hardware.Keyboard, context.Host, _buttons);
+            _vendorEvents = new VendorEventService(_vendor, _publications, _buttons);
+            _keyboard = new KeyboardOemService(_hardware.Keyboard, _publications, _buttons);
             _power = new PowerService(_hardware.Acpi, _hardware.Delay, _journal);
             _fans = new FanService(_hardware.Acpi, _hardware.Delay, _journal);
             _charge = new ChargeLimitService(_hardware.Acpi);
             _lighting = new LightingService(_aura);
             _motion = new AllyMotionService(_motionSource);
-            _controller = new ControllerService(_source, _vendor, _motion, _keyboard, _buttons, context.Host,
+            _controller = new ControllerService(_source, _vendor, _motion, _keyboard, _buttons, _publications,
                 _journal)
             {
-                Enabled = context.ControllerManagementEnabled
+                Enabled = _context.ControllerManagementEnabled
             };
 
             // Acquired in this order and released in reverse. The keyboard service precedes the
             // controller, which enables its rear keys, and motion precedes the controller it rides.
             _services = [_vendorEvents, _keyboard, _power, _fans, _charge, _lighting, _motion, _controller];
             BuildCapabilitySurface();
-
-            {
-                await ReconcileOutstandingAsync(identity, cancellationToken).ConfigureAwait(false);
-            }
-
-            await context.Host.PublishDescriptorsAsync(_descriptorSet!, cancellationToken).ConfigureAwait(false);
-            await context.Host.PublishOemControlsAsync(AllyModels.OemControls(definition), cancellationToken)
+            await ReconcileOutstandingAsync(identity, cancellationToken).ConfigureAwait(false);
+            await _publications.PublishDescriptorsAsync(_descriptorSet!, cancellationToken).ConfigureAwait(false);
+            await _publications.PublishOemControlsAsync(AllyModels.OemControls(definition), cancellationToken)
                 .ConfigureAwait(false);
             await DeviceServiceLifecycle.AcquireAllAsync(_services, Context(Deadline.After(TimeSpan.FromSeconds(15))),
                 cancellationToken).ConfigureAwait(false);
-            _active = true;
             await PublishStatesAsync(cancellationToken).ConfigureAwait(false);
-            return CurrentStartResult();
         }
         catch
         {
@@ -180,9 +149,6 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
     }
 
     /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
     internal override ValueTask ApplyHapticOutputAsync(HapticOutputFrame frame, CancellationToken cancellationToken)
     {
         return _controller is null || _quiescing
@@ -190,10 +156,6 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
             : _controller.ApplyHapticsAsync(frame, cancellationToken);
     }
 
-    /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
-    /// <inheritdoc />
     /// <inheritdoc />
     /// <remarks>
     ///     The engine awaits <see cref="ReleaseAsync" /> first. Disposal only releases handles and never writes the
@@ -282,12 +244,7 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
         _quiescing = false;
         if (!_initialized)
         {
-            await InitializeAsync(new EngineStartContext
-            {
-                Host = _publications, Identity = _context.Identity, DeviceDefinitionId = _context.DeviceDefinitionId,
-                StateDirectory = _context.StateDirectory, Journal = _context.Journal, Resources = _context.Resources,
-                ControllerManagementEnabled = _context.ControllerManagementEnabled
-            }, token).ConfigureAwait(false);
+            await InitializeAsync(token).ConfigureAwait(false);
             _initialized = true;
         }
         else
@@ -297,13 +254,10 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
             BuildCapabilitySurface();
             await _publications.PublishDescriptorsAsync(_descriptorSet!, token).ConfigureAwait(false);
             await PublishStatesAsync(token).ConfigureAwait(false);
-            _active = true;
         }
 
         var state = CurrentStartResult();
-        return Set(state.State == EngineOperationalState.Active ? DeviceServiceState.Owned :
-            state.State == EngineOperationalState.Degraded ? DeviceServiceState.Degraded : DeviceServiceState.Passive,
-            state.Reason);
+        return Set(DeviceServiceLifecycle.ServiceState(state), state.Reason);
     }
 
     public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
@@ -311,12 +265,9 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
     {
         _quiescing = true;
         await DeviceServiceLifecycle.ReleaseAllAsync(_services, Context(cycle.Deadline), token).ConfigureAwait(false);
-        _active = false;
         _observedValues.Clear();
         var result = DeviceServiceLifecycle.StopResult(_services);
-        return Set(result.Status == EngineStopStatus.Failed ? DeviceServiceState.Faulted :
-            result.Status == EngineStopStatus.Unverified ? DeviceServiceState.ReleasedUnverified :
-            DeviceServiceState.Idle, result.Reason);
+        return Set(DeviceServiceLifecycle.ServiceState(result), result.Reason);
     }
 
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
@@ -351,20 +302,10 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
         }
         else
         {
-            await ReleaseControllerCoreAsync(deadline, token).ConfigureAwait(false);
+            await _controller.ReleaseControllerAsync(deadline, token).ConfigureAwait(false);
         }
 
         await PublishStatesAsync(token).ConfigureAwait(false);
-    }
-
-    private async ValueTask ReleaseControllerCoreAsync(
-        Deadline deadline,
-        CancellationToken cancellationToken)
-    {
-        if (_controller is not null)
-        {
-            await _controller.ReleaseControllerAsync(deadline, cancellationToken).ConfigureAwait(false);
-        }
     }
 
     private async ValueTask RollBackFailedStartAsync()
@@ -372,11 +313,10 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
         await DeviceServiceLifecycle.RollBackStartAsync(
             _services,
             Context(Deadline.After(TimeSpan.FromSeconds(12))),
-            _host,
+            _publications,
             _descriptorSet).ConfigureAwait(false);
         await DisposeCycleTransportsAsync().ConfigureAwait(false);
         _journal = null;
-        _active = false;
         _descriptorSet = null;
         _services = [];
     }
@@ -393,13 +333,17 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
             _services,
             service => service != _controller || _controller.Enabled,
             "No Ally hardware service could be acquired.",
-            _host);
+            _publications);
+    }
+
+    private bool OnAcPower()
+    {
+        return _hardware.OnAcPower?.Invoke() ?? WindowsMachineIdentity.OnAcPower();
     }
 
     private static AllyHardwareServices CreateWindowsServices()
     {
         return new AllyHardwareServices(
-            new WindowsAllyIdentityReader(),
             new WindowsAsusAcpi(),
             model => new WindowsAllyVendorHid(model.ControllerProductIds),
             model => new WindowsAllyAuraHid(model.ControllerProductIds),

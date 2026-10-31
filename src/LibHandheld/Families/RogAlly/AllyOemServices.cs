@@ -159,6 +159,9 @@ internal sealed class KeyboardOemService(
     private bool _rearEnabled;
     private bool _rearRemapped;
 
+    /// <summary>The keys the hook claims, rebuilt only when the front or rear set changes.</summary>
+    private AllyKeyboardControl[] _watched = [];
+
     public override bool Suspendable => true;
 
     /// <summary>Rear keys while HC's M1/M2 table is applied: the left button sends F17, the right F18.</summary>
@@ -190,8 +193,8 @@ internal sealed class KeyboardOemService(
         }
 
         _front = model.FrontKeyboardControls;
-        UpdateWatch();
-        if (!Watched().Any())
+        UpdateWatch(_rearEnabled, _rearRemapped);
+        if (_watched.Length == 0)
         {
             // No key to claim yet (a classic model without the controller tables): no system-wide hook.
             return Set(DeviceServiceState.Owned);
@@ -223,13 +226,7 @@ internal sealed class KeyboardOemService(
         bool remapped,
         CancellationToken cancellationToken)
     {
-        lock (_gate)
-        {
-            _rearEnabled = enabled;
-            _rearRemapped = remapped;
-        }
-
-        UpdateWatch();
+        UpdateWatch(enabled, remapped);
         if (State is DeviceServiceState.Owned)
         {
             if (enabled && !await keyboard.StartAsync(OnKeyAsync, OnFault, cancellationToken).ConfigureAwait(false))
@@ -266,9 +263,16 @@ internal sealed class KeyboardOemService(
                 return;
             }
 
-            control = Watched().Where(item => item.VirtualKey == key.VirtualKey)
-                .Select(item => (AllyKeyboardControl?)item)
-                .FirstOrDefault();
+            control = null;
+            foreach (var item in _watched)
+            {
+                if (item.VirtualKey == key.VirtualKey)
+                {
+                    control = item;
+                    break;
+                }
+            }
+
             changed = key.Down ? _down.Add(key.VirtualKey) : _down.Remove(key.VirtualKey);
         }
 
@@ -325,18 +329,16 @@ internal sealed class KeyboardOemService(
         _ = Set(DeviceServiceState.Degraded, new CapabilityReason(CapabilityReasonCode.TransportFaulted, detail));
     }
 
-    private void UpdateWatch()
+    private void UpdateWatch(bool rearEnabled, bool rearRemapped)
     {
         lock (_gate)
         {
+            _rearEnabled = rearEnabled;
+            _rearRemapped = rearRemapped;
             _acceptingKeys = true;
-            keyboard.Watch([.. Watched().Select(item => item.VirtualKey)]);
+            _watched = rearEnabled ? [.. _front, .. (rearRemapped ? Rear : NativeRear)] : [.. _front];
+            keyboard.Watch([.. _watched.Select(item => item.VirtualKey)]);
         }
-    }
-
-    private IEnumerable<AllyKeyboardControl> Watched()
-    {
-        return _rearEnabled ? _front.Concat(_rearRemapped ? Rear : NativeRear) : _front;
     }
 
     private void ReleaseHeld()

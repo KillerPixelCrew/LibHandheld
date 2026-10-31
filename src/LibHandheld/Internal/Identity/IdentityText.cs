@@ -1,7 +1,7 @@
 namespace LibHandheld.Internal.Identity;
 
 /// <summary>
-///     Normalization and comparison for identity strings.
+///     Normalization for identity strings.
 /// </summary>
 /// <remarks>
 ///     Firmware strings are hand-entered by vendors and vary in ways that carry no meaning: trailing
@@ -51,23 +51,5 @@ internal static class IdentityText
         }
 
         return new string(buffer[..length]);
-    }
-
-    /// <summary>
-    ///     Compares two identity values after normalization, ignoring case.
-    /// </summary>
-    /// <param name="observed">Value read from the machine.</param>
-    /// <param name="expected">Value declared by a manifest.</param>
-    /// <returns><see langword="true" /> when both normalize to the same non-null value.</returns>
-    public static bool Matches(string? observed, string? expected)
-    {
-        var left = Normalize(observed);
-        var right = Normalize(expected);
-
-        // Two absent values are not a match. A definition that declares an EC firmware gate must not
-        // be satisfied by a machine that reports no EC firmware at all.
-        return left is not null
-               && right is not null
-               && string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -32,7 +32,7 @@ internal static class ClawControllerCodec
         // the RIGHT paddle (M2). Handheld Companion has these two assignments reversed.
         buttons |= IsSet(report[7], 4) ? CanonicalButtons.RearPaddle1 : 0;
         buttons |= IsSet(report[7], 3) ? CanonicalButtons.RearPaddle2 : 0;
-        buttons |= DecodeHat(report[5] & 0x0F);
+        buttons |= HidUsageReader.Hat(report[5] & 0x0F);
 
         // The two front OEM buttons are not in this report (the firmware delivers them as WMI
         // events), so they are merged in from the latch that receives those events.
@@ -49,20 +49,6 @@ internal static class ClawControllerCodec
             LeftTrigger = report[8] / 255f,
             RightTrigger = report[9] / 255f
         };
-    }
-
-    public static byte[] EncodeRumble(byte weak, byte strong, int reportLength = 11)
-    {
-        if (reportLength < 11)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(reportLength),
-                "The Claw rumble payload needs at least 11 bytes.");
-        }
-
-        var report = new byte[reportLength];
-        WriteRumbleReport(report, weak, strong);
-        return report;
     }
 
     public static void WriteRumbleReport(Span<byte> report, byte weak, byte strong)
@@ -87,22 +73,6 @@ internal static class ClawControllerCodec
     private static float Axis(byte value)
     {
         return Math.Clamp((value - 128) / 127f, -1, 1);
-    }
-
-    private static CanonicalButtons DecodeHat(int hat)
-    {
-        return hat switch
-        {
-            0 => CanonicalButtons.DPadUp,
-            1 => CanonicalButtons.DPadUp | CanonicalButtons.DPadRight,
-            2 => CanonicalButtons.DPadRight,
-            3 => CanonicalButtons.DPadRight | CanonicalButtons.DPadDown,
-            4 => CanonicalButtons.DPadDown,
-            5 => CanonicalButtons.DPadDown | CanonicalButtons.DPadLeft,
-            6 => CanonicalButtons.DPadLeft,
-            7 => CanonicalButtons.DPadLeft | CanonicalButtons.DPadUp,
-            _ => CanonicalButtons.None
-        };
     }
 }
 

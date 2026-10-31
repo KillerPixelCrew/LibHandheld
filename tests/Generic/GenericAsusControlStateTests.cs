@@ -1,5 +1,5 @@
+using LibHandheld.Families.Asus;
 using LibHandheld.Families.Generic;
-using LibHandheld.Families.RogAlly;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Testing;

@@ -1,4 +1,5 @@
 using LibHandheld.Contracts;
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Windows;
 
@@ -20,12 +21,7 @@ internal sealed class ZotacWheelSource : IProfiledOemSource
     private Action<string, CanonicalButtons, bool>? _publish;
 
     internal static IReadOnlyList<OemControlDescriptor> Controls { get; } = Wheels.Select(wheel =>
-        new OemControlDescriptor
-        {
-            ControlId = wheel.Id,
-            Display = new CapabilityDisplay { Key = DisplayKey.Custom, CustomText = wheel.Label },
-            Placement = OemControlPlacement.Front, RequiresControllerAcquisition = true
-        }).ToArray();
+        CapabilityDescriptors.OemControl(wheel.Id, wheel.Label, OemControlPlacement.Front)).ToArray();
 
     public bool IsConnected => _source.IsConnected;
 

@@ -12,7 +12,6 @@ internal sealed class DeviceRecoveryJournal
     private string? _path;
 
     public IReadOnlyList<RecoveryOriginal> OutstandingEntries => [.. _originals.Values];
-    public string DiagnosticState => _originals.Count == 0 ? "healthy" : "pending";
 
     public static async ValueTask<DeviceRecoveryJournal> OpenAsync(string directory, CancellationToken token)
     {
@@ -86,11 +85,6 @@ internal sealed class DeviceRecoveryJournal
     public T? OriginalStateFor<T>(string id) where T : class
     {
         return EntryFor<T>(id)?.OriginalState;
-    }
-
-    public T? PendingOriginalFor<T>(string id) where T : class
-    {
-        return OriginalStateFor<T>(id);
     }
 
     public bool HasUnrestoredMutation(string id)
@@ -170,12 +164,13 @@ internal sealed class DeviceRecoveryJournal
             token.ThrowIfCancellationRequested();
             if (HoldsOriginal(id, firmware) && EntryFor<T>(id) is { } existing)
             {
+                // Only this cycle's in-memory capture changes; the persisted originals stay as they are.
                 _cycleCaptures[(id, firmware)] = _originals[id];
-                await SaveAsync(token).ConfigureAwait(false);
                 return new DeviceRecoveryOperation<T>(existing, false);
             }
 
-            if (_originals.Remove(id))
+            var retired = _originals.Remove(id);
+            if (retired)
             {
                 Log($"Retired recovery original for '{id}': firmware changed; nothing restored.");
             }
@@ -205,7 +200,11 @@ internal sealed class DeviceRecoveryJournal
                 if (state is null)
                 {
                     Log($"No readable recovery original for '{id}'; hardware write remains available.");
-                    await SaveAsync(token).ConfigureAwait(false);
+                    if (retired)
+                    {
+                        await SaveAsync(token).ConfigureAwait(false);
+                    }
+
                     return null;
                 }
 
@@ -238,34 +237,16 @@ internal sealed class DeviceRecoveryJournal
         }
     }
 
-    /// <summary>Classifies a restore by its readback: matched, mismatched, or not observable.</summary>
-    internal static DeviceRecoveryStatus RestoreStatus(bool? verified)
-    {
-        return verified switch
-        {
-            true => DeviceRecoveryStatus.RestoredVerified,
-            false => DeviceRecoveryStatus.RestoreFailed,
-            null => DeviceRecoveryStatus.RestoredUnverified
-        };
-    }
-
-    /// <summary>An accepted restore retires the original; a failed restore keeps it for crash recovery.</summary>
-    public async ValueTask SetStatusAsync(string id, DeviceRecoveryStatus status, CancellationToken token)
+    /// <summary>An accepted restore retires the original; a failed restore makes no call and keeps it.</summary>
+    public async ValueTask MarkRestoredAsync(string id, CancellationToken token)
     {
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (!_originals.TryGetValue(id, out var original))
+            if (_originals.Remove(id))
             {
-                return;
+                await SaveAsync(token).ConfigureAwait(false);
             }
-
-            if (status is DeviceRecoveryStatus.RestoredVerified or DeviceRecoveryStatus.RestoredUnverified)
-            {
-                _originals.Remove(id);
-            }
-
-            await SaveAsync(token).ConfigureAwait(false);
         }
         finally
         {
@@ -350,11 +331,3 @@ internal sealed record DeviceRecoveryEntry<T>(string ServiceId, string FirmwareI
     where T : class;
 
 internal sealed record DeviceRecoveryOperation<T>(DeviceRecoveryEntry<T> Entry, bool Opened) where T : class;
-
-internal enum DeviceRecoveryStatus
-{
-    Pending,
-    RestoredVerified,
-    RestoredUnverified,
-    RestoreFailed
-}

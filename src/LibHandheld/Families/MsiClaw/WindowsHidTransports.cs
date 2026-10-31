@@ -35,20 +35,11 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
             throw new ArgumentOutOfRangeException(nameof(length));
         }
 
-        await Serializer.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        byte[] profile = [];
+        await ExchangeAsync(async stream =>
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            var endpoint = FindMcu()
-                           ?? throw new FileNotFoundException(
-                               "The Claw MCU HID collection was not present.");
-            await using var stream = HidDevices.OpenStream(endpoint);
-            var request = CreateRequest(0x04);
-            request[5] = 1;
-            request[6] = checked((byte)(address >> 8));
-            request[7] = checked((byte)(address & 0xFF));
-            request[8] = length;
-            await WriteReportAsync(stream, request, cancellationToken).ConfigureAwait(false);
+            await WriteReportAsync(stream, CreateProfileRequest(0x04, address, length), cancellationToken)
+                .ConfigureAwait(false);
             var response = await ReadMatchingAsync(
                 stream,
                 report => report[0] == 0x10
@@ -63,12 +54,9 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
                 throw new InvalidDataException("ReadProfile returned an invalid payload length.");
             }
 
-            return [.. response.AsSpan(9, length)];
-        }
-        finally
-        {
-            Serializer.Release();
-        }
+            profile = [.. response.AsSpan(9, length)];
+        }, cancellationToken).ConfigureAwait(false);
+        return profile;
     }
 
     /// <inheritdoc />
@@ -83,48 +71,24 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
             throw new ArgumentOutOfRangeException(nameof(payload));
         }
 
-        await Serializer.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        await ExchangeAsync(async stream =>
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            var endpoint = FindMcu()
-                           ?? throw new FileNotFoundException(
-                               "The Claw MCU HID collection was not present.");
-            await using var stream = HidDevices.OpenStream(endpoint);
-            var request = CreateRequest(0x21);
-            request[5] = 1;
-            request[6] = checked((byte)(address >> 8));
-            request[7] = checked((byte)(address & 0xFF));
-            request[8] = checked((byte)payload.Length);
+            var request = CreateProfileRequest(0x21, address, checked((byte)payload.Length));
             payload.CopyTo(request.AsMemory(9));
             await WriteReportAsync(stream, request, cancellationToken).ConfigureAwait(false);
             await AwaitAcknowledgementAsync(stream, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            Serializer.Release();
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async ValueTask SyncToRomAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        await Serializer.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        await ExchangeAsync(async stream =>
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            var endpoint = FindMcu()
-                           ?? throw new FileNotFoundException(
-                               "The Claw MCU HID collection was not present.");
-            await using var stream = HidDevices.OpenStream(endpoint);
             await WriteReportAsync(stream, CreateRequest(0x22), cancellationToken).ConfigureAwait(false);
             await AwaitAcknowledgementAsync(stream, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            Serializer.Release();
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -209,6 +173,29 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>Runs one profile exchange on a fresh MCU stream while holding the transport gate.</summary>
+    /// <remarks>
+    ///     <see cref="SwitchModeAsync" /> keeps its own copy of this admission: it checks the location and
+    ///     closes the stream before it waits for re-enumeration.
+    /// </remarks>
+    private async ValueTask ExchangeAsync(Func<FileStream, ValueTask> exchange, CancellationToken cancellationToken)
+    {
+        await Serializer.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var endpoint = FindMcu()
+                           ?? throw new FileNotFoundException(
+                               "The Claw MCU HID collection was not present.");
+            await using var stream = HidDevices.OpenStream(endpoint);
+            await exchange(stream).ConfigureAwait(false);
+        }
+        finally
+        {
+            Serializer.Release();
+        }
+    }
+
     /// <summary>
     ///     Waits up to a second for the MCU's <c>0x06</c> acknowledgement. HC's <c>WriteReport</c>
     ///     waits for nothing, so a missing acknowledgement is logged and the write stands.
@@ -235,6 +222,17 @@ internal sealed class WindowsClawMcuTransport : IClawMcuTransport
         request[0] = 0x0F;
         request[3] = 0x3C;
         request[4] = command;
+        return request;
+    }
+
+    /// <summary>A profile read or write request: profile 1, the big-endian address and the byte count.</summary>
+    private static byte[] CreateProfileRequest(byte command, ushort address, byte length)
+    {
+        var request = CreateRequest(command);
+        request[5] = 1;
+        request[6] = checked((byte)(address >> 8));
+        request[7] = checked((byte)(address & 0xFF));
+        request[8] = length;
         return request;
     }
 

@@ -9,28 +9,35 @@ internal sealed partial class ProfiledPowerService
 {
     private bool IndependentPowerLimits => model?.IndependentPowerLimits == true;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => model is null
-        ? []
-        :
-        [
-            ProviderControls.Integer(CapabilityIds.PowerSustained, CapabilityRole.PowerSustainedLimit,
-                    DisplayKey.SustainedPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true,
-                    false)
-                with
-                {
-                    PairedPowerLimitId = CapabilityIds.PowerBoost, PowerPresets = model.PowerPresets
-                },
-            ProviderControls.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
-                DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true, false),
-            .. IndependentPowerLimits
-                ? new[]
-                {
-                    ProviderControls.Integer(CapabilityIds.PowerFast, CapabilityRole.PowerFastLimit,
-                        DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt,
-                        true, false) with { Display = CapabilityDescriptors.Label("Fast PPT limit") }
-                }
-                : []
-        ];
+    // The model is fixed for the service's lifetime, so its controls are described once.
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors ??= Describe();
+
+    private IReadOnlyList<CapabilityDescriptor> Describe()
+    {
+        return model is null
+            ? []
+            :
+            [
+                ProviderControls.Integer(CapabilityIds.PowerSustained, CapabilityRole.PowerSustainedLimit,
+                        DisplayKey.SustainedPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt,
+                        true, false)
+                    with
+                    {
+                        PairedPowerLimitId = CapabilityIds.PowerBoost, PowerPresets = model.PowerPresets
+                    },
+                ProviderControls.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
+                    DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt, true,
+                    false),
+                .. IndependentPowerLimits
+                    ? new[]
+                    {
+                        ProviderControls.Integer(CapabilityIds.PowerFast, CapabilityRole.PowerFastLimit,
+                            DisplayKey.BoostPowerLimit, model.MinimumWatts, model.MaximumWatts, CapabilityUnit.Watt,
+                            true, false) with { Display = CapabilityDescriptors.Label("Fast PPT limit") }
+                    }
+                    : []
+            ];
+    }
 
     internal override IReadOnlyList<CapabilityState> States =>
     [
@@ -131,44 +138,14 @@ internal sealed partial class ProfiledPowerService
 
 internal sealed partial class ProfiledFanService
 {
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors
-    {
-        get
-        {
-            List<CapabilityDescriptor> descriptors =
-            [
-                new()
-                {
-                    CapabilityId = CapabilityIds.FanMode, Role = CapabilityRole.FanMode,
-                    ValueKind = CapabilityValueKind.Choice,
-                    Display = new CapabilityDisplay { Key = DisplayKey.FanMode },
-                    SupportsWrite = true, Persistence = CapabilityPersistence.Volatile,
-                    Choices = CapabilityDescriptors.Choices(["automatic", "custom", "full-speed"])
-                },
-                ProviderControls.Integer("fan.duty", CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100,
-                    CapabilityUnit.Percent, true, false)
-            ];
-            if (profile.RpmHighAddress is not null)
-            {
-                descriptors.Add(ProviderControls.Integer(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
-                    DisplayKey.FanSpeed, 0, 65535, CapabilityUnit.Rpm, false));
-            }
-
-            if (profile.ObserveDuty)
-            {
-                descriptors.Add(ProviderControls.Integer("fan.measured-duty", CapabilityRole.Telemetry,
-                    DisplayKey.FanSpeed, 0, 100, CapabilityUnit.Percent, false));
-            }
-
-            return descriptors;
-        }
-    }
+    // The EC profile is fixed for the service's lifetime, so its controls are described once.
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors ??= Describe();
 
     internal override IReadOnlyList<CapabilityState> States =>
     [
         ProviderControls.State(CapabilityIds.FanMode, State == DeviceServiceState.Owned,
             Mode is null ? null : CapabilityValue.Choice(Mode), ObservedAt, Reason),
-        ProviderControls.State("fan.duty", State == DeviceServiceState.Owned,
+        ProviderControls.State(CapabilityIds.FanDuty, State == DeviceServiceState.Owned,
             Duty is { } duty ? CapabilityValue.Integer(duty) : null, ObservedAt, Reason),
         .. !profile.ObserveDuty
             ? Array.Empty<CapabilityState>()
@@ -186,6 +163,31 @@ internal sealed partial class ProfiledFanService
                     Rpm is { } rpm ? CapabilityValue.Integer(rpm) : null, RpmObservedAt, Reason)
             }
     ];
+
+    private IReadOnlyList<CapabilityDescriptor> Describe()
+    {
+        List<CapabilityDescriptor> descriptors =
+        [
+            CapabilityDescriptors.Choice(CapabilityIds.FanMode, CapabilityRole.FanMode,
+                new CapabilityDisplay { Key = DisplayKey.FanMode },
+                CapabilityDescriptors.Choices(["automatic", "custom", "full-speed"]), read: false, write: true),
+            ProviderControls.Integer(CapabilityIds.FanDuty, CapabilityRole.FanDuty, DisplayKey.FanSpeed, 0, 100,
+                CapabilityUnit.Percent, true, false)
+        ];
+        if (profile.RpmHighAddress is not null)
+        {
+            descriptors.Add(ProviderControls.Integer(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
+                DisplayKey.FanSpeed, 0, 65535, CapabilityUnit.Rpm, false));
+        }
+
+        if (profile.ObserveDuty)
+        {
+            descriptors.Add(ProviderControls.Integer("fan.measured-duty", CapabilityRole.Telemetry,
+                DisplayKey.FanSpeed, 0, 100, CapabilityUnit.Percent, false));
+        }
+
+        return descriptors;
+    }
 
     internal override ValueTask RefreshAsync(CancellationToken token)
     {
@@ -208,7 +210,7 @@ internal sealed partial class ProfiledFanService
         try
         {
             await WriteAsync(command.CapabilityId == CapabilityIds.FanMode ? value.ChoiceValue! : "custom",
-                command.CapabilityId == "fan.duty" ? value.IntegerValue : null, firmware, token,
+                command.CapabilityId == CapabilityIds.FanDuty ? value.IntegerValue : null, firmware, token,
                 () => dispatched = true).ConfigureAwait(false);
             return CommandResults.Applied(command);
         }
@@ -221,7 +223,7 @@ internal sealed partial class ProfiledFanService
 
 internal sealed partial class ProfiledControllerService
 {
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors { get; } =
     [
         ProviderControls.Ownership(CapabilityIds.Controller, CapabilityRole.ControllerSource, DisplayKey.Controller),
         new()
@@ -255,7 +257,7 @@ internal sealed partial class ProfiledMotionService
 {
     private DateTimeOffset? _startedAt;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors { get; } =
         [ProviderControls.Ownership(CapabilityIds.Motion, CapabilityRole.MotionSource, DisplayKey.Motion)];
 
     internal override IReadOnlyList<CapabilityState> States =>
