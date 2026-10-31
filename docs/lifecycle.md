@@ -26,8 +26,9 @@ redetect or switch hardware. The host owns virtual-target selection and OEM acti
 that a dispatched native write did nothing. TimedOut and Indeterminate require resolution or an
 explicit fresh action; never automatically replay them.
 
-Call Stop in finally, then dispose. Clean means restoration was confirmed; Unverified means cleanup
-lacks full independent confirmation; Failed means a restore failed. Record the stop reason
+Call Stop in finally, then dispose. Clean means every restore write was accepted (a readback afterwards
+is logged and gates nothing); Unverified means an original was unknown or a recovery entry is still outstanding;
+Failed means a restore failed. Record the stop reason
 separately from command outcomes.
 
 The caller supplies persistent storage. One `recovery.json` holds service identities and captured

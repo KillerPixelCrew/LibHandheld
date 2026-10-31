@@ -85,7 +85,7 @@ Every button a handheld may physically have. The canonical state represents the 
 handheld without assuming a virtual target. A target consumes only what it genuinely supports: the
 Steam Deck composite takes rear paddles and native motion, Xbox 360 takes neither, and nothing is
 synthesized to fill the gap. Gyro is passed through where the target supports motion and simply
-absent where it does not â€” it is never converted into stick or mouse movement, which is the line
+absent where it does not; it is never converted into stick or mouse movement, which is the line
 between calibration and remapping.
 
 | Value             | Numeric value | Meaning                          |
@@ -150,7 +150,7 @@ invents a control.
 | `Single LeftStickForce { get; init; }`                        | Left stick capacitive contact strength, from 0 to 1.                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `Single RightStickForce { get; init; }`                       | Right stick capacitive contact strength, from 0 to 1.                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `MotionSample? Motion { get; init; }`                         | Motion, when the device has a sensor and it is available.                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `CanonicalControllerSample Neutral(DateTimeOffset timestamp)` | The neutral sample: nothing held, every axis centred. Published to the virtual target whenever forwarding stops â€” UI capture, target removal, game exit, suspend, disconnect, plugin disable, or fault. Without it the last forwarded state stays latched and the game keeps seeing a held control. `timestamp`: Timestamp to stamp on the neutral sample. A sample with every control at rest.                                                                      |
+| `CanonicalControllerSample Neutral(DateTimeOffset timestamp)` | The neutral sample: nothing held, every axis centred. Published to the virtual target whenever forwarding stops: UI capture, target removal, game exit, suspend, disconnect, plugin disable, or fault. Without it the last forwarded state stays latched and the game keeps seeing a held control. `timestamp`: Timestamp to stamp on the neutral sample. A sample with every control at rest.                                                                         |
 
 ## CapabilityApplyTiming
 
@@ -388,7 +388,7 @@ Namespace: `LibHandheld.Contracts`.
 The live state of one capability as reported by its native owner. Versioned separately from the
 descriptor because it changes constantly while the descriptor does not. It carries only what the
 plugin observed; WSGM's desired value and UI progress live in WSGM's capability projection and are
-never mixed in here â€” a plugin does not own what the user asked for.
+never mixed in here; a plugin does not own what the user asked for.
 
 | Member                                         | Contract                                                                                                                                                                                       |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
