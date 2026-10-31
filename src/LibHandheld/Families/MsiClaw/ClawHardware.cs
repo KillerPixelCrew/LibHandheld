@@ -2,6 +2,7 @@ using System.Globalization;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Transports;
 
 namespace LibHandheld.Families.MsiClaw;
 
@@ -315,6 +316,7 @@ internal interface IFirmwareChordSuppressor : IAsyncDisposable
 /// <param name="Delay">Cancelable firmware pacing delay; tests may replace wall-time waiting.</param>
 /// <param name="OnAcPower">Optional read-only power-source callback for an injected hardware fixture.</param>
 /// <param name="Time">Optional clock for the TDP watchdog's ten-second window; the system clock by default.</param>
+/// <param name="OpenMsr">Opens PawnIO MSR 0x610 for the direct power paths; null offers only the WMI path.</param>
 internal sealed record ClawHardwareServices(
     IMsiWmiTransport Wmi,
     IMsiOemEventSource OemEvents,
@@ -325,4 +327,5 @@ internal sealed record ClawHardwareServices(
     OemButtonLatch OemButtons,
     Func<TimeSpan, CancellationToken, Task> Delay,
     Func<bool>? OnAcPower = null,
-    TimeProvider? Time = null);
+    TimeProvider? Time = null,
+    Func<ICpuPowerTransport>? OpenMsr = null);

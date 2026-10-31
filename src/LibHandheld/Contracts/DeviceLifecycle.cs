@@ -5,6 +5,9 @@ public sealed record HandheldResources
 {
     /// <summary>The pinned InpOut library, or null when it was not deployed.</summary>
     public string? InpOutPath { get; init; }
+
+    /// <summary>The pinned Intel KX helper for MCHBAR power limits, or null when it was not deployed.</summary>
+    public string? IntelKxPath { get; init; }
 }
 
 /// <summary>A supported exact model and its stable family and glyph identities.</summary>
@@ -56,6 +59,12 @@ public enum DeviceHardwareAccess
 
     /// <summary>Signed PawnIO modules provide embedded-controller or CPU access.</summary>
     PawnIo = 1,
+
+    /// <summary>
+    ///     The pinned Intel KX helper writes the MCHBAR power mirror. Its HwRwDrv driver loads only with
+    ///     Memory Integrity and the vulnerable-driver blocklist off.
+    /// </summary>
+    IntelKx = 2,
 
     /// <summary>The pinned InpOut helper provides Steam Deck EC port and MMIO access.</summary>
     InpOut = 4

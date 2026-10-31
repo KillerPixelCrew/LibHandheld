@@ -1,6 +1,8 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Lifecycle;
+using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -167,6 +169,18 @@ internal sealed partial class ClawDeviceEngine
                 cancellationToken);
         }
 
+        if (command.CapabilityId == CapabilityIds.PowerBackend)
+        {
+            return SelectPowerPathAsync(command, identity, power, cancellationToken);
+        }
+
+        if (command.CapabilityId is CapabilityIds.PowerSustained or CapabilityIds.PowerBoost
+            && _direct is { Direct: true } direct)
+        {
+            var (sustained, boost) = Limits();
+            return WriteDirectLimitsAsync(command, identity, power, direct, sustained, boost, cancellationToken);
+        }
+
         return command.CapabilityId switch
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost => PowerCommand((journalCommand, token) =>
@@ -226,11 +240,115 @@ internal sealed partial class ClawDeviceEngine
         };
     }
 
+    /// <summary>Opens the WMI pair to the model maximum once, then writes the limits to the CPU registers.</summary>
+    private async ValueTask<CapabilityCommandResult> WriteDirectLimitsAsync(CapabilityCommand command,
+        ClawIdentityState identity, ClawPowerCapability power, ClawDirectPowerService direct, int sustained, int boost,
+        CancellationToken cancellationToken)
+    {
+        if (!direct.FirmwareOpened)
+        {
+            var opened = await PowerLimitsAsync(command, identity, power, Model.MaximumWatts, Model.MaximumWatts,
+                cancellationToken).ConfigureAwait(false);
+            if (opened.Outcome != CommandOutcome.Applied)
+            {
+                return opened;
+            }
+
+            direct.FirmwareOpened = true;
+            DeviceTrace.Change(ClawServiceIds.Power, "power-path",
+                $"WMI opened to {Model.MaximumWatts}/{Model.MaximumWatts} W; the CPU registers carry the limits.");
+        }
+
+        var dispatched = false;
+        try
+        {
+            await direct.WriteAsync(sustained, boost, ClawDirectPowerService.Binding(identity), () => dispatched = true,
+                cancellationToken).ConfigureAwait(false);
+            return CommandResults.Applied(command);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return CommandResults.TransportFailure(command, dispatched, exception);
+        }
+    }
+
+    /// <summary>Writes a WMI pair, journalling the power original first like every power command.</summary>
+    private ValueTask<CapabilityCommandResult> PowerLimitsAsync(CapabilityCommand command, ClawIdentityState identity,
+        ClawPowerCapability power, int sustained, int boost, CancellationToken cancellationToken)
+    {
+        return JournalCommandAsync(ClawServiceIds.Power, identity.RecoveryBinding, command,
+            async token => ClawRecoveryState.Power(await power.ReadAsync(token).ConfigureAwait(false)),
+            (journalCommand, token) => power.ApplyLimitsAsync(journalCommand, sustained, boost, token),
+            cancellationToken);
+    }
+
+    /// <summary>Switches between WMI, PawnIO and KX and re-applies the published pair through the new path.</summary>
+    /// <remarks>A pair that could not be re-applied is no longer known, so it is published as unknown.</remarks>
+    private async ValueTask<CapabilityCommandResult> SelectPowerPathAsync(CapabilityCommand command,
+        ClawIdentityState identity, ClawPowerCapability power, CancellationToken cancellationToken)
+    {
+        if (_direct is not { } direct || !direct.Paths.TryParse(command, out var path))
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
+                "This power-limit path is not available on this device.");
+        }
+
+        if (path == direct.Paths.Selected)
+        {
+            return CommandResults.Applied(command);
+        }
+
+        var sustained = _observedValues.Value(CapabilityIds.PowerSustained)?.IntegerValue;
+        var boost = _observedValues.Value(CapabilityIds.PowerBoost)?.IntegerValue;
+        var binding = ClawDirectPowerService.Binding(identity);
+        try
+        {
+            await direct.Paths.SelectAsync(path, binding, cancellationToken).ConfigureAwait(false);
+            if (path == IntelPowerPath.Firmware)
+            {
+                await direct.RestoreMsrAsync(binding, cancellationToken).ConfigureAwait(false);
+                direct.FirmwareOpened = false;
+            }
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return CommandResults.TransportFailure(command, true, exception);
+        }
+
+        if (sustained is { } pl1 && boost is { } pl2)
+        {
+            var reapply = command with
+            {
+                CapabilityId = CapabilityIds.PowerSustained, RequestedValue = CapabilityValue.Integer(pl1),
+                PairedPowerLimitWatts = pl2
+            };
+            var result = direct.Direct
+                ? await WriteDirectLimitsAsync(reapply, identity, power, direct, pl1, pl2, cancellationToken)
+                    .ConfigureAwait(false)
+                : await PowerLimitsAsync(reapply, identity, power, pl1, pl2, cancellationToken).ConfigureAwait(false);
+            if (result.Outcome == CommandOutcome.Applied)
+            {
+                _observedValues.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(pl1));
+                _observedValues.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(pl2));
+            }
+            else
+            {
+                _observedValues.Forget(CapabilityIds.PowerSustained);
+                _observedValues.Forget(CapabilityIds.PowerBoost);
+                DeviceTrace.Warn(ClawServiceIds.Power,
+                    $"Limits were not re-applied after the path change: {result.Reason?.Detail}");
+            }
+        }
+
+        return CommandResults.Applied(command);
+    }
+
     private DeviceServiceStatus? ServiceForCapability(string capabilityId)
     {
         return capabilityId switch
         {
             CapabilityIds.PowerSustained or CapabilityIds.PowerBoost or CapabilityIds.Scenario => _power,
+            CapabilityIds.PowerBackend => _direct,
             CapabilityIds.ChargeLimit or CapabilityIds.ChargeProtection => _chargeLimit,
             CapabilityIds.FanMode or CapabilityIds.FanCurve or CapabilityIds.FanDuty => _fans,
             CapabilityIds.FanRpm or CapabilityIds.Temperature => _telemetry,

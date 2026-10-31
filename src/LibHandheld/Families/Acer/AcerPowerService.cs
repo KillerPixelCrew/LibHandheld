@@ -4,6 +4,7 @@ using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Transports;
 
 namespace LibHandheld.Families.Acer;
 
@@ -16,33 +17,56 @@ namespace LibHandheld.Families.Acer;
 ///     6/10. The other fields in the 25-byte profile snapshot are opaque and must survive edits.
 ///     Maxima come from firmware selectors 2/4. The PL1 floor is the lower of selector 1 and the
 ///     attended 8 W. The manual profile and active mode have separate firmware-bound recovery records.
+///     The user picks the power-limit path (<see cref="IntelPowerPaths" />). Firmware writes PL1/PL2 into
+///     the Manual profile. PawnIO and KX open Manual once to the firmware maxima and write MSR 0x610, KX
+///     also the MCHBAR mirror; Predator Sense lags in game like the EC path, and the EC never changed the
+///     register (POWER_LIMIT_TESTS.md). Stock modes stay EC-owned on every path.
 /// </remarks>
-internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec)
+internal sealed class AcerPowerService(
+    ProfiledFeatureContext context,
+    IAcerLease<IAcerEcTransport> ec,
+    Func<ICpuPowerTransport>? openCpu = null)
     : ProfiledFeatureService("acer-power")
 {
     private const string ModeId = CapabilityIds.Scenario;
     private const string ProfileRecoveryId = "acer.manual-profile";
     private const string ModeRecoveryId = "acer.operating-mode";
+    private const string CpuRecoveryId = "acer.cpu-power";
+    private const int ManualMode = 3;
 
     // Selector 1 advertises 10 W, but Manual stores 8 W and the maintainer confirmed it runs on the
     // PA08-I51. Intel's Arc G3 configurable TDP also starts at 8 W.
     private const int AttendedMinimumWatts = 8;
+
     private readonly ObservedValues _observed = new();
+    private readonly IntelPowerPaths _paths = new(context.Journal, "acer-power", hasFirmware: true);
     private IAcerEcTransport? _ec;
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private int? _mode;
     private bool _unknownOriginalChanged;
+    private ICpuPowerTransport? _cpu;
+    private CpuPowerLimits? _cpuWritten;
+    private bool _cpuDriftReported;
+    private bool _manualOpened;
+    private int _maximum;
+    private int _boostMaximum;
 
     /// <summary>Creates the service over its own EC lane, for fixtures and standalone use.</summary>
-    internal AcerPowerService(ProfiledFeatureContext context, Func<IAcerEcTransport?> open)
-        : this(context, new AcerLease<IAcerEcTransport>(open))
+    internal AcerPowerService(ProfiledFeatureContext context, Func<IAcerEcTransport?> open,
+        Func<ICpuPowerTransport>? openCpu = null)
+        : this(context, new AcerLease<IAcerEcTransport>(open), openCpu)
     {
     }
 
+    /// <summary>Whether PL1/PL2 edits go to the CPU register instead of the EC's Manual profile.</summary>
+    internal bool DirectCpuPower => _cpu is not null && _maximum > 0 && _paths.Direct;
+
     internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors;
     internal override IReadOnlyList<CapabilityState> States => _descriptors.Select(item =>
-        ProviderControls.State(item.CapabilityId, State == DeviceServiceState.Owned,
-            _observed.Value(item.CapabilityId), _observed.Time(item.CapabilityId), Reason)).ToArray();
+        item.CapabilityId == CapabilityIds.PowerBackend
+            ? _paths.State(State == DeviceServiceState.Owned, Reason)
+            : ProviderControls.State(item.CapabilityId, State == DeviceServiceState.Owned,
+                _observed.Value(item.CapabilityId), _observed.Time(item.CapabilityId), Reason)).ToArray();
     public override bool Suspendable => true;
 
     /// <summary>Opens EC access, fixes advertised visibility on first acquisition, then reconciles prior originals.</summary>
@@ -62,6 +86,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
             return Set(DeviceServiceState.Passive, Missing("The Atlas EC HID collection is absent."));
         }
 
+        _cpu = OpenCpu();
+        _paths.Acquire(context.Resources.IntelKxPath, _cpu is not null);
         if (_descriptors.Count == 0)
         {
             _descriptors = BuildDescriptors(token);
@@ -71,8 +97,36 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
             RestoreProfileAsync, token).ConfigureAwait(false);
         await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
             RestoreModeAsync, token).ConfigureAwait(false);
+        await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
+            RestoreCpuAsync, token).ConfigureAwait(false);
+        await _paths.ResumeAsync(context.Firmware, token).ConfigureAwait(false);
         ReadCurrent(token);
         return Set(DeviceServiceState.Owned);
+    }
+
+    /// <summary>Opens the CPU register path; a locked register or missing module keeps the EC path.</summary>
+    private ICpuPowerTransport? OpenCpu()
+    {
+        if (openCpu is null)
+        {
+            return null;
+        }
+
+        ICpuPowerTransport? cpu = null;
+        try
+        {
+            cpu = openCpu();
+            var limits = cpu.ReadLimits();
+            DeviceTrace.Change(ServiceId, "cpu-power",
+                $"CPU-direct power limits active: MSR 0x610 reads PL1 {limits.SustainedWatts:0.###} W, PL2 {limits.BoostWatts:0.###} W.");
+            return cpu;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
+        {
+            cpu?.Dispose();
+            DeviceTrace.Warn(ServiceId, $"CPU-direct power limits unavailable, using EC limits: {exception.Message}");
+            return null;
+        }
     }
 
     /// <summary>Re-reads the active mode and its profile limits, on the observation pass and after each command.</summary>
@@ -85,6 +139,7 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         if (_ec is not null && State == DeviceServiceState.Owned)
         {
             ReadCurrent(token);
+            _paths.Refresh();
         }
 
         return ValueTask.CompletedTask;
@@ -122,6 +177,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
             var boostMaximum = ReadLimit(selector: 4, token);
             if (minimum > 0 && maximum >= minimum && boostMaximum >= maximum && boostMaximum <= 200)
             {
+                _maximum = maximum;
+                _boostMaximum = boostMaximum;
                 descriptors.Add(ProviderControls.Integer(CapabilityIds.PowerSustained,
                     CapabilityRole.PowerSustainedLimit, DisplayKey.SustainedPowerLimit, minimum, maximum,
                     CapabilityUnit.Watt, write: true) with
@@ -155,6 +212,11 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
         {
             DeviceTrace.Warn(ServiceId, $"Firmware power limits unavailable: {exception.Message}");
+        }
+
+        if (_maximum > 0 && _paths.Descriptor is { } path)
+        {
+            descriptors.Insert(0, path);
         }
 
         return descriptors;
@@ -222,6 +284,35 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         {
             DeviceTrace.Warn(ServiceId, $"Active power profile unavailable: {exception.Message}");
         }
+
+        if (_cpuWritten is { } written && _mode == ManualMode && _cpu is not null)
+        {
+            ReadCpu(written);
+        }
+    }
+
+    /// <summary>Publishes the register's limits while it governs, and logs once if firmware changed them.</summary>
+    private void ReadCpu(CpuPowerLimits written)
+    {
+        try
+        {
+            var current = _cpu!.ReadLimits();
+            _observed.Read(CapabilityIds.PowerSustained, CapabilityValue.Integer((int)Math.Round(current.SustainedWatts)));
+            _observed.Read(CapabilityIds.PowerBoost, CapabilityValue.Integer((int)Math.Round(current.BoostWatts)));
+            var drifted = Math.Abs(current.SustainedWatts - written.SustainedWatts) > 0.5
+                          || Math.Abs(current.BoostWatts - written.BoostWatts) > 0.5;
+            if (drifted && !_cpuDriftReported)
+            {
+                _cpuDriftReported = true;
+                DeviceTrace.Warn(ServiceId,
+                    $"Firmware changed MSR 0x610 from PL1 {written.SustainedWatts:0.###}/PL2 {written.BoostWatts:0.###} W "
+                    + $"to {current.SustainedWatts:0.###}/{current.BoostWatts:0.###} W.");
+            }
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
+        {
+            DeviceTrace.Warn(ServiceId, $"CPU power limits unavailable: {exception.Message}");
+        }
     }
 
     /// <summary>Reads the active firmware mode; values above Manual are unknown.</summary>
@@ -254,6 +345,11 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
         if (_ec is null || State != DeviceServiceState.Owned)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing, "Atlas EC is unavailable.");
+        }
+
+        if (command.CapabilityId == CapabilityIds.PowerBackend)
+        {
+            return await SelectPathAsync(command, firmware, token).ConfigureAwait(false);
         }
 
         var dispatched = false;
@@ -292,6 +388,12 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
                     return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
                 }
 
+                if (DirectCpuPower)
+                {
+                    return await WriteCpuAsync(command, sustained, boost, () => dispatched = true, token)
+                        .ConfigureAwait(false);
+                }
+
                 // These bytes carry unrelated firmware fields, so never synthesize a blank profile, and
                 // never write bytes older than this edit.
                 byte[]? manual = null;
@@ -328,6 +430,19 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
             SelectMode(selected, token, () => dispatched = true);
             _mode = selected;
             _observed.Written(ModeId, CapabilityValue.Choice(ModeName(selected)));
+            if (selected != ManualMode)
+            {
+                // A stock mode's own limits must govern, so the registers return to their originals.
+                await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
+                    RestoreCpuAsync, token).ConfigureAwait(false);
+                await _paths.RestoreMchbarAsync(context.Firmware, token).ConfigureAwait(false);
+            }
+            else if (_cpuWritten is { } cpu)
+            {
+                writtenSustained = (int)Math.Round(cpu.SustainedWatts);
+                writtenBoost = (int)Math.Round(cpu.BoostWatts);
+            }
+
             if (writtenSustained is { } sustainedValue && writtenBoost is { } boostValue)
             {
                 _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustainedValue));
@@ -351,6 +466,148 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
 
             return CommandResults.TransportFailure(command, dispatched, exception);
         }
+    }
+
+    /// <summary>Writes PL1/PL2 to MSR 0x610, after opening Manual to the firmware maxima once per ownership.</summary>
+    /// <remarks>
+    ///     The EC is written only when Manual is first opened or another mode is active, so a stream of
+    ///     AutoTDP steps reaches the CPU alone. Both EC originals and the register original are journaled.
+    /// </remarks>
+    private async ValueTask<CapabilityCommandResult> WriteCpuAsync(CapabilityCommand command, int sustained,
+        int boost, Action dispatched, CancellationToken token)
+    {
+        var select = _mode != ManualMode;
+        if (!_manualOpened)
+        {
+            byte[]? manual = null;
+            try
+            {
+                manual = ReadProfile(selector: ManualMode, token)[..25];
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException
+                                              && exception is not OperationCanceledException)
+            {
+                DeviceTrace.Warn(ServiceId, $"Manual profile unavailable: {exception.Message}");
+            }
+
+            if (manual is null)
+            {
+                return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                    "The manual profile could not be retained; unrelated firmware fields cannot be preserved.");
+            }
+
+            await context.Journal.BeginAsync(ProfileRecoveryId, context.Firmware,
+                new AcerProfileOriginal { Profile = (byte[])manual.Clone() }, token).ConfigureAwait(false);
+            await CaptureModeAsync(token).ConfigureAwait(false);
+            BinaryPrimitives.WriteUInt16LittleEndian(manual.AsSpan(6), checked((ushort)_maximum));
+            BinaryPrimitives.WriteUInt16LittleEndian(manual.AsSpan(10), checked((ushort)_boostMaximum));
+            token.ThrowIfCancellationRequested();
+            WriteProfile(manual, token, dispatched);
+            _manualOpened = true;
+            select = true;
+            DeviceTrace.Change(ServiceId, "cpu-power",
+                $"EC Manual opened to {_maximum}/{_boostMaximum} W; the CPU registers carry the limits.");
+        }
+
+        if (select)
+        {
+            await CaptureModeAsync(token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            SelectMode(ManualMode, token, dispatched);
+            _mode = ManualMode;
+            _observed.Written(ModeId, CapabilityValue.Choice(ModeName(ManualMode)));
+        }
+
+        await CaptureCpuAsync(token).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        var limits = new CpuPowerLimits(sustained, boost, boost);
+        dispatched();
+        _cpu!.WriteLimits(limits);
+        _cpuWritten = limits;
+        _cpuDriftReported = false;
+        await _paths.WriteMchbarAsync(sustained, boost, context.Firmware, token, dispatched).ConfigureAwait(false);
+        _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
+        _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
+        return CommandResults.Applied(command);
+    }
+
+    /// <summary>Switches the power-limit path and re-applies the current PL1/PL2 through it.</summary>
+    /// <remarks>
+    ///     Firmware returns MSR and MCHBAR to their originals and writes the limits into Manual again; a
+    ///     direct path writes them to the registers. Limits that are not known wait for the next command.
+    /// </remarks>
+    private async ValueTask<CapabilityCommandResult> SelectPathAsync(CapabilityCommand command, string firmware,
+        CancellationToken token)
+    {
+        if (!_paths.TryParse(command, out var path))
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
+                "This power-limit path is not available on this device.");
+        }
+
+        if (path == _paths.Selected)
+        {
+            return CommandResults.Applied(command);
+        }
+
+        var sustained = _observed.Value(CapabilityIds.PowerSustained)?.IntegerValue;
+        var boost = _observed.Value(CapabilityIds.PowerBoost)?.IntegerValue;
+        try
+        {
+            await _paths.SelectAsync(path, context.Firmware, token).ConfigureAwait(false);
+            if (path == IntelPowerPath.Firmware)
+            {
+                await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
+                    RestoreCpuAsync, token).ConfigureAwait(false);
+                _manualOpened = false;
+            }
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return CommandResults.TransportFailure(command, true, exception);
+        }
+
+        if (_mode == ManualMode && sustained is { } pl1 && boost is { } pl2)
+        {
+            var reapply = await ExecuteAsync(command with
+            {
+                CapabilityId = CapabilityIds.PowerSustained, RequestedValue = CapabilityValue.Integer(pl1),
+                PairedPowerLimitWatts = pl2
+            }, firmware, token).ConfigureAwait(false);
+            if (reapply.Outcome != CommandOutcome.Applied)
+            {
+                DeviceTrace.Warn(ServiceId, $"Limits were not re-applied after the path change: {reapply.Reason?.Detail}");
+            }
+        }
+
+        return CommandResults.Applied(command);
+    }
+
+    private async ValueTask CaptureCpuAsync(CancellationToken token)
+    {
+        await context.Journal.BeginAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware, () =>
+        {
+            var original = _cpu!.ReadLimits();
+            return new AcerCpuPowerOriginal { Sustained = original.SustainedWatts, Boost = original.BoostWatts };
+        }, token).ConfigureAwait(false);
+        if (!context.Journal.HoldsOriginal(CpuRecoveryId, context.Firmware))
+        {
+            _unknownOriginalChanged = true;
+        }
+    }
+
+    /// <summary>Writes the register's original limits back once; the accepted write completes the restore.</summary>
+    private async ValueTask RestoreCpuAsync(AcerCpuPowerOriginal original, CancellationToken token)
+    {
+        var cpu = _cpu ?? throw new InvalidOperationException("MSR 0x610 is not available to restore.");
+        cpu.WriteLimits(new CpuPowerLimits(original.Sustained, original.Boost, original.Boost));
+        _cpuWritten = null;
+        await context.Journal.CompleteRestoreAsync(CpuRecoveryId, () =>
+        {
+            var current = cpu.ReadLimits();
+            return Math.Abs(current.SustainedWatts - original.Sustained) < 0.2
+                   && Math.Abs(current.BoostWatts - original.Boost) < 0.2;
+        }).ConfigureAwait(false);
     }
 
     /// <summary>Retains the first readable original mode; an unreadable original does not prohibit a mode write.</summary>
@@ -421,6 +678,14 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
     {
         try
         {
+            if (_cpu is not null)
+            {
+                await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
+                    RestoreCpuAsync, token).ConfigureAwait(false);
+            }
+
+            await _paths.RestoreAsync(context.Firmware, token).ConfigureAwait(false);
+
             if (_ec is not null)
             {
                 await context.Journal.ReconcileAsync<AcerProfileOriginal>(ProfileRecoveryId, context.Firmware,
@@ -431,6 +696,8 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
 
             return Set(_unknownOriginalChanged || context.Journal.HasUnrestoredMutation(ProfileRecoveryId)
                                               || context.Journal.HasUnrestoredMutation(ModeRecoveryId)
+                                              || context.Journal.HasUnrestoredMutation(CpuRecoveryId)
+                                              || _paths.HasUnrestored
                 ? DeviceServiceState.ReleasedUnverified : DeviceServiceState.Idle);
         }
         finally
@@ -443,6 +710,11 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
     internal override async ValueTask DisposeAsync()
     {
         _mode = null;
+        _manualOpened = false;
+        _cpuWritten = null;
+        _cpu?.Dispose();
+        _cpu = null;
+        _paths.Dispose();
         if (_ec is not null)
         {
             _ec = null;
@@ -460,6 +732,13 @@ internal sealed class AcerPowerService(ProfiledFeatureContext context, IAcerLeas
 internal sealed record AcerProfileOriginal
 {
     public byte[] Profile { get; init; } = [];
+}
+
+/// <summary>Firmware-bound original MSR 0x610 PL1/PL2 in watts, restored before the EC records.</summary>
+internal sealed record AcerCpuPowerOriginal
+{
+    public double Sustained { get; init; }
+    public double Boost { get; init; }
 }
 
 /// <summary>Firmware-bound original active power mode, separate from the stored Manual profile.</summary>

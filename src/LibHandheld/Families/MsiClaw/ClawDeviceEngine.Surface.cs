@@ -77,7 +77,8 @@ internal sealed partial class ClawDeviceEngine
                 read: true, write: false, instance: CapabilityInstances.Left),
             CapabilityDescriptors.Integer(CapabilityIds.FanRpm, CapabilityRole.FanMeasuredRpm,
                 new CapabilityDisplay { Key = DisplayKey.FanRight }, minimum: 0, maximum: 10_000, CapabilityUnit.Rpm,
-                read: true, write: false, instance: CapabilityInstances.Right)
+                read: true, write: false, instance: CapabilityInstances.Right),
+            .. _direct?.Paths.Descriptor is { } path ? new[] { path } : []
         ];
 
         _descriptorSet = new CapabilityDescriptorSet

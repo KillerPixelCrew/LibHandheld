@@ -10,9 +10,14 @@ internal sealed record ProfiledCycleIdentity(string Firmware);
 internal sealed partial class ProfiledPowerService(
     Func<ICpuPowerTransport> open,
     DeviceRecoveryJournal journal,
-    ProfiledDeviceModel? model = null) : DeviceService<ProfiledCycleIdentity>("power")
+    ProfiledDeviceModel? model = null,
+    string? kxPath = null) : DeviceService<ProfiledCycleIdentity>("power")
 {
     private IReadOnlyList<CapabilityDescriptor>? _descriptors;
+    // Intel models choose PawnIO or KX; AMD keeps its single SMU path.
+    private readonly IntelPowerPaths? _paths = model?.Cpu == CpuPowerKind.Intel
+        ? new IntelPowerPaths(journal, "power", hasFirmware: false)
+        : null;
     private ICpuPowerTransport? _transport;
     private bool _unknownOriginalChanged;
     private readonly Dictionary<CpuPowerLimit, (double Watts, DateTimeOffset At)> _writtenLimits = [];
@@ -22,6 +27,13 @@ internal sealed partial class ProfiledPowerService(
     {
         _transport?.Dispose();
         _transport = null;
+        _paths?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    internal override ValueTask RefreshAsync(CancellationToken token)
+    {
+        _paths?.Refresh();
         return ValueTask.CompletedTask;
     }
 
@@ -38,6 +50,12 @@ internal sealed partial class ProfiledPowerService(
                 await journal.MarkRestoredAsync(ServiceId, ct).ConfigureAwait(false);
             }, token).ConfigureAwait(false);
 
+        if (_paths is not null)
+        {
+            _paths.Acquire(kxPath, pawnIo: true);
+            await _paths.ResumeAsync(context.Identity.Firmware, token).ConfigureAwait(false);
+        }
+
         return Set(DeviceServiceState.Owned);
     }
 
@@ -48,6 +66,12 @@ internal sealed partial class ProfiledPowerService(
         token.ThrowIfCancellationRequested();
         dispatched();
         _transport!.WriteLimits(limits);
+        if (_paths is not null)
+        {
+            await _paths.WriteMchbarAsync((int)Math.Round(limits.SustainedWatts), (int)Math.Round(limits.BoostWatts),
+                firmware, token).ConfigureAwait(false);
+        }
+
         var at = DateTimeOffset.UtcNow;
         _writtenLimits[CpuPowerLimit.Sustained] = (limits.SustainedWatts, at);
         _writtenLimits[CpuPowerLimit.Slow] = (limits.SlowWatts, at);
@@ -112,7 +136,13 @@ internal sealed partial class ProfiledPowerService(
                 await journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
             }
 
+            if (_paths is not null)
+            {
+                await _paths.RestoreAsync(context.Identity.Firmware, token).ConfigureAwait(false);
+            }
+
             return _unknownOriginalChanged || journal.EntryFor<ProfiledRecoveryState>(ServiceId) is not null
+                                           || _paths?.HasUnrestored == true
                 ? Set(DeviceServiceState.ReleasedUnverified,
                     Missing(
                         "CPU limits were written without readable originals; their original values cannot be restored."))

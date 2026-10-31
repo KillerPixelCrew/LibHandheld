@@ -1,5 +1,6 @@
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
+using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 
@@ -33,7 +34,9 @@ internal sealed partial class ClawDeviceEngine
             return;
         }
 
-        if (_power is { State: DeviceServiceState.Owned } && _powerCapability is { } power)
+        // HC's ten-second WMI watchdog belongs to the firmware path; a direct path sends no firmware writes.
+        if (_power is { State: DeviceServiceState.Owned } && _powerCapability is { } power
+            && _direct is not { Direct: true })
         {
             try
             {
@@ -51,6 +54,12 @@ internal sealed partial class ClawDeviceEngine
                 DeviceTrace.Change("observe", ClawServiceIds.Power,
                     DiagnosticText.FromException("The TDP watchdog write failed", ex));
             }
+        }
+
+        // Keeps Intel's policy service off while a direct path is selected; it logs its own failures.
+        if (_direct is { State: DeviceServiceState.Owned } direct)
+        {
+            await direct.RefreshAsync(cancellationToken).ConfigureAwait(false);
         }
 
         if (_telemetry is { State: DeviceServiceState.Owned } telemetry)
@@ -78,6 +87,16 @@ internal sealed partial class ClawDeviceEngine
         }
 
         ObserveTelemetry();
+    }
+
+    /// <summary>Records the selected power-limit path, the direct service's own state, as written.</summary>
+    private void ObservePowerPath()
+    {
+        if (_direct?.Paths.Descriptor is not null)
+        {
+            _observedValues.Written(CapabilityIds.PowerBackend,
+                CapabilityValue.Choice(IntelPowerPaths.Name(_direct.Paths.Selected)));
+        }
     }
 
     /// <summary>Records the telemetry service's last reading, or its absence, as the observed sensor values.</summary>

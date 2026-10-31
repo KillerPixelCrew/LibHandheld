@@ -3,6 +3,7 @@ using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Transports;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.MsiClaw;
@@ -44,6 +45,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
     private OemEventService? _oem;
     private PowerService? _power;
     private ClawPowerCapability? _powerCapability;
+    private ClawDirectPowerService? _direct;
     private bool _quiescing;
     private ChordSuppressorService? _suppressor;
     private TelemetryService? _telemetry;
@@ -119,6 +121,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             _journal = _context.Journal;
             _oem = new OemEventService(_services.OemEvents, _publications, _services.OemButtons);
             _power = new PowerService(powerCapability, _journal);
+            _direct = new ClawDirectPowerService(_journal, _context.Resources.IntelKxPath, _services.OpenMsr);
             _chargeLimit = new ChargeLimitService();
             _fans = new FanService(fanCapability, _journal);
             _telemetry = new TelemetryService(fanCapability);
@@ -148,6 +151,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             [
                 _oem,
                 _power,
+                _direct,
                 _chargeLimit,
                 _fans,
                 _telemetry,
@@ -156,6 +160,8 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
                 _controller,
                 _suppressor
             ];
+            // The offered power paths are fixed before the surface is first published.
+            _direct.Prepare();
             BuildCapabilitySurface();
             await ReconcileOutstandingAsync(identity, cancellationToken).ConfigureAwait(false);
             await _publications.PublishDescriptorsAsync(_descriptorSet!, cancellationToken)
@@ -169,6 +175,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             await DeviceServiceLifecycle.AcquireAllAsync(Services,
                 OperationContext(Deadline.After(TimeSpan.FromSeconds(15))), cancellationToken).ConfigureAwait(false);
             ObserveTelemetry();
+            ObservePowerPath();
             await PublishStatesAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -248,6 +255,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             await DeviceServiceLifecycle.AcquireAllAsync(Services, OperationContext(cycle.Deadline), token)
                 .ConfigureAwait(false);
             ObserveTelemetry();
+            ObservePowerPath();
             BuildCapabilitySurface();
             await _publications.PublishDescriptorsAsync(_descriptorSet!, token).ConfigureAwait(false);
             await PublishStatesAsync(token).ConfigureAwait(false);
@@ -359,6 +367,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             new WindowsClawMotionSource(),
             new FirmwareChordSuppressor(),
             oemButtons,
-            Task.Delay);
+            Task.Delay,
+            OpenMsr: IntelMsrPowerTransport.Open);
     }
 }
