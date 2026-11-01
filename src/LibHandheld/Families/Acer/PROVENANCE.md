@@ -609,3 +609,24 @@ restore it, MSR 0x610 and MCHBAR on Firmware or release. KX loads HwRwDrv for on
 it on exit, so it runs only while KX is selected. Raw captures: local
 `artifacts/acer-power-monitor-20261031-*.jsonl`. The path switch and IPF guard in this build have
 not had an attended game session yet.
+
+## KX removed again; Manual held on the firmware path (2026-11-01)
+
+Maintainer decision, not an attended run. KX and HwRwDrv are removed from LibHandheld and WSGM
+again, and setup no longer forces Memory Integrity or the driver blocklist off for the Atlas. The
+power-limit choice is Firmware or PawnIO. PawnIO's signed IntelMCHBAR module only reads, so neither
+path writes the MCHBAR mirror, and the firmware's Manual re-selection is what returns MCHBAR PL1 to
+its maximum (2026-10-31 capture above).
+
+The runtime now selects Manual on every limit write on both paths, because the firmware needs the
+mode switch. On the Firmware path, while WSGM holds Manual, it rewrites the retained Manual profile
+with the accepted PL1/PL2 and selects Manual every 3 s, Handheld Companion's TDP watchdog interval.
+The rewrite and a command never interleave. A failed rewrite is not repeated at once: a Manual
+readback keeps the hold for the next interval, anything else drops it and forgets the published
+values. A stock mode, a path switch, release or suspend ends the hold. IPF and esifsvc stay disabled
+and stopped on both paths while WSGM owns the limits, and are restored on release.
+
+The maintainer attributes the 80..100 FPS swing seen with the earlier 5 s re-selection to the test
+game running from the SD card, not to the re-selection. That is untested. This build has not had an
+attended game session; held power, frame pacing and the IPF guard on the Firmware path remain to be
+accepted on the PA08-I51.

@@ -282,7 +282,7 @@ internal sealed partial class ClawDeviceEngine
             cancellationToken);
     }
 
-    /// <summary>Switches between WMI, PawnIO and KX and re-applies the published pair through the new path.</summary>
+    /// <summary>Switches between WMI and PawnIO and re-applies the published pair through the new path.</summary>
     /// <remarks>A pair that could not be re-applied is no longer known, so it is published as unknown.</remarks>
     private async ValueTask<CapabilityCommandResult> SelectPowerPathAsync(CapabilityCommand command,
         ClawIdentityState identity, ClawPowerCapability power, CancellationToken cancellationToken)

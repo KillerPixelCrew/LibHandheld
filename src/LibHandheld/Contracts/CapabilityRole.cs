@@ -111,7 +111,7 @@ public enum CapabilityRole
     /// <summary>A device-specific read-only value with no more specific role.</summary>
     GenericReadOnly,
 
-    /// <summary>Which hardware path carries the CPU power limits: firmware, PawnIO MSR or KX MSR plus MCHBAR.</summary>
+    /// <summary>Which hardware path carries the CPU power limits: firmware or PawnIO MSR.</summary>
     PowerBackend
 }
 

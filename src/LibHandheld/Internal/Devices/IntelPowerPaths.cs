@@ -1,9 +1,7 @@
-using System.Management;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Transports;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Internal.Devices;
@@ -15,34 +13,36 @@ internal enum IntelPowerPath
     Firmware,
 
     /// <summary>MSR 0x610 through the signed PawnIO IntelMSR module.</summary>
-    PawnIo,
-
-    /// <summary>MSR 0x610 plus the MCHBAR mirror through KX, which loads HwRwDrv per command.</summary>
-    Kx
+    PawnIo
 }
 
-/// <summary>The user's Intel power-path choice and the side effects only the direct paths need.</summary>
+/// <summary>The user's Intel power-path choice and the Intel policy-service guard.</summary>
 /// <remarks>
 ///     The owning power service keeps its own firmware and MSR writes and asks this which to use. This owns
-///     the MCHBAR mirror (KX) and Intel's IPF/DTT policy service, both with firmware-bound recovery
-///     records. On the Atlas IPF lowered MCHBAR PL1 every few seconds and pulled sustained power to 35 W
-///     (2026-10-31), so it is disabled and stopped while a direct path is selected and restored when
-///     Firmware is selected or ownership ends. The offered paths are decided once, at first acquisition.
+///     Intel's IPF/DTT policy service with a firmware-bound recovery record. On the Atlas IPF lowered MCHBAR
+///     PL1 every few seconds and pulled sustained power to 35 W (2026-10-31), and PawnIO cannot write that
+///     mirror. IPF is therefore disabled and stopped while the PawnIO path is selected, and on the firmware
+///     path too where the model asks for it, and restored otherwise or when ownership ends. The offered
+///     paths are decided once, at first acquisition.
 /// </remarks>
-internal sealed class IntelPowerPaths(DeviceRecoveryJournal journal, string serviceId, bool hasFirmware)
+/// <param name="journal">Holds the policy service's firmware-bound original.</param>
+/// <param name="serviceId">The owning power service, which names the recovery record and log lines.</param>
+/// <param name="hasFirmware">Whether the model has its own firmware power path.</param>
+/// <param name="policyOffOnFirmware">Whether IPF also stays off on the firmware path (the Atlas EC path).</param>
+internal sealed class IntelPowerPaths(
+    DeviceRecoveryJournal journal,
+    string serviceId,
+    bool hasFirmware,
+    bool policyOffOnFirmware = false)
 {
     internal const string FirmwareChoice = "firmware";
     internal const string PawnIoChoice = "pawnio";
-    internal const string KxChoice = "kx";
     private static readonly string[] PolicyServices = ["ipfsvc", "esifsvc"];
 
     /// <summary>The Service Control Manager seam; the test assembly replaces it so no fixture touches real services.</summary>
     internal static IIntelPolicyControl PolicyControl { get; set; } = new WindowsIntelPolicyControl();
-    private readonly string _mchbarRecoveryId = serviceId + ".mchbar";
     private readonly string _policyRecoveryId = serviceId + ".intel-policy";
     private IReadOnlyList<string>? _choices;
-    private IntelKxMchbar? _kx;
-    private string? _kxPath;
     private bool _policyRestartReported;
 
     /// <summary>The selected path; the default is Firmware where the model has one, otherwise PawnIO.</summary>
@@ -51,10 +51,16 @@ internal sealed class IntelPowerPaths(DeviceRecoveryJournal journal, string serv
     /// <summary>Whether a CPU register path is selected.</summary>
     internal bool Direct => Selected != IntelPowerPath.Firmware;
 
-    /// <summary>Fixes the offered paths on first acquisition and opens the pinned KX file without running it.</summary>
-    /// <param name="kxPath">The deployed KX helper, or null.</param>
+    private bool PolicyOff => Direct || policyOffOnFirmware;
+
+    /// <summary>The path choice, fixed at first acquisition; null before it or when only one path exists.</summary>
+    internal CapabilityDescriptor? Descriptor { get; private set; }
+
+    internal bool HasUnrestored => journal.HasUnrestoredMutation(_policyRecoveryId);
+
+    /// <summary>Fixes the offered paths on first acquisition.</summary>
     /// <param name="pawnIo">Whether the MSR transport opened.</param>
-    internal void Acquire(string? kxPath, bool pawnIo)
+    internal void Acquire(bool pawnIo)
     {
         if (_choices is null)
         {
@@ -67,15 +73,6 @@ internal sealed class IntelPowerPaths(DeviceRecoveryJournal journal, string serv
             if (pawnIo)
             {
                 choices.Add(PawnIoChoice);
-                if (KxUsable(kxPath, out var reason))
-                {
-                    choices.Add(KxChoice);
-                    _kxPath = kxPath;
-                }
-                else
-                {
-                    DeviceTrace.Change(serviceId, "power-path", $"KX power path not offered: {reason}");
-                }
             }
 
             _choices = choices;
@@ -87,26 +84,11 @@ internal sealed class IntelPowerPaths(DeviceRecoveryJournal journal, string serv
             DeviceTrace.Change(serviceId, "power-path", $"Power paths offered: {string.Join(", ", choices)}.");
         }
 
-        if (_kxPath is not null && _kx is null)
-        {
-            try
-            {
-                _kx = IntelKxMchbar.Open(_kxPath);
-            }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
-            {
-                DeviceTrace.Warn(serviceId, $"KX payload unavailable: {exception.Message}");
-            }
-        }
-
         if (!Offered(Selected))
         {
             Selected = hasFirmware ? IntelPowerPath.Firmware : IntelPowerPath.PawnIo;
         }
     }
-
-    /// <summary>The path choice, fixed at first acquisition; null before it or when only one path exists.</summary>
-    internal CapabilityDescriptor? Descriptor { get; private set; }
 
     internal CapabilityState State(bool owned, CapabilityReason? reason)
     {
@@ -121,52 +103,30 @@ internal sealed class IntelPowerPaths(DeviceRecoveryJournal journal, string serv
         {
             FirmwareChoice => IntelPowerPath.Firmware,
             PawnIoChoice => IntelPowerPath.PawnIo,
-            KxChoice => IntelPowerPath.Kx,
             _ => (IntelPowerPath)(-1)
         };
         return Offered(path);
     }
 
-    /// <summary>Switches path: leaving KX restores MCHBAR, Firmware restores the policy service, a direct path stops it.</summary>
+    /// <summary>Switches path and turns the policy service off or back on for it.</summary>
     /// <remarks>The caller restores or re-applies its own MSR and firmware limits for the new path.</remarks>
     internal async ValueTask SelectAsync(IntelPowerPath path, string firmware, CancellationToken token)
     {
-        await ApplyAsync(path, firmware, token).ConfigureAwait(false);
         Selected = path;
         DeviceTrace.Change(serviceId, "power-path", $"Power limit path: {Name(path)}.");
+        await ResumeAsync(firmware, token).ConfigureAwait(false);
     }
 
-    /// <summary>Puts the selected path's state back in place after acquisition.</summary>
+    /// <summary>Puts the selected path's policy-service state in place after acquisition.</summary>
     internal ValueTask ResumeAsync(string firmware, CancellationToken token)
     {
-        return ApplyAsync(Selected, firmware, token);
+        return PolicyOff ? DisablePolicyAsync(firmware, token) : RestoreAsync(firmware, token);
     }
 
-    /// <summary>Writes the MCHBAR mirror when KX is selected, journaling its original first.</summary>
-    /// <remarks>The dispatch callback marks the uncertain-write boundary for the caller.</remarks>
-    internal async ValueTask WriteMchbarAsync(int sustainedWatts, int boostWatts, string firmware,
-        CancellationToken token, Action? dispatched = null)
-    {
-        if (Selected != IntelPowerPath.Kx)
-        {
-            return;
-        }
-
-        var kx = _kx ?? throw new InvalidOperationException("The KX payload is unavailable.");
-        await journal.BeginAsync<IntelMchbarOriginal>(_mchbarRecoveryId, firmware, () =>
-        {
-            var original = kx.ReadLimits();
-            return new IntelMchbarOriginal { Sustained = original.SustainedWatts, Boost = original.BoostWatts };
-        }, token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        dispatched?.Invoke();
-        kx.WriteLimits(sustainedWatts, boostWatts);
-    }
-
-    /// <summary>Keeps the policy service off while a direct path is selected; logs a restart once.</summary>
+    /// <summary>Keeps the policy service off while the selected path needs it off; logs a restart once.</summary>
     internal void Refresh()
     {
-        if (!Direct)
+        if (!PolicyOff)
         {
             return;
         }
@@ -180,7 +140,7 @@ internal sealed class IntelPowerPaths(DeviceRecoveryJournal journal, string serv
                     if (!_policyRestartReported)
                     {
                         _policyRestartReported = true;
-                        DeviceTrace.Warn(serviceId, $"{name} was started again while a direct power path is selected; stopping it.");
+                        DeviceTrace.Warn(serviceId, $"{name} was started again while WSGM owns the power limits; stopping it.");
                     }
 
                     PolicyControl.Stop(name);
@@ -193,67 +153,29 @@ internal sealed class IntelPowerPaths(DeviceRecoveryJournal journal, string serv
         }
     }
 
-    /// <summary>Restores MCHBAR, then the policy service, for release or a firmware-bound reconcile.</summary>
+    /// <summary>Restores the policy service for release or a firmware-bound reconcile.</summary>
     internal async ValueTask RestoreAsync(string firmware, CancellationToken token)
     {
-        await RestoreMchbarAsync(firmware, token).ConfigureAwait(false);
-        await RestorePolicyAsync(firmware, token).ConfigureAwait(false);
-    }
+        await journal.ReconcileAsync<IntelPolicyOriginal>(_policyRecoveryId, firmware, async (original, _) =>
+        {
+            foreach (var (name, service) in original.Services)
+            {
+                PolicyControl.Restore(name, new WindowsServiceState(service.StartType, service.Running));
+            }
 
-    internal bool HasUnrestored => journal.HasUnrestoredMutation(_mchbarRecoveryId)
-                                   || journal.HasUnrestoredMutation(_policyRecoveryId);
-
-    internal void Dispose()
-    {
-        _kx?.Dispose();
-        _kx = null;
+            await journal.MarkRestoredAsync(_policyRecoveryId, CancellationToken.None).ConfigureAwait(false);
+            DeviceTrace.Change(serviceId, "intel-policy", $"Restored {string.Join(", ", original.Services.Keys)}.");
+        }, token).ConfigureAwait(false);
     }
 
     internal static string Name(IntelPowerPath path)
     {
-        return path switch
-        {
-            IntelPowerPath.Firmware => FirmwareChoice,
-            IntelPowerPath.PawnIo => PawnIoChoice,
-            _ => KxChoice
-        };
+        return path == IntelPowerPath.Firmware ? FirmwareChoice : PawnIoChoice;
     }
 
     private bool Offered(IntelPowerPath path)
     {
         return _choices is { } choices && Enum.IsDefined(path) && choices.Contains(Name(path));
-    }
-
-    private async ValueTask ApplyAsync(IntelPowerPath path, string firmware, CancellationToken token)
-    {
-        if (path != IntelPowerPath.Kx)
-        {
-            await RestoreMchbarAsync(firmware, token).ConfigureAwait(false);
-        }
-
-        if (path == IntelPowerPath.Firmware)
-        {
-            await RestorePolicyAsync(firmware, token).ConfigureAwait(false);
-        }
-        else
-        {
-            await DisablePolicyAsync(firmware, token).ConfigureAwait(false);
-        }
-    }
-
-    internal async ValueTask RestoreMchbarAsync(string firmware, CancellationToken token)
-    {
-        await journal.ReconcileAsync<IntelMchbarOriginal>(_mchbarRecoveryId, firmware, async (original, _) =>
-        {
-            var kx = _kx ?? throw new InvalidOperationException("The KX payload is unavailable to restore MCHBAR.");
-            kx.WriteLimits(original.Sustained, original.Boost);
-            await journal.CompleteRestoreAsync(_mchbarRecoveryId, () =>
-            {
-                var current = kx.ReadLimits();
-                return Math.Abs(current.SustainedWatts - original.Sustained) < 0.2
-                       && Math.Abs(current.BoostWatts - original.Boost) < 0.2;
-            }).ConfigureAwait(false);
-        }, token).ConfigureAwait(false);
     }
 
     private async ValueTask DisablePolicyAsync(string firmware, CancellationToken token)
@@ -287,66 +209,8 @@ internal sealed class IntelPowerPaths(DeviceRecoveryJournal journal, string serv
         }
 
         _policyRestartReported = false;
-        DeviceTrace.Change(serviceId, "intel-policy", $"Disabled and stopped {string.Join(", ", originals.Keys)} for the direct power path.");
-    }
-
-    private async ValueTask RestorePolicyAsync(string firmware, CancellationToken token)
-    {
-        await journal.ReconcileAsync<IntelPolicyOriginal>(_policyRecoveryId, firmware, async (original, _) =>
-        {
-            foreach (var (name, service) in original.Services)
-            {
-                PolicyControl.Restore(name, new WindowsServiceState(service.StartType, service.Running));
-            }
-
-            await journal.MarkRestoredAsync(_policyRecoveryId, CancellationToken.None).ConfigureAwait(false);
-            DeviceTrace.Change(serviceId, "intel-policy", $"Restored {string.Join(", ", original.Services.Keys)}.");
-        }, token).ConfigureAwait(false);
-    }
-
-    private static bool KxUsable(string? path, out string reason)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-        {
-            reason = "the KX helper is not deployed.";
-            return false;
-        }
-
-        if (MemoryIntegrityRunning())
-        {
-            reason = "Memory Integrity is running, so Windows refuses its HwRwDrv driver.";
-            return false;
-        }
-
-        reason = string.Empty;
-        return true;
-    }
-
-    /// <summary>Whether HVCI is running in this boot; HVCI always enforces the vulnerable-driver blocklist.</summary>
-    private static bool MemoryIntegrityRunning()
-    {
-        try
-        {
-            using var searcher = new ManagementObjectSearcher(@"root\Microsoft\Windows\DeviceGuard",
-                "SELECT SecurityServicesRunning FROM Win32_DeviceGuard");
-            foreach (var item in searcher.Get())
-            {
-                using (item)
-                {
-                    if (item["SecurityServicesRunning"] is uint[] running && running.Contains(2u))
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
-        catch (Exception exception) when (exception is ManagementException or UnauthorizedAccessException
-                                              or System.Runtime.InteropServices.COMException)
-        {
-            return false;
-        }
+        DeviceTrace.Change(serviceId, "intel-policy",
+            $"Disabled and stopped {string.Join(", ", originals.Keys)} while WSGM owns the power limits.");
     }
 }
 
@@ -367,13 +231,6 @@ internal sealed class WindowsIntelPolicyControl : IIntelPolicyControl
     public void DisableAndStop(string name) => WindowsServiceControl.DisableAndStop(name);
     public void Stop(string name) => WindowsServiceControl.Stop(name);
     public void Restore(string name, WindowsServiceState original) => WindowsServiceControl.Restore(name, original);
-}
-
-/// <summary>Firmware-bound original MCHBAR PL1/PL2 in watts.</summary>
-internal sealed record IntelMchbarOriginal
-{
-    public double Sustained { get; init; }
-    public double Boost { get; init; }
 }
 
 /// <summary>Firmware-bound original start type and run state of Intel's IPF/DTT policy services.</summary>

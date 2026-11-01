@@ -121,7 +121,7 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
             _journal = _context.Journal;
             _oem = new OemEventService(_services.OemEvents, _publications, _services.OemButtons);
             _power = new PowerService(powerCapability, _journal);
-            _direct = new ClawDirectPowerService(_journal, _context.Resources.IntelKxPath, _services.OpenMsr);
+            _direct = new ClawDirectPowerService(_journal, _services.OpenMsr);
             _chargeLimit = new ChargeLimitService();
             _fans = new FanService(fanCapability, _journal);
             _telemetry = new TelemetryService(fanCapability);

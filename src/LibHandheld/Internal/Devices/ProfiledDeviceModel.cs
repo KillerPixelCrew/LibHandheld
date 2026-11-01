@@ -29,11 +29,6 @@ internal sealed record ProfiledDeviceModel
                 {
                     roles.Add(CapabilityRole.PowerFastLimit);
                 }
-
-                if (Cpu == CpuPowerKind.Intel)
-                {
-                    roles.Add(CapabilityRole.PowerBackend);
-                }
             }
 
             if (Fan is not null)

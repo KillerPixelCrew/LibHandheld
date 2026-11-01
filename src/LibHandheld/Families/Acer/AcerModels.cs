@@ -62,9 +62,7 @@ internal static class AcerModels
             // Power, fans, battery, lighting, controller, rear buttons, motion and rumble were accepted on
             // a PA08-I51 in attended sessions; see PROVENANCE.md.
             HardwareVerified = true,
-            FanCurvePresets = AtlasFanCurvePresets,
-            // KX writes the MCHBAR mirror; setup turns Memory Integrity and the driver blocklist off.
-            HardwareAccess = DeviceHardwareAccess.IntelKx
+            FanCurvePresets = AtlasFanCurvePresets
         },
         SourceFamilyId = "PredatorAtlas8",
         IdentitySource = ProfileIdentitySource.System,

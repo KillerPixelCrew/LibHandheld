@@ -18,9 +18,11 @@ namespace LibHandheld.Families.Acer;
 ///     Maxima come from firmware selectors 2/4. The PL1 floor is the lower of selector 1 and the
 ///     attended 8 W. The manual profile and active mode have separate firmware-bound recovery records.
 ///     The user picks the power-limit path (<see cref="IntelPowerPaths" />). Firmware writes PL1/PL2 into
-///     the Manual profile. PawnIO and KX open Manual once to the firmware maxima and write MSR 0x610, KX
-///     also the MCHBAR mirror; Predator Sense lags in game like the EC path, and the EC never changed the
-///     register (POWER_LIMIT_TESTS.md). Stock modes stay EC-owned on every path.
+///     the Manual profile and re-applies that profile and mode every three seconds while Manual is held.
+///     PawnIO opens Manual once to the firmware maxima and writes MSR 0x610; Predator Sense lags in game
+///     like the EC path, and the EC never changed the register (POWER_LIMIT_TESTS.md). Every limit write
+///     on every path selects Manual again, because the firmware needs the mode switch. Intel's IPF stays
+///     off on every path. Stock modes stay EC-owned.
 /// </remarks>
 internal sealed class AcerPowerService(
     ProfiledFeatureContext context,
@@ -38,8 +40,18 @@ internal sealed class AcerPowerService(
     // PA08-I51. Intel's Arc G3 configurable TDP also starts at 8 W.
     private const int AttendedMinimumWatts = 8;
 
+    /// <summary>Firmware-path re-apply cadence, HC's TDP watchdog interval.</summary>
+    internal static readonly TimeSpan HoldInterval = TimeSpan.FromSeconds(3);
+
+    private readonly Lock _holdGate = new();
     private readonly ObservedValues _observed = new();
-    private readonly IntelPowerPaths _paths = new(context.Journal, "acer-power", hasFirmware: true);
+    private byte[]? _held;
+    private bool _holdRunning;
+    private volatile bool _holdLost;
+    private CancellationTokenSource? _holdCancellation;
+    private Task _hold = Task.CompletedTask;
+    private readonly IntelPowerPaths _paths = new(context.Journal, "acer-power", hasFirmware: true,
+        policyOffOnFirmware: true);
     private IAcerEcTransport? _ec;
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private int? _mode;
@@ -87,7 +99,7 @@ internal sealed class AcerPowerService(
         }
 
         _cpu = OpenCpu();
-        _paths.Acquire(context.Resources.IntelKxPath, _cpu is not null);
+        _paths.Acquire(_cpu is not null);
         if (_descriptors.Count == 0)
         {
             _descriptors = BuildDescriptors(token);
@@ -138,11 +150,116 @@ internal sealed class AcerPowerService(
     {
         if (_ec is not null && State == DeviceServiceState.Owned)
         {
+            if (_holdLost)
+            {
+                _holdLost = false;
+                _observed.Clear();
+            }
+
             ReadCurrent(token);
             _paths.Refresh();
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>Claims the hold loop under the hold gate when a profile is held and no loop runs.</summary>
+    private bool ClaimHoldLoop()
+    {
+        if (_held is null || _holdRunning)
+        {
+            return false;
+        }
+
+        _holdRunning = true;
+        return true;
+    }
+
+    private void StartHold(bool start)
+    {
+        if (!start)
+        {
+            return;
+        }
+
+        _holdCancellation ??= new CancellationTokenSource();
+        var token = _holdCancellation.Token;
+        _hold = Task.Run(() => RunHoldAsync(token));
+        DeviceTrace.Change(ServiceId, "manual-hold",
+            $"Re-applying the Manual profile and mode every {HoldInterval.TotalSeconds:0} s.");
+    }
+
+    /// <summary>Ends the hold; the loop writes nothing once this returns and exits at its next tick.</summary>
+    private void ClearHold()
+    {
+        lock (_holdGate)
+        {
+            _held = null;
+        }
+    }
+
+    /// <summary>Rewrites the held Manual profile and selects Manual each interval, like each TDP write does.</summary>
+    /// <remarks>
+    ///     The firmware path loses its limits without this: Intel's platform policy lowered MCHBAR PL1 and
+    ///     only a Manual re-selection brought it back (PROVENANCE.md, 2026-10-31 and 2026-11-01). Ticks log
+    ///     nothing. A failed tick is resolved by reading the mode, never repeated at once: Manual keeps the
+    ///     hold for the next interval, anything else drops it and forgets the published values.
+    /// </remarks>
+    private async Task RunHoldAsync(CancellationToken token)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(HoldInterval);
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                lock (_holdGate)
+                {
+                    if (_held is null || _ec is null)
+                    {
+                        _holdRunning = false;
+                        return;
+                    }
+
+                    try
+                    {
+                        WriteProfile(_held, token);
+                        SelectMode(ManualMode, token);
+                    }
+                    catch (Exception exception) when (exception is not OutOfMemoryException
+                                                      && exception is not OperationCanceledException)
+                    {
+                        if (ReadModeOrNull(token) != ManualMode)
+                        {
+                            _held = null;
+                            _holdRunning = false;
+                            _holdLost = true;
+                            DeviceTrace.Warn(ServiceId, $"Manual hold lost: {exception.Message}");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+
+        lock (_holdGate)
+        {
+            _holdRunning = false;
+        }
+    }
+
+    private int? ReadModeOrNull(CancellationToken token)
+    {
+        try
+        {
+            return ReadMode(token);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Reads firmware limits once per service lifetime; resume keeps the first visibility decision.</summary>
@@ -355,6 +472,8 @@ internal sealed class AcerPowerService(
         var dispatched = false;
         int? writtenSustained = null;
         int? writtenBoost = null;
+        byte[]? edited = null;
+        byte[]? manualProfile = null;
         try
         {
             int selected;
@@ -373,6 +492,10 @@ internal sealed class AcerPowerService(
                     var profile = ReadProfile((byte)selected, token);
                     writtenSustained = BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(6));
                     writtenBoost = BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(10));
+                    if (selected == ManualMode)
+                    {
+                        manualProfile = profile[..25];
+                    }
                 }
                 catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
                 {
@@ -416,18 +539,31 @@ internal sealed class AcerPowerService(
                 await context.Journal.BeginAsync(ProfileRecoveryId, context.Firmware,
                     new AcerProfileOriginal { Profile = (byte[])manual.Clone() }, token).ConfigureAwait(false);
                 await CaptureModeAsync(token).ConfigureAwait(false);
-                var profile = manual;
-                BinaryPrimitives.WriteUInt16LittleEndian(profile.AsSpan(6), checked((ushort)sustained));
-                BinaryPrimitives.WriteUInt16LittleEndian(profile.AsSpan(10), checked((ushort)boost));
-                token.ThrowIfCancellationRequested();
-                WriteProfile(profile, token, () => dispatched = true);
+                BinaryPrimitives.WriteUInt16LittleEndian(manual.AsSpan(6), checked((ushort)sustained));
+                BinaryPrimitives.WriteUInt16LittleEndian(manual.AsSpan(10), checked((ushort)boost));
+                edited = manual;
+                manualProfile = manual;
                 writtenSustained = sustained;
                 writtenBoost = boost;
-                selected = 3;
+                selected = ManualMode;
             }
 
             token.ThrowIfCancellationRequested();
-            SelectMode(selected, token, () => dispatched = true);
+            bool startHold;
+            lock (_holdGate)
+            {
+                // The hold rewrites the same profile and mode, so it never runs between these two writes.
+                if (edited is not null)
+                {
+                    WriteProfile(edited, token, () => dispatched = true);
+                }
+
+                SelectMode(selected, token, () => dispatched = true);
+                _held = selected == ManualMode && !DirectCpuPower ? manualProfile : null;
+                startHold = ClaimHoldLoop();
+            }
+
+            StartHold(startHold);
             _mode = selected;
             _observed.Written(ModeId, CapabilityValue.Choice(ModeName(selected)));
             if (selected != ManualMode)
@@ -435,7 +571,6 @@ internal sealed class AcerPowerService(
                 // A stock mode's own limits must govern, so the registers return to their originals.
                 await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
                     RestoreCpuAsync, token).ConfigureAwait(false);
-                await _paths.RestoreMchbarAsync(context.Firmware, token).ConfigureAwait(false);
             }
             else if (_cpuWritten is { } cpu)
             {
@@ -460,6 +595,7 @@ internal sealed class AcerPowerService(
         {
             if (dispatched)
             {
+                ClearHold();
                 _observed.Clear();
                 _mode = null;
             }
@@ -468,15 +604,15 @@ internal sealed class AcerPowerService(
         }
     }
 
-    /// <summary>Writes PL1/PL2 to MSR 0x610, after opening Manual to the firmware maxima once per ownership.</summary>
+    /// <summary>Writes PL1/PL2 to MSR 0x610 after selecting Manual, which is opened to the firmware maxima once.</summary>
     /// <remarks>
-    ///     The EC is written only when Manual is first opened or another mode is active, so a stream of
-    ///     AutoTDP steps reaches the CPU alone. Both EC originals and the register original are journaled.
+    ///     Every write selects Manual again: the firmware needs the mode switch with each limit change.
+    ///     Both EC originals and the register original are journaled.
     /// </remarks>
     private async ValueTask<CapabilityCommandResult> WriteCpuAsync(CapabilityCommand command, int sustained,
         int boost, Action dispatched, CancellationToken token)
     {
-        var select = _mode != ManualMode;
+        ClearHold();
         if (!_manualOpened)
         {
             byte[]? manual = null;
@@ -504,19 +640,15 @@ internal sealed class AcerPowerService(
             token.ThrowIfCancellationRequested();
             WriteProfile(manual, token, dispatched);
             _manualOpened = true;
-            select = true;
             DeviceTrace.Change(ServiceId, "cpu-power",
                 $"EC Manual opened to {_maximum}/{_boostMaximum} W; the CPU registers carry the limits.");
         }
 
-        if (select)
-        {
-            await CaptureModeAsync(token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-            SelectMode(ManualMode, token, dispatched);
-            _mode = ManualMode;
-            _observed.Written(ModeId, CapabilityValue.Choice(ModeName(ManualMode)));
-        }
+        await CaptureModeAsync(token).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        SelectMode(ManualMode, token, dispatched);
+        _mode = ManualMode;
+        _observed.Written(ModeId, CapabilityValue.Choice(ModeName(ManualMode)));
 
         await CaptureCpuAsync(token).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
@@ -525,7 +657,6 @@ internal sealed class AcerPowerService(
         _cpu!.WriteLimits(limits);
         _cpuWritten = limits;
         _cpuDriftReported = false;
-        await _paths.WriteMchbarAsync(sustained, boost, context.Firmware, token, dispatched).ConfigureAwait(false);
         _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
         _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
         return CommandResults.Applied(command);
@@ -533,8 +664,8 @@ internal sealed class AcerPowerService(
 
     /// <summary>Switches the power-limit path and re-applies the current PL1/PL2 through it.</summary>
     /// <remarks>
-    ///     Firmware returns MSR and MCHBAR to their originals and writes the limits into Manual again; a
-    ///     direct path writes them to the registers. Limits that are not known wait for the next command.
+    ///     Firmware returns MSR 0x610 to its original and writes the limits into Manual again; PawnIO writes
+    ///     them to the register. Limits that are not known wait for the next command.
     /// </remarks>
     private async ValueTask<CapabilityCommandResult> SelectPathAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
@@ -552,6 +683,7 @@ internal sealed class AcerPowerService(
 
         var sustained = _observed.Value(CapabilityIds.PowerSustained)?.IntegerValue;
         var boost = _observed.Value(CapabilityIds.PowerBoost)?.IntegerValue;
+        ClearHold();
         try
         {
             await _paths.SelectAsync(path, context.Firmware, token).ConfigureAwait(false);
@@ -678,6 +810,7 @@ internal sealed class AcerPowerService(
     {
         try
         {
+            ClearHold();
             if (_cpu is not null)
             {
                 await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
@@ -709,12 +842,16 @@ internal sealed class AcerPowerService(
     /// <summary>Closes transport and forgets caches only; restoration belongs to ReleaseAsync, not disposal.</summary>
     internal override async ValueTask DisposeAsync()
     {
+        ClearHold();
+        _holdCancellation?.Cancel();
+        await _hold.ConfigureAwait(false);
+        _holdCancellation?.Dispose();
+        _holdCancellation = null;
         _mode = null;
         _manualOpened = false;
         _cpuWritten = null;
         _cpu?.Dispose();
         _cpu = null;
-        _paths.Dispose();
         if (_ec is not null)
         {
             _ec = null;

@@ -5,16 +5,14 @@ using LibHandheld.Internal.Transports;
 
 namespace LibHandheld.Families.MsiClaw;
 
-/// <summary>The Claw's PawnIO and KX power paths beside its WMI firmware path.</summary>
+/// <summary>The Claw's PawnIO power path beside its WMI firmware path.</summary>
 /// <remarks>
 ///     With a direct path selected the engine opens the WMI pair to the model maximum once, so the firmware
-///     does not cap the registers, and sends each PL1/PL2 here: MSR 0x610 through PawnIO, KX also the MCHBAR
-///     mirror. The MSR original is journaled under the BIOS binding like the WMI pair. Built from HC's
+///     does not cap the registers, and sends each PL1/PL2 here: MSR 0x610 through PawnIO. The MSR original is journaled under the BIOS binding like the WMI pair. Built from HC's
 ///     shared Intel register path; no Claw hardware pass covers the direct paths yet.
 /// </remarks>
 internal sealed class ClawDirectPowerService(
     DeviceRecoveryJournal journal,
-    string? kxPath,
     Func<ICpuPowerTransport>? openMsr) : DeviceService<ClawIdentityState>(ClawServiceIds.Power + ".direct")
 {
     private const string MsrRecoveryId = ClawServiceIds.Power + ".direct.msr";
@@ -43,7 +41,7 @@ internal sealed class ClawDirectPowerService(
             }
         }
 
-        Paths.Acquire(kxPath, _msr is not null);
+        Paths.Acquire(_msr is not null);
     }
 
     public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ClawIdentityState> context,
@@ -63,7 +61,7 @@ internal sealed class ClawDirectPowerService(
         return ValueTask.CompletedTask;
     }
 
-    /// <summary>Writes PL1/PL2 to MSR 0x610 and, on KX, the MCHBAR mirror; journals the MSR original first.</summary>
+    /// <summary>Writes PL1/PL2 to MSR 0x610; journals the MSR original first.</summary>
     internal async ValueTask WriteAsync(int sustained, int boost, string binding, Action dispatched,
         CancellationToken token)
     {
@@ -76,7 +74,6 @@ internal sealed class ClawDirectPowerService(
         token.ThrowIfCancellationRequested();
         dispatched();
         msr.WriteLimits(new CpuPowerLimits(sustained, boost, boost));
-        await Paths.WriteMchbarAsync(sustained, boost, binding, token).ConfigureAwait(false);
     }
 
     /// <summary>Returns MSR 0x610 to its journaled original, for the Firmware path or release.</summary>
@@ -108,7 +105,6 @@ internal sealed class ClawDirectPowerService(
     {
         _msr?.Dispose();
         _msr = null;
-        Paths.Dispose();
         FirmwareOpened = false;
         return ValueTask.CompletedTask;
     }
