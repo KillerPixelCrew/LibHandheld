@@ -696,3 +696,11 @@ holds a value only up to what Intel's own policy asks for; at 45 W it did not as
 maximum is 45 W where the IPF path is offered (the highest PL1 the Manual profile accepted on
 2026-10-27); the firmware maximum stays 40 W otherwise. Raw captures: local
 `artifacts/acer-power-monitor-20261101-*.jsonl`; probes in `artifacts/ipf-re`.
+
+## Pad stall recovery removed (2026-11-01)
+
+Maintainer decision, not an attended run. The maintainer reports that a newer Atlas BIOS fixes the
+pad hanging in XInput after Modern Standby, so the stall recovery added on 2026-10-30 was removed:
+the reader watchdog, the USB port cycle and the profile flag that enabled them. The BIOS version
+was not recorded. A pad that stops answering is now handled only by the ordinary disconnect and
+reacquire path.

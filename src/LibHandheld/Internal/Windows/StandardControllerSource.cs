@@ -30,7 +30,6 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     private int _slot = -1;
     private IHidControllerRumble? _hidRumble;
     private CancellationTokenSource? _stop;
-    private Timer? _watchdog;
 
     public ValueTask DisposeAsync()
     {
@@ -185,63 +184,10 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             _slot = topology.Slot;
             _stop = new CancellationTokenSource();
             var token = _stop.Token;
-            var progress = new ReaderProgress();
-            _reader = new Thread(() => Read(topology.Slot, buttons, motion, publish, fault, token, touchpad, progress))
+            _reader = new Thread(() => Read(topology.Slot, buttons, motion, publish, fault, token, touchpad))
                 { IsBackground = true, Name = "LibHandheld physical controller" };
             _reader.Start();
-            if (profile.CycleUsbPortWhenStalled)
-            {
-                StartWatchdog(progress, token);
-            }
         }
-    }
-
-    /// <summary>Recovers a pad whose driver stopped answering, which leaves the reader blocked in XInput.</summary>
-    /// <remarks>
-    ///     A controller that hangs during Modern Standby stays enumerated, so nothing reports it gone and
-    ///     the reader waits in XInput indefinitely. Cycling its USB port makes Windows remove and enumerate
-    ///     it again: the blocked read fails and the ordinary disconnect and reacquire path takes over.
-    ///     Only a stall inside the XInput read is recovered, once per reader; a stall publishing a sample is
-    ///     downstream and is only reported.
-    /// </remarks>
-    private void StartWatchdog(ReaderProgress progress, CancellationToken token)
-    {
-        ControllerStallWatch watch = new();
-        var last = Environment.TickCount64;
-        _watchdog = new Timer(_ =>
-        {
-            if (token.IsCancellationRequested)
-            {
-                return;
-            }
-
-            var now = Environment.TickCount64;
-            var since = TimeSpan.FromMilliseconds(now - last);
-            last = now;
-            if (!watch.Check(Volatile.Read(ref progress.Polls), since))
-            {
-                return;
-            }
-
-            if (Volatile.Read(ref progress.InRead) == 0)
-            {
-                DeviceTrace.Warn("controller",
-                    $"The physical controller reader has not progressed for {ControllerStallWatch.StallLimit.TotalSeconds:F0} s while publishing a sample.");
-                return;
-            }
-
-            try
-            {
-                var cycled = UsbPortCycle.Cycle(profile.UsbIds);
-                DeviceTrace.Warn("controller",
-                    $"The physical controller stopped answering XInput; cycled its USB port ({cycled}).");
-            }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
-            {
-                DeviceTrace.Warn("controller",
-                    $"The physical controller stopped answering XInput, and its USB port could not be cycled: {exception.Message}");
-            }
-        }, null, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
     }
 
     internal void Rumble(float low, float high)
@@ -307,8 +253,6 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             }
 
             _stop?.Cancel();
-            _watchdog?.Dispose();
-            _watchdog = null;
         }
 
         if (reader is null)
@@ -334,7 +278,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     private static void Read(int slot, Func<CanonicalButtons> buttons, Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
         CancellationToken stop,
-        Func<StandardTouchSample>? touchpad, ReaderProgress progress)
+        Func<StandardTouchSample>? touchpad)
     {
         try
         {
@@ -342,10 +286,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             while (ticker.Wait())
             {
                 var now = DateTimeOffset.UtcNow;
-                Volatile.Write(ref progress.InRead, 1);
                 var status = StandardXInput.StateEx((uint)slot, out var state);
-                Volatile.Write(ref progress.InRead, 0);
-                Volatile.Write(ref progress.Polls, progress.Polls + 1);
                 if (status != 0)
                 {
                     publish(CanonicalControllerSample.Neutral(now), stop).GetAwaiter().GetResult();
@@ -366,16 +307,6 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             fault(exception);
         }
     }
-}
-
-/// <summary>The XInput reader's progress, written by the reader and read by its watchdog.</summary>
-internal sealed class ReaderProgress
-{
-    /// <summary>Completed XInput reads.</summary>
-    internal long Polls;
-
-    /// <summary>1 while the reader is inside the XInput read, otherwise 0.</summary>
-    internal int InRead;
 }
 
 internal static class StandardControllerCodec
