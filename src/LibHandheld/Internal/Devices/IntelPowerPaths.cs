@@ -36,11 +36,13 @@ internal enum IntelPowerPath
 /// <param name="serviceId">The owning power service, which names the recovery record and log lines.</param>
 /// <param name="hasFirmware">Whether the model has its own firmware power path.</param>
 /// <param name="policyOffOnFirmware">Whether IPF also stays off on the firmware path (the Atlas EC path).</param>
+/// <param name="preferIpf">Whether IPF is the default path where it is installed (the Atlas).</param>
 internal sealed class IntelPowerPaths(
     DeviceRecoveryJournal journal,
     string serviceId,
     bool hasFirmware,
-    bool policyOffOnFirmware = false)
+    bool policyOffOnFirmware = false,
+    bool preferIpf = false)
 {
     internal const string FirmwareChoice = "firmware";
     internal const string PawnIoChoice = "pawnio";
@@ -106,13 +108,20 @@ internal sealed class IntelPowerPaths(
                     read: true, write: true) with { ProfileScope = CapabilityProfileScope.GlobalOnly }
                 : null;
             DeviceTrace.Change(serviceId, "power-path", $"Power paths offered: {string.Join(", ", choices)}.");
+            if (preferIpf && choices.Contains(IpfChoice))
+            {
+                // The model's default where IPF is installed; a saved choice still replaces it.
+                Selected = IntelPowerPath.Ipf;
+            }
         }
 
         if (!Offered(Selected))
         {
-            Selected = hasFirmware ? IntelPowerPath.Firmware : IntelPowerPath.PawnIo;
+            Selected = Fallback;
         }
     }
+
+    private IntelPowerPath Fallback => hasFirmware ? IntelPowerPath.Firmware : IntelPowerPath.PawnIo;
 
     /// <summary>Requests PL1/PL2 from IPF; sent once, never retried.</summary>
     internal void WriteIpf(int sustainedWatts, int boostWatts)
@@ -168,14 +177,14 @@ internal sealed class IntelPowerPaths(
         Selected = path;
         try
         {
-            await ResumeAsync(firmware, token).ConfigureAwait(false);
+            await ApplyAsync(firmware, token).ConfigureAwait(false);
         }
         catch (Exception exception) when (path == IntelPowerPath.Ipf && exception is not OutOfMemoryException)
         {
             DeviceTrace.Warn(serviceId, $"IPF power path unavailable, keeping {Name(previous)}: {exception.Message}");
             // Finish the revert even when the command's deadline cancelled the open.
             Selected = previous;
-            await ResumeAsync(firmware, CancellationToken.None).ConfigureAwait(false);
+            await ApplyAsync(firmware, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
 
@@ -183,7 +192,27 @@ internal sealed class IntelPowerPaths(
     }
 
     /// <summary>Puts the selected path's policy-service state in place after acquisition, and the IPF session.</summary>
+    /// <remarks>
+    ///     An IPF session that cannot open here (a default or saved choice, not a user's switch) falls back to
+    ///     the model's default path so the power service still starts; the reason is logged.
+    /// </remarks>
     internal async ValueTask ResumeAsync(string firmware, CancellationToken token)
+    {
+        try
+        {
+            await ApplyAsync(firmware, token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ViaIpf && exception is not OutOfMemoryException
+                                                 && exception is not OperationCanceledException)
+        {
+            DeviceTrace.Warn(serviceId, $"IPF power path unavailable, using {Name(Fallback)}: {exception.Message}");
+            CloseIpf();
+            Selected = Fallback;
+            await ApplyAsync(firmware, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask ApplyAsync(string firmware, CancellationToken token)
     {
         if (PolicyOff)
         {

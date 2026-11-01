@@ -29,7 +29,8 @@ internal interface IIntelIpfSession : IDisposable
 ///     (SET_RAPL_POWER_LIMIT_CLEAR returns ESIF_E_SESSION_PERMISSION_DENIED), and IPF drops a client's request
 ///     when its session closes, so disconnecting is the release. IPF arbitrates RAPL limits across clients and
 ///     the lowest request wins (esif_uf_arbmgr.c). Verified end to end on an Atlas PA08-I51 with IPF 2.3
-///     (2026-11-01): read 45/65 W, a 30/50 W request reached MCHBAR, and disconnect released it.
+///     (2026-11-01): read 45/65 W, a 30/50 W request reached MCHBAR, and disconnect released it. The full
+///     interface (structures with offsets, callbacks, call order, primitives, errors) is in docs/intel-ipf.md.
 /// </remarks>
 internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
 {

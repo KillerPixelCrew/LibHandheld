@@ -11,6 +11,7 @@ virtual input and when actions are requested.
 | [Controls](controls.md)                                     | Semantic writes, descriptors and uncertain outcomes  |
 | [Input, haptics and glyphs](input.md)                       | Physical reports, OEM events, output and artwork     |
 | [Troubleshooting](troubleshooting.md)                       | Interpret failures without guessing hardware state   |
+| [Intel IPF power limits](intel-ipf.md)                      | The undocumented IPF client interface, byte for byte |
 | [API guide](../API.md) / [Complete reference](reference.md) | Public methods and contracts                         |
 | [Contributing](../CONTRIBUTING.md)                          | Exact native models, protocols and attribution       |
 

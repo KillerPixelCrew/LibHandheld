@@ -116,6 +116,29 @@ public sealed class IntelPowerPathsTests : IDisposable
         Assert.False(paths.HasUnrestored);
     }
 
+    [Fact]
+    public async Task APreferredIpfIsTheDefaultAndFallsBackWhenItCannotOpen()
+    {
+        using TemporaryDirectory directory = new();
+        var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        var preferred = new IntelPowerPaths(journal, "power", hasFirmware: true, policyOffOnFirmware: true,
+            preferIpf: true);
+        preferred.Acquire(pawnIo: true);
+        Assert.Equal(IntelPowerPath.Ipf, preferred.Selected);
+        await preferred.ResumeAsync(Firmware, CancellationToken.None);
+        Assert.True(preferred.ViaIpf);
+        Assert.Single(_sessions);
+        Assert.True(_policy.Running);
+
+        _openFails = true;
+        var broken = new IntelPowerPaths(journal, "power2", hasFirmware: true, policyOffOnFirmware: true,
+            preferIpf: true);
+        broken.Acquire(pawnIo: true);
+        await broken.ResumeAsync(Firmware, CancellationToken.None);
+        Assert.Equal(IntelPowerPath.Firmware, broken.Selected);
+        Assert.False(_policy.Running);
+    }
+
     private sealed class FakePolicy : IIntelPolicyControl
     {
         private int _startType = 2;

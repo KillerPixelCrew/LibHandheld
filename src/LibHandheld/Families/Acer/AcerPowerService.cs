@@ -54,8 +54,10 @@ internal sealed class AcerPowerService(
     private volatile bool _holdLost;
     private CancellationTokenSource? _holdCancellation;
     private Task _hold = Task.CompletedTask;
+    // IPF is the Atlas default where it is installed: it held 45 W sustained where the EC path fell to
+    // 35 W (2026-11-01). Without IPF the default stays the EC firmware path.
     private readonly IntelPowerPaths _paths = new(context.Journal, "acer-power", hasFirmware: true,
-        policyOffOnFirmware: true);
+        policyOffOnFirmware: true, preferIpf: true);
     private IAcerEcTransport? _ec;
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private int? _mode;
@@ -323,7 +325,18 @@ internal sealed class AcerPowerService(
                             DevicePowerMode.BestPerformance)
                         {
                             ScenarioOnAc = "manual", ScenarioOnDc = "manual"
-                        }
+                        },
+                        // The 45 W the IPF path holds sustained (2026-11-01); only where IPF raised the maximum.
+                        .. _maximum > maximum
+                            ? new[]
+                            {
+                                new DevicePowerPreset("extreme-power", "Extreme Power", _maximum, boostMaximum,
+                                    DevicePowerMode.BestPerformance)
+                                {
+                                    ScenarioOnAc = "manual", ScenarioOnDc = "manual"
+                                }
+                            }
+                            : []
                     ]
                 });
                 descriptors.Add(ProviderControls.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,
