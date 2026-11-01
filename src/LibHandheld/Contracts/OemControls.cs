@@ -79,7 +79,16 @@ public enum OemControlPlacement
     Front,
 
     /// <summary>A rear paddle or grip control.</summary>
-    Rear
+    Rear,
+
+    /// <summary>The system power button, published only by a source that sees both of its edges.</summary>
+    /// <remarks>
+    ///     Not a remappable control. Its press and release carry the hold duration the host needs for
+    ///     short and long presses; the host owns what each does and how Windows' own power-button action
+    ///     is held off. A source publishes it only while it can actually read the button, so the host
+    ///     never takes the button away from Windows on a model where WSGM cannot see it.
+    /// </remarks>
+    Power
 }
 
 /// <summary>Which press duration an assignment applies to.</summary>

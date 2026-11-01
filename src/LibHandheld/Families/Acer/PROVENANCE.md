@@ -630,3 +630,37 @@ The maintainer attributes the 80..100 FPS swing seen with the earlier 5 s re-sel
 game running from the SD card, not to the re-selection. That is untested. This build has not had an
 attended game session; held power, frame pacing and the IPF guard on the Firmware path remain to be
 accepted on the PA08-I51.
+
+## Attended power button capture (2026-11-01)
+
+PA08-I51, BIOS V1.03, Windows 11 Pro 10.0.26300, with the Windows power button action set to Do
+nothing for the capture and restored to Sleep (1/1) afterwards. A read-only probe listened on Raw
+Input (System Control, consumer, keyboard), a low-level keyboard hook, direct HID reads, power
+setting notifications and Kernel-Power/Kernel-ACPI ETW while the maintainer pressed the button.
+
+The button reaches Windows through the Intel HID Event Filter (`ACPI\INTC10CC`, service
+`HidEventFilter`). Its child `HID\INTC816` is a Portable Device Control collection (usage page 1,
+usage 0x0D) with one button, System Power Down (0x81), in input report 0x1C. It reports both edges as
+they happen: `1C01` pressed, `1C00` released. Measured holds were 9 ms, 1.90 s and 1.63 s. Two of
+three quick taps a second apart arrived as `1C00` alone, with no press report. A normal user opens
+the collection for shared reading and writing; Windows keeps working alongside it.
+
+Windows' own path is Microsoft's Button Converter (`BUTTONCONVERTER\CONVERTEDDEVICE`), whose System
+Control collection (`Col03`, report 3, usage 0x81) sends `0301` and `0300` together only at release,
+so it carries no hold duration. Windows ignored the two release-only taps entirely and ran its
+configured action 0.6 to 0.9 s after each other release (ETW `ExecutePowerAction`). Holding past
+about 2 s made the converter report the press while held, and winlogon then started
+`SlideToShutDown.exe`. Raw Input, the keyboard hook and the power notifications saw nothing.
+
+Follow-up tests the same day with a stand-alone tool (Atlas8Tweaks power-button 1.0.0), all accepted
+by the maintainer on the device: reading `INTC816` gives working short and long presses with Windows'
+action set to Do nothing; an Image File Execution Options redirect for `SlideToShutDown.exe` stops the
+slide screen; `SetSuspendState(false)` and `NtInitiatePowerAction(PowerActionSleep)` both hibernate
+this S0-only machine (Kernel-Power 187, then a firmware boot); `SC_MONITORPOWER` 2 enters Modern
+Standby (Kernel-Power 506, reason SC_MONITORPOWER, woken by 507 Power Button); an injected Sleep key
+does nothing. Suspending while the button is still held made Windows offer slide-to-shut-down after
+wake, so actions run on release.
+
+LibHandheld publishes the button from `IntelPdcPowerButtonService` as a `Power` placement control.
+The Claw 8 investigation (WSGM #116) found an ACPI fixed-feature button with a press edge only, so
+this source does not apply there. The WSGM integration built on it has not had an attended session.

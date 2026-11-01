@@ -28,6 +28,12 @@ OEM descriptors supply physical identity, placement, press kind, default-action 
 optional ControllerButton alias. Guide/Quick Access can appear through both event and canonical
 paths; prevent duplicate dispatch. Assignments and Steam/overlay actions belong to the host.
 
+A `Power` placement is the system power button, not a remappable control. It is published only by a
+source that sees both edges and only while that source is reading, so the host can time short and
+long presses and knows when it may hold off Windows' own power-button action. A release with no
+press before it arrives as a press and release with one ID. The Intel HID Event Filter source
+(`IntelPdcPowerButtonService`) is the first; a family opts in by adding it to its services.
+
 ## Haptics
 
 ApplyHapticsAsync takes complete HapticOutputFrame motor state with 0–1 amplitudes. Inspect

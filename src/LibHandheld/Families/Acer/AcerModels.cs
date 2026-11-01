@@ -154,7 +154,8 @@ internal static class AcerModels
             ServiceFactories = [context => new AcerControllerModeService(context, controller),
                 context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open),
                 context => new AcerFanService(context, ec),
-                context => new AcerBatteryService(context), context => new AcerLightingService(context, controller)]
+                context => new AcerBatteryService(context), context => new AcerLightingService(context, controller),
+                context => new IntelPdcPowerButtonService(context)]
         });
     }
 }
