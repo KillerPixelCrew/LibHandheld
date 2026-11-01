@@ -40,9 +40,8 @@ internal sealed class AcerPowerService(
     // PA08-I51. Intel's Arc G3 configurable TDP also starts at 8 W.
     private const int AttendedMinimumWatts = 8;
 
-    // With IPF applying the limits, PL1 reaches 45 W: the highest PL1 the Manual profile accepted in the
-    // 2026-10-27 storage tests, and IPF's own idle PL1 on this unit. Firmware selector 2 advertises 40 W.
-    private const int IpfSustainedMaximum = 45;
+    // The sustained maximum is firmware selector 2's 40 W on every path. IPF held 45 W (2026-11-01), but that
+    // keeps the APU at its temperature limit, so the maintainer set the ceiling back to 40 W.
 
     /// <summary>Firmware-path re-apply cadence, HC's TDP watchdog interval.</summary>
     internal static readonly TimeSpan HoldInterval = TimeSpan.FromSeconds(3);
@@ -300,7 +299,7 @@ internal sealed class AcerPowerService(
             var boostMaximum = ReadLimit(selector: 4, token);
             if (minimum > 0 && maximum >= minimum && boostMaximum >= maximum && boostMaximum <= 200)
             {
-                _maximum = _paths.IpfOffered ? Math.Max(maximum, Math.Min(IpfSustainedMaximum, boostMaximum)) : maximum;
+                _maximum = maximum;
                 _boostMaximum = boostMaximum;
                 descriptors.Add(ProviderControls.Integer(CapabilityIds.PowerSustained,
                     CapabilityRole.PowerSustainedLimit, DisplayKey.SustainedPowerLimit, minimum, _maximum,
@@ -325,18 +324,7 @@ internal sealed class AcerPowerService(
                             DevicePowerMode.BestPerformance)
                         {
                             ScenarioOnAc = "manual", ScenarioOnDc = "manual"
-                        },
-                        // The 45 W the IPF path holds sustained (2026-11-01); only where IPF raised the maximum.
-                        .. _maximum > maximum
-                            ? new[]
-                            {
-                                new DevicePowerPreset("extreme-power", "Extreme Power", _maximum, boostMaximum,
-                                    DevicePowerMode.BestPerformance)
-                                {
-                                    ScenarioOnAc = "manual", ScenarioOnDc = "manual"
-                                }
-                            }
-                            : []
+                        }
                     ]
                 });
                 descriptors.Add(ProviderControls.Integer(CapabilityIds.PowerBoost, CapabilityRole.PowerSlowLimit,

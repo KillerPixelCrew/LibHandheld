@@ -693,8 +693,8 @@ package power averaged 44.1-45.1 W with 49-51 W peaks, at 99-100 C. The firmware
 MCHBAR PL1 to 35 W within about 45 s at the same temperature, and 40 W on the IPF path also held past
 three minutes. IPF arbitrates RAPL limits across its clients and the lowest request wins, so this path
 holds a value only up to what Intel's own policy asks for; at 45 W it did not ask for less. The PL1
-maximum is 45 W where the IPF path is offered (the highest PL1 the Manual profile accepted on
-2026-10-27); the firmware maximum stays 40 W otherwise. Raw captures: local
+maximum is the firmware's 40 W on every path: 45 W kept the package at its 99-100 C limit, and the
+maintainer set the ceiling back to 40 W and dropped the Extreme Power preset (2026-11-01). Raw captures: local
 `artifacts/acer-power-monitor-20261101-*.jsonl`; probes in `artifacts/ipf-re`.
 
 ## Pad stall recovery removed (2026-11-01)
