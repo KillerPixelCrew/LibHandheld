@@ -1,4 +1,5 @@
 using LibHandheld.Contracts;
+using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Transports;
@@ -26,7 +27,52 @@ internal sealed partial class ProfiledPowerService(
     {
         _transport?.Dispose();
         _transport = null;
+        _paths?.CloseIpf();
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>Switches between PawnIO and IPF and re-applies the last limits through the new path.</summary>
+    private async ValueTask<CapabilityCommandResult> SelectPathAsync(IntelPowerPaths paths, CapabilityCommand command,
+        string firmware, CancellationToken token)
+    {
+        if (!paths.TryParse(command, out var path))
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
+                "This power-limit path is not available on this device.");
+        }
+
+        if (path == paths.Selected)
+        {
+            return CommandResults.Applied(command);
+        }
+
+        var dispatched = false;
+        try
+        {
+            await paths.SelectAsync(path, firmware, token).ConfigureAwait(false);
+            if (path == IntelPowerPath.Ipf && journal.OriginalStateFor<ProfiledRecoveryState>(ServiceId) is { } original)
+            {
+                // IPF leaves MSR 0x610 at its original.
+                RestorePower(Original(original));
+                await journal.MarkRestoredAsync(ServiceId, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            if (PowerObservation(CpuPowerLimit.Sustained)?.IntegerValue is { } sustained
+                && PowerObservation(CpuPowerLimit.Slow)?.IntegerValue is { } boost)
+            {
+                await WriteAsync(new CpuPowerLimits(sustained, boost, boost), firmware, token, () => dispatched = true)
+                    .ConfigureAwait(false);
+            }
+
+            return CommandResults.Applied(command);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // A path that failed to open has already switched back, so nothing changed: report the reason.
+            return paths.Selected != path && exception is not OperationCanceledException
+                ? CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message)
+                : CommandResults.TransportFailure(command, dispatched, exception);
+        }
     }
 
     internal override ValueTask RefreshAsync(CancellationToken token)
@@ -60,10 +106,20 @@ internal sealed partial class ProfiledPowerService(
     internal async ValueTask WriteAsync(CpuPowerLimits limits, string firmware, CancellationToken token,
         Action dispatched)
     {
-        await CapturePowerOriginalAsync(firmware, token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        dispatched();
-        _transport!.WriteLimits(limits);
+        if (_paths?.ViaIpf == true)
+        {
+            // IPF applies the limits itself; MSR 0x610 stays at its original.
+            token.ThrowIfCancellationRequested();
+            dispatched();
+            _paths.WriteIpf((int)Math.Round(limits.SustainedWatts), (int)Math.Round(limits.BoostWatts));
+        }
+        else
+        {
+            await CapturePowerOriginalAsync(firmware, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            dispatched();
+            _transport!.WriteLimits(limits);
+        }
 
         var at = DateTimeOffset.UtcNow;
         _writtenLimits[CpuPowerLimit.Sustained] = (limits.SustainedWatts, at);
@@ -131,7 +187,7 @@ internal sealed partial class ProfiledPowerService(
 
             if (_paths is not null)
             {
-                await _paths.RestoreAsync(context.Identity.Firmware, token).ConfigureAwait(false);
+                await _paths.ReleaseAsync(context.Identity.Firmware, token).ConfigureAwait(false);
             }
 
             return _unknownOriginalChanged || journal.EntryFor<ProfiledRecoveryState>(ServiceId) is not null

@@ -2,6 +2,7 @@ using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Transports;
 using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Internal.Devices;
@@ -13,7 +14,13 @@ internal enum IntelPowerPath
     Firmware,
 
     /// <summary>MSR 0x610 through the signed PawnIO IntelMSR module.</summary>
-    PawnIo
+    PawnIo,
+
+    /// <summary>
+    ///     PL1/PL2 requested from Intel's IPF over its elevated client session; IPF itself applies them, so
+    ///     its service stays running and Memory Integrity can stay on.
+    /// </summary>
+    Ipf
 }
 
 /// <summary>The user's Intel power-path choice and the Intel policy-service guard.</summary>
@@ -37,6 +44,7 @@ internal sealed class IntelPowerPaths(
 {
     internal const string FirmwareChoice = "firmware";
     internal const string PawnIoChoice = "pawnio";
+    internal const string IpfChoice = "ipf";
     private static readonly string[] PolicyServices = ["ipfsvc", "esifsvc"];
 
     /// <summary>The Service Control Manager seam; the test assembly replaces it so no fixture touches real services.</summary>
@@ -44,14 +52,25 @@ internal sealed class IntelPowerPaths(
     private readonly string _policyRecoveryId = serviceId + ".intel-policy";
     private IReadOnlyList<string>? _choices;
     private bool _policyRestartReported;
+    private IIntelIpfSession? _ipf;
+
+    /// <summary>Opens the IPF session; the test assembly replaces it so no fixture loads Intel's library.</summary>
+    internal static Func<IIntelIpfSession>? OpenIpf { get; set; } = IntelIpfTransport.Open;
+
+    /// <summary>Whether IPF's client library is installed; the test assembly replaces it.</summary>
+    internal static Func<bool> IpfPresent { get; set; } = IntelIpfTransport.Present;
 
     /// <summary>The selected path; the default is Firmware where the model has one, otherwise PawnIO.</summary>
     internal IntelPowerPath Selected { get; private set; } = hasFirmware ? IntelPowerPath.Firmware : IntelPowerPath.PawnIo;
 
-    /// <summary>Whether a CPU register path is selected.</summary>
-    internal bool Direct => Selected != IntelPowerPath.Firmware;
+    /// <summary>Whether the PawnIO MSR path is selected.</summary>
+    internal bool Direct => Selected == IntelPowerPath.PawnIo;
 
-    private bool PolicyOff => Direct || policyOffOnFirmware;
+    /// <summary>Whether IPF carries the limits.</summary>
+    internal bool ViaIpf => Selected == IntelPowerPath.Ipf;
+
+    // IPF must run for its own path; it stays off on PawnIO, and on Firmware where the model asks.
+    private bool PolicyOff => Direct || (Selected == IntelPowerPath.Firmware && policyOffOnFirmware);
 
     /// <summary>The path choice, fixed at first acquisition; null before it or when only one path exists.</summary>
     internal CapabilityDescriptor? Descriptor { get; private set; }
@@ -75,6 +94,11 @@ internal sealed class IntelPowerPaths(
                 choices.Add(PawnIoChoice);
             }
 
+            if (IpfPresent() && PolicyControl.Read("ipfsvc") is not null)
+            {
+                choices.Add(IpfChoice);
+            }
+
             _choices = choices;
             Descriptor = choices.Count > 1
                 ? CapabilityDescriptors.Choice(CapabilityIds.PowerBackend, CapabilityRole.PowerBackend,
@@ -90,6 +114,27 @@ internal sealed class IntelPowerPaths(
         }
     }
 
+    /// <summary>Requests PL1/PL2 from IPF; sent once, never retried.</summary>
+    internal void WriteIpf(int sustainedWatts, int boostWatts)
+    {
+        var ipf = _ipf ?? throw new InvalidOperationException("The IPF session is not open.");
+        ipf.WriteLimits(sustainedWatts, boostWatts);
+    }
+
+    /// <summary>Withdraws WSGM's IPF request and closes the session; IPF's own policy value applies again.</summary>
+    internal void CloseIpf()
+    {
+        _ipf?.Dispose();
+        _ipf = null;
+    }
+
+    /// <summary>Closes the IPF session, then restores the policy service, when ownership ends.</summary>
+    internal ValueTask ReleaseAsync(string firmware, CancellationToken token)
+    {
+        CloseIpf();
+        return RestoreAsync(firmware, token);
+    }
+
     internal CapabilityState State(bool owned, CapabilityReason? reason)
     {
         return ProviderControls.State(CapabilityIds.PowerBackend, owned, CapabilityValue.Choice(Name(Selected)),
@@ -103,6 +148,7 @@ internal sealed class IntelPowerPaths(
         {
             FirmwareChoice => IntelPowerPath.Firmware,
             PawnIoChoice => IntelPowerPath.PawnIo,
+            IpfChoice => IntelPowerPath.Ipf,
             _ => (IntelPowerPath)(-1)
         };
         return Offered(path);
@@ -110,17 +156,63 @@ internal sealed class IntelPowerPaths(
 
     /// <summary>Switches path and turns the policy service off or back on for it.</summary>
     /// <remarks>The caller restores or re-applies its own MSR and firmware limits for the new path.</remarks>
+    /// <remarks>A failed IPF session open returns to the previous path and its policy state, then rethrows.</remarks>
     internal async ValueTask SelectAsync(IntelPowerPath path, string firmware, CancellationToken token)
     {
+        var previous = Selected;
+        if (path != IntelPowerPath.Ipf)
+        {
+            CloseIpf();
+        }
+
         Selected = path;
+        try
+        {
+            await ResumeAsync(firmware, token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (path == IntelPowerPath.Ipf && exception is not OutOfMemoryException)
+        {
+            DeviceTrace.Warn(serviceId, $"IPF power path unavailable, keeping {Name(previous)}: {exception.Message}");
+            // Finish the revert even when the command's deadline cancelled the open.
+            Selected = previous;
+            await ResumeAsync(firmware, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+
         DeviceTrace.Change(serviceId, "power-path", $"Power limit path: {Name(path)}.");
-        await ResumeAsync(firmware, token).ConfigureAwait(false);
     }
 
-    /// <summary>Puts the selected path's policy-service state in place after acquisition.</summary>
-    internal ValueTask ResumeAsync(string firmware, CancellationToken token)
+    /// <summary>Puts the selected path's policy-service state in place after acquisition, and the IPF session.</summary>
+    internal async ValueTask ResumeAsync(string firmware, CancellationToken token)
     {
-        return PolicyOff ? DisablePolicyAsync(firmware, token) : RestoreAsync(firmware, token);
+        if (PolicyOff)
+        {
+            await DisablePolicyAsync(firmware, token).ConfigureAwait(false);
+            return;
+        }
+
+        await RestoreAsync(firmware, token).ConfigureAwait(false);
+        if (ViaIpf && _ipf is null)
+        {
+            await WaitForPolicyAsync(token).ConfigureAwait(false);
+            _ipf = (OpenIpf ?? throw new InvalidOperationException("No IPF session opener."))();
+            DeviceTrace.Change(serviceId, "power-path", "IPF elevated session open; IPF applies the power limits.");
+        }
+    }
+
+    // A restored ipfsvc takes a few seconds before its elevated listener accepts a session.
+    private static async ValueTask WaitForPolicyAsync(CancellationToken token)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (!PolicyControl.IsRunning("ipfsvc"))
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new IOException("ipfsvc did not start, so IPF cannot apply the power limits.");
+            }
+
+            await Task.Delay(250, token).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Keeps the policy service off while the selected path needs it off; logs a restart once.</summary>
@@ -170,8 +262,16 @@ internal sealed class IntelPowerPaths(
 
     internal static string Name(IntelPowerPath path)
     {
-        return path == IntelPowerPath.Firmware ? FirmwareChoice : PawnIoChoice;
+        return path switch
+        {
+            IntelPowerPath.Firmware => FirmwareChoice,
+            IntelPowerPath.Ipf => IpfChoice,
+            _ => PawnIoChoice
+        };
     }
+
+    /// <summary>Whether the IPF path is offered on this device.</summary>
+    internal bool IpfOffered => Offered(IntelPowerPath.Ipf);
 
     private bool Offered(IntelPowerPath path)
     {

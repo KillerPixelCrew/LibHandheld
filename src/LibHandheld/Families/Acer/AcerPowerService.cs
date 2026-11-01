@@ -40,6 +40,10 @@ internal sealed class AcerPowerService(
     // PA08-I51. Intel's Arc G3 configurable TDP also starts at 8 W.
     private const int AttendedMinimumWatts = 8;
 
+    // With IPF applying the limits, PL1 reaches 45 W: the highest PL1 the Manual profile accepted in the
+    // 2026-10-27 storage tests, and IPF's own idle PL1 on this unit. Firmware selector 2 advertises 40 W.
+    private const int IpfSustainedMaximum = 45;
+
     /// <summary>Firmware-path re-apply cadence, HC's TDP watchdog interval.</summary>
     internal static readonly TimeSpan HoldInterval = TimeSpan.FromSeconds(3);
 
@@ -294,10 +298,10 @@ internal sealed class AcerPowerService(
             var boostMaximum = ReadLimit(selector: 4, token);
             if (minimum > 0 && maximum >= minimum && boostMaximum >= maximum && boostMaximum <= 200)
             {
-                _maximum = maximum;
+                _maximum = _paths.IpfOffered ? Math.Max(maximum, Math.Min(IpfSustainedMaximum, boostMaximum)) : maximum;
                 _boostMaximum = boostMaximum;
                 descriptors.Add(ProviderControls.Integer(CapabilityIds.PowerSustained,
-                    CapabilityRole.PowerSustainedLimit, DisplayKey.SustainedPowerLimit, minimum, maximum,
+                    CapabilityRole.PowerSustainedLimit, DisplayKey.SustainedPowerLimit, minimum, _maximum,
                     CapabilityUnit.Watt, write: true) with
                 {
                     PairedPowerLimitId = CapabilityIds.PowerBoost,
@@ -511,7 +515,7 @@ internal sealed class AcerPowerService(
                     return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
                 }
 
-                if (DirectCpuPower)
+                if (DirectCpuPower || (_maximum > 0 && _paths.ViaIpf))
                 {
                     return await WriteCpuAsync(command, sustained, boost, () => dispatched = true, token)
                         .ConfigureAwait(false);
@@ -641,7 +645,7 @@ internal sealed class AcerPowerService(
             WriteProfile(manual, token, dispatched);
             _manualOpened = true;
             DeviceTrace.Change(ServiceId, "cpu-power",
-                $"EC Manual opened to {_maximum}/{_boostMaximum} W; the CPU registers carry the limits.");
+                $"EC Manual opened to {_maximum}/{_boostMaximum} W; {(_paths.ViaIpf ? "IPF applies" : "MSR 0x610 carries")} the limits.");
         }
 
         await CaptureModeAsync(token).ConfigureAwait(false);
@@ -649,6 +653,17 @@ internal sealed class AcerPowerService(
         SelectMode(ManualMode, token, dispatched);
         _mode = ManualMode;
         _observed.Written(ModeId, CapabilityValue.Choice(ModeName(ManualMode)));
+
+        if (_paths.ViaIpf)
+        {
+            // IPF applies the limits itself; MSR 0x610 stays at its original.
+            token.ThrowIfCancellationRequested();
+            dispatched();
+            _paths.WriteIpf(sustained, boost);
+            _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
+            _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
+            return CommandResults.Applied(command);
+        }
 
         await CaptureCpuAsync(token).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
@@ -687,16 +702,25 @@ internal sealed class AcerPowerService(
         try
         {
             await _paths.SelectAsync(path, context.Firmware, token).ConfigureAwait(false);
-            if (path == IntelPowerPath.Firmware)
+            if (path != IntelPowerPath.PawnIo)
             {
+                // Firmware and IPF both leave MSR 0x610 at its original.
                 await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
                     RestoreCpuAsync, token).ConfigureAwait(false);
+                _cpuWritten = null;
+            }
+
+            if (path == IntelPowerPath.Firmware)
+            {
                 _manualOpened = false;
             }
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return CommandResults.TransportFailure(command, true, exception);
+            // A path that failed to open has already switched back, so nothing changed: report the reason.
+            return _paths.Selected != path && exception is not OperationCanceledException
+                ? CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message)
+                : CommandResults.TransportFailure(command, true, exception);
         }
 
         if (_mode == ManualMode && sustained is { } pl1 && boost is { } pl2)
@@ -817,7 +841,7 @@ internal sealed class AcerPowerService(
                     RestoreCpuAsync, token).ConfigureAwait(false);
             }
 
-            await _paths.RestoreAsync(context.Firmware, token).ConfigureAwait(false);
+            await _paths.ReleaseAsync(context.Firmware, token).ConfigureAwait(false);
 
             if (_ec is not null)
             {
@@ -852,6 +876,7 @@ internal sealed class AcerPowerService(
         _cpuWritten = null;
         _cpu?.Dispose();
         _cpu = null;
+        _paths.CloseIpf();
         if (_ec is not null)
         {
             _ec = null;

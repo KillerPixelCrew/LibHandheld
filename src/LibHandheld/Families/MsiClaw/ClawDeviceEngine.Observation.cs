@@ -36,7 +36,7 @@ internal sealed partial class ClawDeviceEngine
 
         // HC's ten-second WMI watchdog belongs to the firmware path; a direct path sends no firmware writes.
         if (_power is { State: DeviceServiceState.Owned } && _powerCapability is { } power
-            && _direct is not { Direct: true })
+            && _direct is not { Active: true })
         {
             try
             {

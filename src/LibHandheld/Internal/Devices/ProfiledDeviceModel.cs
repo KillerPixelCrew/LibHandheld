@@ -29,6 +29,12 @@ internal sealed record ProfiledDeviceModel
                 {
                     roles.Add(CapabilityRole.PowerFastLimit);
                 }
+
+                // PawnIO or IPF, where IPF is installed.
+                if (Cpu == CpuPowerKind.Intel)
+                {
+                    roles.Add(CapabilityRole.PowerBackend);
+                }
             }
 
             if (Fan is not null)

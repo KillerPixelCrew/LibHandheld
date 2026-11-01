@@ -23,6 +23,9 @@ internal sealed class ClawDirectPowerService(
     /// <summary>Whether PL1/PL2 go to the CPU registers instead of WMI.</summary>
     internal bool Direct => _msr is not null && Paths.Direct;
 
+    /// <summary>Whether PL1/PL2 bypass WMI, through MSR 0x610 or IPF.</summary>
+    internal bool Active => Direct || Paths.ViaIpf;
+
     /// <summary>Whether the WMI pair was opened to the model maximum in this ownership.</summary>
     internal bool FirmwareOpened { get; set; }
 
@@ -65,6 +68,14 @@ internal sealed class ClawDirectPowerService(
     internal async ValueTask WriteAsync(int sustained, int boost, string binding, Action dispatched,
         CancellationToken token)
     {
+        if (Paths.ViaIpf)
+        {
+            token.ThrowIfCancellationRequested();
+            dispatched();
+            Paths.WriteIpf(sustained, boost);
+            return;
+        }
+
         var msr = _msr ?? throw new InvalidOperationException("The PawnIO MSR path is unavailable.");
         await journal.BeginAsync<ClawMsrOriginal>(MsrRecoveryId, binding, () =>
         {
@@ -89,7 +100,7 @@ internal sealed class ClawDirectPowerService(
         try
         {
             await RestoreMsrAsync(binding, cancellationToken).ConfigureAwait(false);
-            await Paths.RestoreAsync(binding, cancellationToken).ConfigureAwait(false);
+            await Paths.ReleaseAsync(binding, cancellationToken).ConfigureAwait(false);
             return journal.HasUnrestoredMutation(MsrRecoveryId) || Paths.HasUnrestored
                 ? Set(DeviceServiceState.ReleasedUnverified,
                     Missing("The original CPU power registers or Intel policy service were not restored."))
@@ -105,6 +116,7 @@ internal sealed class ClawDirectPowerService(
     {
         _msr?.Dispose();
         _msr = null;
+        Paths.CloseIpf();
         FirmwareOpened = false;
         return ValueTask.CompletedTask;
     }

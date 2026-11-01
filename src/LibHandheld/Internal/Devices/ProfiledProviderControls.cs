@@ -10,7 +10,8 @@ internal sealed partial class ProfiledPowerService
     private bool IndependentPowerLimits => model?.IndependentPowerLimits == true;
 
     // The model is fixed for the service's lifetime, so its controls are described once.
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _descriptors ??= Describe();
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
+        _paths?.Descriptor is { } path ? [.. _descriptors ??= Describe(), path] : _descriptors ??= Describe();
 
     private IReadOnlyList<CapabilityDescriptor> Describe()
     {
@@ -52,12 +53,18 @@ internal sealed partial class ProfiledPowerService
                     State == DeviceServiceState.Owned && _transport?.SupportsIndependentLimits == true,
                     PowerObservation(CpuPowerLimit.Boost), PowerObservationTime(CpuPowerLimit.Boost), Reason)
             }
-            : []
+            : [],
+        .. _paths?.Descriptor is not null ? new[] { _paths.State(State == DeviceServiceState.Owned, Reason) } : []
     ];
 
     internal override async ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
     {
+        if (command.CapabilityId == CapabilityIds.PowerBackend && _paths is not null)
+        {
+            return await SelectPathAsync(_paths, command, firmware, token).ConfigureAwait(false);
+        }
+
         if (State != DeviceServiceState.Owned)
         {
             return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,

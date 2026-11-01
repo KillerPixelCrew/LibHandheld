@@ -664,3 +664,35 @@ wake, so actions run on release.
 LibHandheld publishes the button from `IntelPdcPowerButtonService` as a `Power` placement control.
 The Claw 8 investigation (WSGM #116) found an ACPI fixed-feature button with a press edge only, so
 this source does not apply there. The WSGM integration built on it has not had an attended session.
+
+## IPF power-limit path (2026-11-01)
+
+Attended on the PA08-I51, BIOS V1.03, on AC, IPF 2.3.20303.5058. WSGM now asks Intel's Innovation
+Platform Framework for PL1/PL2 over its elevated client session instead of fighting it. The protocol
+is IPC mode of the DriverStore `ipfipc.dll`, reversed with Rizin and checked against Intel's archived
+Apache-2.0 sources (github.com/intel/dptf: `ipf_ipc_iface.h`, `esif_sdk_iface_app.h`, `ipf_apploader.c`):
+`GetIpcInterface` (type 8, version 1, 132 bytes, client SDK `1.0.11402`) -> `Ipc_Init` ->
+`Ipc_SetAppIface` (AppInterfaceSet type 0, version 4, 192 bytes) -> `IpcSession_Create`
+(`pipe://ipfsrv.elevated`) -> `IpcSession_Connect`, with `IpcSession_WaitForStop` as the message pump on
+its own thread. `esif_data` is packed to 20 bytes. The server then called `AppCreate` (with the
+primitive function), `ParticipantCreate` for TCPU and its domains PKG/CPU/GFX, then the sensors.
+`GET_RAPL_POWER_LIMIT` (38) read 45/65 W; `SET_RAPL_POWER_LIMIT` (130) with instance 0/1 = PL1/PL2
+moved MCHBAR 0x59A0 to the request (30/50 W in the probe) while MSR 0x610 stayed 45/65 W.
+`SET_RAPL_POWER_LIMIT_CLEAR` is refused for this role (`ESIF_E_SESSION_PERMISSION_DENIED`, 3703);
+closing the session releases the request, after which IPF chose 45/86 W itself.
+
+Dead ends on the way, kept so they are not repeated: `ipf_uf.exe shell` and `client` print nothing
+("IPF Shell Disabled"; DCFG `ShellAccessControl` or a release build without shell output); core mode
+through `ipfcore.dll` needs an undocumented `SessionExecute` command syntax; `IpfCore_Init` returned
+`ESIF_E_NO_MEMORY` only because the IPF processor participant (PCI `DEV_B01D`) had been disabled by an
+earlier `Disable-PnpDevice` test, which hides the `{EE27098E-1B22-472A-89D8-5CCCE16B1356}` interface it
+uses to find `InstallDir`. That device must stay enabled.
+
+Result under OCCT with PL1 45 W, PL2 45 W on the IPF path: MCHBAR held 45/45 W for four minutes,
+package power averaged 44.1-45.1 W with 49-51 W peaks, at 99-100 C. The firmware path had lowered
+MCHBAR PL1 to 35 W within about 45 s at the same temperature, and 40 W on the IPF path also held past
+three minutes. IPF arbitrates RAPL limits across its clients and the lowest request wins, so this path
+holds a value only up to what Intel's own policy asks for; at 45 W it did not ask for less. The PL1
+maximum is 45 W where the IPF path is offered (the highest PL1 the Manual profile accepted on
+2026-10-27); the firmware maximum stays 40 W otherwise. Raw captures: local
+`artifacts/acer-power-monitor-20261101-*.jsonl`; probes in `artifacts/ipf-re`.

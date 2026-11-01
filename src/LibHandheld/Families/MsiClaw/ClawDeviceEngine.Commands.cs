@@ -175,7 +175,7 @@ internal sealed partial class ClawDeviceEngine
         }
 
         if (command.CapabilityId is CapabilityIds.PowerSustained or CapabilityIds.PowerBoost
-            && _direct is { Direct: true } direct)
+            && _direct is { Active: true } direct)
         {
             var (sustained, boost) = Limits();
             return WriteDirectLimitsAsync(command, identity, power, direct, sustained, boost, cancellationToken);
@@ -304,15 +304,23 @@ internal sealed partial class ClawDeviceEngine
         try
         {
             await direct.Paths.SelectAsync(path, binding, cancellationToken).ConfigureAwait(false);
+            if (path != IntelPowerPath.PawnIo)
+            {
+                // Firmware and IPF both leave MSR 0x610 at its original.
+                await direct.RestoreMsrAsync(binding, cancellationToken).ConfigureAwait(false);
+            }
+
             if (path == IntelPowerPath.Firmware)
             {
-                await direct.RestoreMsrAsync(binding, cancellationToken).ConfigureAwait(false);
                 direct.FirmwareOpened = false;
             }
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return CommandResults.TransportFailure(command, true, exception);
+            // A path that failed to open has already switched back, so nothing changed: report the reason.
+            return direct.Paths.Selected != path && exception is not OperationCanceledException
+                ? CommandResults.Rejected(command, CapabilityReasonCode.TransportFaulted, exception.Message)
+                : CommandResults.TransportFailure(command, true, exception);
         }
 
         if (sustained is { } pl1 && boost is { } pl2)
@@ -322,7 +330,7 @@ internal sealed partial class ClawDeviceEngine
                 CapabilityId = CapabilityIds.PowerSustained, RequestedValue = CapabilityValue.Integer(pl1),
                 PairedPowerLimitWatts = pl2
             };
-            var result = direct.Direct
+            var result = direct.Active
                 ? await WriteDirectLimitsAsync(reapply, identity, power, direct, pl1, pl2, cancellationToken)
                     .ConfigureAwait(false)
                 : await PowerLimitsAsync(reapply, identity, power, pl1, pl2, cancellationToken).ConfigureAwait(false);

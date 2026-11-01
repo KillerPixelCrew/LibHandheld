@@ -11,6 +11,9 @@ internal static class NoLiveIntelPolicy
     internal static void Install()
     {
         LibHandheld.Internal.Devices.IntelPowerPaths.PolicyControl = new AbsentIntelPolicy();
+        // Never load Intel's IPF library from a fixture.
+        LibHandheld.Internal.Devices.IntelPowerPaths.IpfPresent = () => false;
+        LibHandheld.Internal.Devices.IntelPowerPaths.OpenIpf = null;
     }
 
     private sealed class AbsentIntelPolicy : LibHandheld.Internal.Devices.IIntelPolicyControl
