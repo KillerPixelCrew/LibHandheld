@@ -34,6 +34,17 @@ internal static class AcerModels
         AverageSamples = 10
     };
 
+    /// <summary>The BOE NS080WUM-LX1 panel and its extended variable refresh range.</summary>
+    /// <remarks>
+    ///     The physical EDID hash, the five floor fields, the 28 Hz floor and the factory Intel state come from
+    ///     the Atlas8Tweaks VRR Fix testing; "Extended VRR range" in PROVENANCE.md records them.
+    /// </remarks>
+    internal static ExtendedVrrPanel AtlasPanel { get; } = new("BOE", "0CFF", "NS080WUM-LX1",
+        "F05B01B33B82B9597AE7BB15F5EF43CAEDB9194BF4A81B3008D34E8DBAC6ECCE", 48, 120, 28,
+        [95, 142, 154, 174, 180], [95, 142, 154, 174],
+        // Measured before any change: CUSTOM 48-120 Hz, 0/0 us, both Intel frame rate solutions on.
+        new ExtendedVrrFactoryState(7, 48, 120, 0, 0, true, true));
+
     /// <summary>Predator Sense for Handheld, as the attended 2026-10-27 disable measured it.</summary>
     /// <remarks>
     ///     The ten services, three tasks, two exact MSIX families and dedicated controller keyboard leaf of
@@ -62,7 +73,8 @@ internal static class AcerModels
             // Power, fans, battery, lighting, controller, rear buttons, motion and rumble were accepted on
             // a PA08-I51 in attended sessions; see PROVENANCE.md.
             HardwareVerified = true,
-            FanCurvePresets = AtlasFanCurvePresets
+            FanCurvePresets = AtlasFanCurvePresets,
+            ExtendedVrrPanel = AtlasPanel
         },
         SourceFamilyId = "PredatorAtlas8",
         IdentitySource = ProfileIdentitySource.System,

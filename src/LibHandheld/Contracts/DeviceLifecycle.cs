@@ -45,6 +45,15 @@ public sealed record HandheldDefinition(string Id, string FamilyId, string Name,
     ///     consumer's general shapes apply.
     /// </summary>
     public FanCurvePresetDuties? FanCurvePresets { get; init; }
+
+    /// <summary>
+    ///     The model's internal panel when an EDID override can lower its variable refresh floor, or null.
+    /// </summary>
+    /// <remarks>
+    ///     Exact panel facts for a consumer that offers the extended range. The library writes neither the
+    ///     override nor any driver state; see <see cref="ExtendedVrrPanel" />.
+    /// </remarks>
+    public ExtendedVrrPanel? ExtendedVrrPanel { get; init; }
 }
 
 /// <summary>Native dependencies required by a model, independently of application controller routing.</summary>

@@ -704,3 +704,34 @@ pad hanging in XInput after Modern Standby, so the stall recovery added on 2026-
 the reader watchdog, the USB port cycle and the profile flag that enabled them. The BIOS version
 was not recorded. A pad that stops answering is now handled only by the ordinary disconnect and
 reacquire path.
+
+## Extended VRR range (2026-11-01)
+
+Source: the maintainer's own [Atlas8Tweaks VRR Fix 1.0.0](https://github.com/KillerPixelCrew/Atlas8Tweaks/tree/main/vrr-fix)
+(`engine/AcerAtlasVrr.ps1`), clone in `_ref/Atlas8Tweaks` at `89bfb6c`. Its approach follows the
+ClawLab MSI Claw Intel VRR Range Fix 3.0.0 (MIT); the Intel driver calls it borrowed are attributed
+in LibGPUDriverInteract, where they live. The floor, flicker and LFC facts below come from the
+Atlas8Tweaks testing on a PA08-I51, not from a new attended WSGM pass.
+
+- Panel: BOE `0CFF` NS080WUM-LX1, 1920x1200, a 256-byte EDID (base block plus one DisplayID
+  extension). The validated physical EDID has SHA-256
+  `F05B01B33B82B9597AE7BB15F5EF43CAEDB9194BF4A81B3008D34E8DBAC6ECCE`. Its VRR range is 48-120 Hz.
+- Floor fields, all 48 on the physical EDID: offset 95 (base range descriptor), 142 (DisplayID
+  dynamic timing range limits), 154 (AMD FreeSync VSDB), 174 and 180 (DisplayID Adaptive-Sync
+  descriptors 1 and 2). A variant sets every one to the new floor, recomputes the DisplayID section
+  checksum over 129..253 into 254, then both block checksums. Setting them back to 48 must give the
+  exact physical EDID, which is how an override Windows reports is traced back to this panel.
+- The earlier test build patched every floor field except offset 180. Its variants, and every floor
+  from 10 to 47 with either offset set, are recognized as this fix's own; any other override is
+  another tool's and is never replaced.
+- The panel visibly flickers below 28 Hz, so 28 Hz is the floor. Intel's low frame rate solution
+  (LFC) engages below 48 fps whatever the EDID floor and switches between x2/x3/x4 multipliers, which
+  judders; with it off, 30-120 fps run native VRR, frames below the 28 Hz floor show exactly twice
+  and 25-28 fps cadence is mixed. The high frame rate solution stays on.
+- With the 28 Hz EDID active, Intel Arc Sync EXCELLENT reports 28-120 Hz. Factory state measured
+  before any change: Arc Sync CUSTOM 48-120 Hz, frame time limits 0/0 us, LFC on, high frame rate
+  solution on.
+
+`ExtendedVrrPanel` carries these facts on the Atlas definition. `AcerExtendedVrrTests` checks the
+variant arithmetic against hashes the script's own functions produced on a synthetic EDID; the real
+physical EDID is not in the repository, so the real hash match is the attended pass's to confirm.

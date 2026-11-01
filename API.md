@@ -20,10 +20,15 @@ selection.
 
 `HandheldDefinition` contains `Id`, `FamilyId`, `Name`, `GlyphProfileId`, `HasController`,
 `HardwareAccess`, `HardwareVerified`, a read-only `DeclaredRoles` snapshot and optional
-`FanCurvePresets`. A model whose fans need their own Quiet, Default and Aggressive shapes carries
+`FanCurvePresets` and `ExtendedVrrPanel`. A model whose fans need their own Quiet, Default and Aggressive shapes carries
 `FanCurvePresetDuties`: duty samples at 0, 10, 20 … °C and the smoothing a software curve applies to
 its temperature (hysteresis, rise and fall per one-second tick, averaged samples). Every other model
-leaves it null and the consumer's general shapes apply. Family IDs are plain identities such as
+leaves it null and the consumer's general shapes apply. A model whose internal panel can run a lower
+variable refresh floor through an EDID override carries `ExtendedVrrPanel`: the exact panel identity
+(`Identifies`), the physical EDID hash, floor field offsets, target floor and measured factory Intel
+state, plus pure `CreateEdid`, `Read` and `Recognize` that build the override and trace a reported or
+overriding EDID back to the physical one (`ExtendedVrrEdid`, `ExtendedVrrVariant`). The library
+writes neither the override nor any driver state. Family IDs are plain identities such as
 `msi-claw`, `rog-ally`, `legion-go`, `gpd`, `ayaneo`, `onexplayer`, `valve` and `zotac`. Exact
 remaining manufacturers keep their own family IDs. There are no CPU-only fallback profiles or legacy
 identity migrations.
