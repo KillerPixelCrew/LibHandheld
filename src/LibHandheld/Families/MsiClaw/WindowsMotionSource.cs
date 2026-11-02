@@ -9,6 +9,7 @@ namespace LibHandheld.Families.MsiClaw;
 internal sealed class WindowsClawMotionSource : IClawMotionSource
 {
     private readonly Lock _gate = new();
+    private readonly MotionDemandSession _session;
 
     /// <summary>
     ///     Outlives the streams on purpose: a calibrator that restarted with the stream after a wake would
@@ -16,7 +17,13 @@ internal sealed class WindowsClawMotionSource : IClawMotionSource
     /// </summary>
     private MotionSampleBuilder? _builder;
 
-    private LegacyMotionStream? _stream;
+    private ClawModel? _model;
+    private Action<MotionSample>? _publish;
+
+    internal WindowsClawMotionSource()
+    {
+        _session = new MotionDemandSession(Open);
+    }
 
     /// <inheritdoc />
     public ValueTask<bool> StartAsync(
@@ -29,56 +36,63 @@ internal sealed class WindowsClawMotionSource : IClawMotionSource
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            if (_stream is not null)
-            {
-                return ValueTask.FromResult(true);
-            }
-
-            var builder = _builder ??= new MotionSampleBuilder(
+            _model = model;
+            _publish = publish;
+            _builder ??= new MotionSampleBuilder(
                 raw => ToApplicationBasis(raw, model.GyroSigns),
                 raw => ToApplicationBasis(raw, model.AccelerometerSigns));
-            if (LegacyMotionSensors.TryOpen(Sources(model)) is not { } sensors)
-            {
-                return ValueTask.FromResult(false);
-            }
-
-            var readingGate = new Lock();
-            DateTimeOffset? lastTimestamp = null;
-            _stream = LegacyMotionStream.Start(sensors, reading =>
-            {
-                lock (readingGate)
-                {
-                    // ISensorDataReport timestamps and HID frame timestamps are UTC. A callback is not
-                    // evidence of a current measurement: Intel may deliver queued or repeated reports.
-                    if (!CanAcceptReading(reading.Timestamp, DateTimeOffset.UtcNow, lastTimestamp))
-                    {
-                        return;
-                    }
-
-                    lastTimestamp = reading.Timestamp;
-                    publish(builder.Build(reading));
-                }
-            });
-            return ValueTask.FromResult(true);
         }
+
+        return ValueTask.FromResult(_session.Start());
     }
 
     /// <inheritdoc />
     public async ValueTask StopAsync(CancellationToken cancellationToken)
     {
-        LegacyMotionStream? stream;
+        // Disposal waits for a callback in flight and the poll thread; neither may hold the caller.
+        await Task.Run(_session.Stop, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public void SetWanted(bool wanted)
+    {
+        _session.SetWanted(wanted);
+    }
+
+    private LegacyMotionStream? Open()
+    {
+        ClawModel? model;
+        Action<MotionSample>? publish;
+        MotionSampleBuilder? builder;
         lock (_gate)
         {
-            stream = _stream;
-            _stream = null;
+            (model, publish, builder) = (_model, _publish, _builder);
         }
 
-        if (stream is not null)
+        if (model is null || publish is null || builder is null
+            || LegacyMotionSensors.TryOpen(Sources(model)) is not { } sensors)
         {
-            // Disposal waits for a callback in flight and the poll thread; neither may hold the caller.
-            await Task.Run(stream.Dispose, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2), cancellationToken)
-                .ConfigureAwait(false);
+            return null;
         }
+
+        var readingGate = new Lock();
+        DateTimeOffset? lastTimestamp = null;
+        return LegacyMotionStream.Start(sensors, reading =>
+        {
+            lock (readingGate)
+            {
+                // ISensorDataReport timestamps and HID frame timestamps are UTC. A callback is not
+                // evidence of a current measurement: Intel may deliver queued or repeated reports.
+                if (!CanAcceptReading(reading.Timestamp, DateTimeOffset.UtcNow, lastTimestamp))
+                {
+                    return;
+                }
+
+                lastTimestamp = reading.Timestamp;
+                publish(builder.Build(reading));
+            }
+        });
     }
 
     /// <inheritdoc />

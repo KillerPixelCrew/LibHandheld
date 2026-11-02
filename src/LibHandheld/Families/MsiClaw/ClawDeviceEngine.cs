@@ -75,6 +75,11 @@ internal sealed partial class ClawDeviceEngine : ProfiledFeatureService
     internal override IReadOnlyList<OemControlDescriptor> OemControls => _publications.OemControls;
     internal override bool DescriptorsChanged => _publications.DescriptorsChanged;
 
+    internal override void SetMotionDemand(bool wanted)
+    {
+        _services.Motion.SetWanted(wanted);
+    }
+
     /// <summary>Starts the first cycle from the plugin context and publishes through <see cref="_publications" />.</summary>
     private async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {

@@ -38,6 +38,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     private Task _oemPublication = Task.CompletedTask;
     private long _oemSequence;
     private ProfiledPowerService? _power;
+    private volatile bool _motionWanted = true;
     private volatile bool _quiescing = true;
     private IDeviceSink? _sink;
     private CapabilityDescriptorSet? _surface;
@@ -131,6 +132,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             foreach (var factory in _profile.ServiceFactories)
             {
                 var service = factory(featureContext);
+                service.SetMotionDemand(_motionWanted);
                 _nativeServices.Add(service);
                 _services.Add(service);
             }
@@ -150,6 +152,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             if (_profile.Motion is { } motion)
             {
                 _motion = new StandardMotionSource(motion);
+                _motion.SetWanted(_motionWanted);
                 _services.Add(new ProfiledMotionService(_motion));
             }
 
@@ -265,6 +268,33 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     public ValueTask ReleaseControllerAsync(EngineControllerReleaseContext context, CancellationToken token)
     {
         return SetControllerManagementAsync(new EngineControllerManagementContext(false, context.Deadline), token);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    ///     Runs on the caller's thread outside the command lane: opening or closing a sensor pair writes
+    ///     no hardware state, and the sources serialize their own sessions.
+    /// </remarks>
+    public void SetMotionDemand(bool wanted)
+    {
+        _motionWanted = wanted;
+        _motion?.SetWanted(wanted);
+        // The start lane may be filling the list; a feature it adds afterwards reads _motionWanted itself.
+        // Indexing never throws the enumerator's concurrent-modification error.
+        for (var i = 0; i < _nativeServices.Count; i++)
+        {
+            ProfiledFeatureService? feature;
+            try
+            {
+                feature = _nativeServices[i];
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                break;
+            }
+
+            feature?.SetMotionDemand(wanted);
+        }
     }
 
     public ValueTask SetControllerManagementAsync(EngineControllerManagementContext context, CancellationToken token)

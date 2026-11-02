@@ -15,6 +15,12 @@ internal interface IAllyMotionSource : IAsyncDisposable
     ValueTask<bool> StartAsync(Action<MotionSample> publish, CancellationToken cancellationToken);
 
     ValueTask StopAsync(CancellationToken cancellationToken);
+
+    /// <summary>Opens or closes the sensors to match whether anything reads motion.</summary>
+    /// <param name="wanted">Whether a consumer reads motion.</param>
+    void SetWanted(bool wanted)
+    {
+    }
 }
 
 /// <summary>The Ally IMU through Windows sensors.</summary>
@@ -22,53 +28,59 @@ internal interface IAllyMotionSource : IAsyncDisposable
 ///     HC reads the WinRT <c>Gyrometer</c> and <c>Accelerometer</c> first and falls back to the legacy
 ///     Sensor API only when WinRT exposes neither (<c>IDevice.PullSensors</c>, <c>IDevice.cs:1152-1172</c>;
 ///     <c>WindowsSensorManager.cs:96-192</c>). The Device Lab run on RC73XA found BMI320 accelerometer and
-///     gyrometer sensors on the standard legacy motion fields, which the SDK's legacy stream reads.
+///     gyrometer sensors on the standard legacy motion fields, which the SDK's legacy stream reads. The
+///     sensors stream only while the host wants motion.
 /// </remarks>
-/// <param name="model">Model axis transforms applied before the retained gyro-offset correction.</param>
-internal sealed class WindowsAllyMotionSource(AllyModel model) : IAllyMotionSource
+internal sealed class WindowsAllyMotionSource : IAllyMotionSource
 {
     /// <summary>Outlives each session, so a restarted stream keeps the measured zero-rate offset.</summary>
-    private readonly MotionSampleBuilder _builder = new(model.Gyro.Apply, model.Accelerometer.Apply);
+    private readonly MotionSampleBuilder _builder;
 
-    private readonly Lock _gate = new();
+    private readonly MotionDemandSession _session;
+    private volatile Action<MotionSample>? _publish;
 
-    private IDisposable? _session;
+    /// <param name="model">Model axis transforms applied before the retained gyro-offset correction.</param>
+    internal WindowsAllyMotionSource(AllyModel model)
+    {
+        _builder = new MotionSampleBuilder(model.Gyro.Apply, model.Accelerometer.Apply);
+        _session = new MotionDemandSession(Open);
+    }
 
     public ValueTask<bool> StartAsync(Action<MotionSample> publish, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(publish);
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_gate)
-        {
-            if (_session is not null)
-            {
-                return ValueTask.FromResult(true);
-            }
-
-            var builder = _builder;
-            _session = WinRtMotionSession.TryStart(builder, publish)
-                       ?? (IDisposable?)(LegacyMotionSensors.TryOpen([LegacyMotionSensorSource.Standard]) is { } sensors
-                           ? LegacyMotionStream.Start(sensors, reading => publish(builder.Build(reading)))
-                           : null);
-            return ValueTask.FromResult(_session is not null);
-        }
+        _publish = publish;
+        return ValueTask.FromResult(_session.Start());
     }
 
     public ValueTask StopAsync(CancellationToken cancellationToken)
     {
-        IDisposable? session;
-        lock (_gate)
-        {
-            session = _session;
-            _session = null;
-        }
-
-        session?.Dispose();
+        _session.Stop();
         return ValueTask.CompletedTask;
+    }
+
+    public void SetWanted(bool wanted)
+    {
+        _session.SetWanted(wanted);
     }
 
     public ValueTask DisposeAsync()
     {
         return StopAsync(CancellationToken.None);
+    }
+
+    private IDisposable? Open()
+    {
+        if (_publish is not { } publish)
+        {
+            return null;
+        }
+
+        var builder = _builder;
+        return WinRtMotionSession.TryStart(builder, publish)
+               ?? (IDisposable?)(LegacyMotionSensors.TryOpen([LegacyMotionSensorSource.Standard]) is { } sensors
+                   ? LegacyMotionStream.Start(sensors, reading => publish(builder.Build(reading)))
+                   : null);
     }
 }

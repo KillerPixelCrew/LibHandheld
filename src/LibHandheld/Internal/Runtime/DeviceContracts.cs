@@ -36,6 +36,12 @@ internal interface NativeEngine : IAsyncDisposable
     ValueTask<EngineStopResult> StopAsync(
         EngineStopContext context,
         CancellationToken cancellationToken);
+
+    /// <summary>Opens or closes motion sensors to match whether the host reads motion; kept across restarts.</summary>
+    /// <param name="wanted">Whether anything reads motion.</param>
+    void SetMotionDemand(bool wanted)
+    {
+    }
 }
 
 internal sealed record EngineStartContext

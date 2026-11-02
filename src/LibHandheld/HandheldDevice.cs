@@ -14,6 +14,7 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
     private readonly Action<DeviceLogEntry>? _diagnostics;
     private readonly NativeEngine _engine;
     private readonly DeviceIdentitySnapshot _identity;
+    private readonly SemaphoreSlim _motionDemand = new(1, 1);
     private readonly Lock _operations = new();
     private readonly SemaphoreSlim _owner = new(1, 1);
     private readonly HandheldResources _resources;
@@ -21,6 +22,7 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
     private volatile bool _active;
     private volatile HapticCapabilities? _hapticOutputCapabilities;
     private bool _disposed;
+    private bool _motionWanted = true;
     private bool _started;
     private DeviceStopResult? _stopResult;
     private bool _suspended;
@@ -338,6 +340,34 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
         {
             _owner.Release();
         }
+    }
+
+    /// <summary>Says whether anything reads motion, so the IMU streams only while it is wanted.</summary>
+    /// <param name="wanted">Whether a consumer reads motion. The default before any call is true.</param>
+    /// <param name="cancellationToken">Cancels waiting for the sensors to open or close.</param>
+    /// <returns>Completion once the sensors match; runs off the caller's thread.</returns>
+    /// <remarks>
+    ///     May be called before <see cref="StartAsync" />: the latest demand is kept across start, suspend
+    ///     and resume. While motion is not wanted, controller samples carry no motion.
+    /// </remarks>
+    public Task SetMotionDemandAsync(bool wanted, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        Volatile.Write(ref _motionWanted, wanted);
+        return Task.Run(async () =>
+        {
+            // One change at a time, each applying the latest demand, so quick toggles end where the
+            // last call asked.
+            await _motionDemand.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                _engine.SetMotionDemand(Volatile.Read(ref _motionWanted));
+            }
+            finally
+            {
+                _motionDemand.Release();
+            }
+        }, cancellationToken);
     }
 
     /// <summary>Releases physical input and restores the native controller baseline.</summary>

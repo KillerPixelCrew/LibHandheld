@@ -284,6 +284,12 @@ internal interface IClawMotionSource : IAsyncDisposable
     /// <param name="cancellationToken">Cancels waiting for cleanup, not native cleanup itself.</param>
     /// <returns>Completion after cleanup; timeout may leave native owners retained until callbacks finish.</returns>
     ValueTask StopAsync(CancellationToken cancellationToken);
+
+    /// <summary>Opens or closes the sensors to match whether anything reads motion.</summary>
+    /// <param name="wanted">Whether a consumer reads motion.</param>
+    void SetWanted(bool wanted)
+    {
+    }
 }
 
 /// <summary>Suppresses known firmware keyboard chords while publishing their semantic identity.</summary>

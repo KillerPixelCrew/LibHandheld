@@ -64,6 +64,7 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
     private AllyModel? _model;
     private AllyMotionService? _motion;
     private IAllyMotionSource? _motionSource;
+    private volatile bool _motionWanted = true;
     private PowerService? _power;
     private bool _quiescing;
     private IReadOnlyList<DeviceService<AllyIdentityState>> _services = [];
@@ -89,6 +90,12 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
     internal override IReadOnlyList<CapabilityState> States => _publications.States;
     internal override IReadOnlyList<OemControlDescriptor> OemControls => _publications.OemControls;
     internal override bool DescriptorsChanged => _publications.DescriptorsChanged;
+
+    internal override void SetMotionDemand(bool wanted)
+    {
+        _motionWanted = wanted;
+        _motionSource?.SetWanted(wanted);
+    }
 
     /// <summary>Builds the cycle's services for the detected model, reconciles the journal and acquires them.</summary>
     private async ValueTask InitializeAsync(CancellationToken cancellationToken)
@@ -118,6 +125,7 @@ internal sealed partial class AllyDeviceEngine : ProfiledFeatureService
             _aura = _hardware.Aura(definition);
             _source = _hardware.Controller(definition, _buttons);
             _motionSource = _hardware.Motion(definition);
+            _motionSource.SetWanted(_motionWanted);
             _vendorEvents = new VendorEventService(_vendor, _publications, _buttons);
             _keyboard = new KeyboardOemService(_hardware.Keyboard, _publications, _buttons);
             _power = new PowerService(_hardware.Acpi, _hardware.Delay, _journal);

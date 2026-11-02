@@ -24,6 +24,12 @@ internal abstract class ProfiledFeatureService(string serviceId) : DeviceService
     {
     }
 
+    /// <summary>Opens or closes the feature's own motion sensors to match the host's demand.</summary>
+    /// <param name="wanted">Whether anything reads motion.</param>
+    internal virtual void SetMotionDemand(bool wanted)
+    {
+    }
+
     internal abstract override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command,
         string firmware,
         CancellationToken token);
