@@ -28,6 +28,32 @@ internal interface ILegionHid : IAsyncDisposable
 /// <summary>Command collection and controller acquisition are independent; releasing input retains lighting.</summary>
 internal sealed partial class WindowsLegionHid : ILegionHid
 {
+    /// <summary>The pad nodes this model hides, found as the controller start finds them, without opening any.</summary>
+    /// <param name="model">The exact model.</param>
+    /// <returns>Every controller node at the command collection's port, and the gamepad collection there.</returns>
+    internal static IReadOnlyList<PhysicalDeviceIdentity> PadsToHide(LegionGoModel model)
+    {
+        var candidates = HidDevices.Enumerate(model.VendorId, model.ProductIds.ToArray());
+        var command = HidDevices.Unique(candidates.Where(c => model.Slim
+            ? c.InputLength == 65 && c.OutputLength == 65
+            : c.UsagePage == 0xFFA0 && c.Usage == 1 && c.OutputLength >= 13), _ => true);
+        if (command is null || string.IsNullOrWhiteSpace(command.PhysicalLocation))
+        {
+            return [];
+        }
+
+        var gamepad = HidDevices.Unique(candidates, c => c.UsagePage == 1 && c.Usage is 4 or 5
+                                                         && !string.IsNullOrWhiteSpace(c.PhysicalLocation)
+                                                         && HidDevices.SamePhysicalLocation(c.PhysicalLocation,
+                                                             command.PhysicalLocation));
+        return
+        [
+            .. HidDevices.KnownControllerNodes(model.VendorId, model.ProductIds.ToArray(), command.PhysicalLocation)
+                .Concat(gamepad is null ? [] : [PhysicalIdentities.FromCollection(gamepad)])
+                .DistinctBy(device => device.InstancePath, StringComparer.OrdinalIgnoreCase)
+        ];
+    }
+
     /// <summary>HC's Legion DirectInput button indices.</summary>
     private static readonly CanonicalButtons[] DInputButtons =
     [

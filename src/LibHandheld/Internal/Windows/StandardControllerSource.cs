@@ -278,6 +278,15 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     /// <summary>The longest an unchanged pad goes without its held state being republished.</summary>
     private const long UnchangedHeartbeatMs = 250;
 
+    /// <summary>Whether two XInput gamepad states carry the same buttons, triggers and sticks.</summary>
+    internal static bool SameGamepad(in StandardXInput.Gamepad left, in StandardXInput.Gamepad right)
+    {
+        return left.Buttons == right.Buttons && left.LeftTrigger == right.LeftTrigger
+                                             && left.RightTrigger == right.RightTrigger
+                                             && left.LeftX == right.LeftX && left.LeftY == right.LeftY
+                                             && left.RightX == right.RightX && left.RightY == right.RightY;
+    }
+
     private static void Read(int slot, Func<CanonicalButtons> buttons, Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
         CancellationToken stop,
@@ -288,6 +297,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             using var ticker = new PrecisionTicker(TimeSpan.FromMilliseconds(8), stop);
             var published = false;
             uint lastPacket = 0;
+            StandardXInput.Gamepad lastGamepad = default;
             CanonicalButtons lastOem = default;
             MotionSample? lastMotion = null;
             StandardTouchSample lastTouch = default;
@@ -306,13 +316,16 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                 var sample = motion();
                 var touch = touchpad?.Invoke() ?? default;
                 var tick = Environment.TickCount64;
-                // XInput advances the packet number only when the pad's state changes. An untouched pad
-                // therefore repeats the sample it last published, and every consumer already holds it:
-                // the host latches state, and the virtual target drops identical frames. The poll keeps
-                // its 8 ms cadence, so first input is not delayed; only the unchanged publication is
-                // skipped, and a heartbeat still republishes the held state, so a target that is
-                // re-armed after a wake or a re-plug receives it within UnchangedHeartbeatMs.
-                if (published && state.Packet == lastPacket && oem == lastOem && touch == lastTouch
+                // An untouched pad repeats the sample it last published, and every consumer already holds
+                // it: the host latches state, and the virtual target drops identical frames. The poll
+                // keeps its 8 ms cadence, so first input is not delayed; only the unchanged publication
+                // is skipped, and a heartbeat still republishes the held state, so a target that is
+                // re-armed after a wake or a re-plug receives it within UnchangedHeartbeatMs. The pad's
+                // own values decide "unchanged", never XInput's packet number alone: a driver that does
+                // not advance it on every change would otherwise hold a short press back until the
+                // heartbeat, and the press would be lost.
+                if (published && state.Packet == lastPacket && SameGamepad(state.Gamepad, lastGamepad)
+                    && oem == lastOem && touch == lastTouch
                     && Nullable.Equals(sample, lastMotion) && tick - lastPublishedAt < UnchangedHeartbeatMs)
                 {
                     continue;
@@ -323,6 +336,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                     .GetAwaiter().GetResult();
                 published = true;
                 lastPacket = state.Packet;
+                lastGamepad = state.Gamepad;
                 lastOem = oem;
                 lastMotion = sample;
                 lastTouch = touch;

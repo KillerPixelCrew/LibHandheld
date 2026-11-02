@@ -173,6 +173,18 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
         return WindowsMachineIdentity.Read();
     }
 
+    /// <summary>Detects this handheld and returns the nodes of its built-in pad that must be hidden.</summary>
+    /// <returns>
+    ///     Every controller node of the exact model's pad the controller start would hide, in every mode
+    ///     Windows has seen it in; empty on an unsupported machine, for a pad Steam drives natively, or when
+    ///     the pad is not present. Reads device identity and the device tree only; opens and writes nothing.
+    /// </returns>
+    /// <remarks>Lets a host hide the pad before anything that reads controllers starts.</remarks>
+    public static IReadOnlyList<PhysicalDeviceIdentity> GetPadsToHide()
+    {
+        return DeviceFamilies.PadsToHide(ReadIdentity());
+    }
+
     /// <summary>Matches supplied observations without opening a transport or reading the machine again.</summary>
     public static HandheldDefinition? Detect(DeviceIdentitySnapshot identity)
     {
