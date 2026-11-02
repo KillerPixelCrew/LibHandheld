@@ -275,6 +275,9 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
         }
     }
 
+    /// <summary>The longest an unchanged pad goes without its held state being republished.</summary>
+    private const long UnchangedHeartbeatMs = 250;
+
     private static void Read(int slot, Func<CanonicalButtons> buttons, Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
         CancellationToken stop,
@@ -283,20 +286,47 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
         try
         {
             using var ticker = new PrecisionTicker(TimeSpan.FromMilliseconds(8), stop);
+            var published = false;
+            uint lastPacket = 0;
+            CanonicalButtons lastOem = default;
+            MotionSample? lastMotion = null;
+            StandardTouchSample lastTouch = default;
+            long lastPublishedAt = 0;
             while (ticker.Wait())
             {
-                var now = DateTimeOffset.UtcNow;
                 var status = StandardXInput.StateEx((uint)slot, out var state);
                 if (status != 0)
                 {
-                    publish(CanonicalControllerSample.Neutral(now), stop).GetAwaiter().GetResult();
+                    publish(CanonicalControllerSample.Neutral(DateTimeOffset.UtcNow), stop).GetAwaiter().GetResult();
                     fault(new IOException($"The physical XInput pad disconnected ({status})."));
                     return;
                 }
 
+                var oem = buttons();
+                var sample = motion();
+                var touch = touchpad?.Invoke() ?? default;
+                var tick = Environment.TickCount64;
+                // XInput advances the packet number only when the pad's state changes. An untouched pad
+                // therefore repeats the sample it last published, and every consumer already holds it:
+                // the host latches state, and the virtual target drops identical frames. The poll keeps
+                // its 8 ms cadence, so first input is not delayed; only the unchanged publication is
+                // skipped, and a heartbeat still republishes the held state, so a target that is
+                // re-armed after a wake or a re-plug receives it within UnchangedHeartbeatMs.
+                if (published && state.Packet == lastPacket && oem == lastOem && touch == lastTouch
+                    && Nullable.Equals(sample, lastMotion) && tick - lastPublishedAt < UnchangedHeartbeatMs)
+                {
+                    continue;
+                }
+
                 publish(
-                    StandardControllerCodec.Decode(state.Gamepad, buttons(), motion(), now,
-                        touchpad?.Invoke() ?? default), stop).GetAwaiter().GetResult();
+                    StandardControllerCodec.Decode(state.Gamepad, oem, sample, DateTimeOffset.UtcNow, touch), stop)
+                    .GetAwaiter().GetResult();
+                published = true;
+                lastPacket = state.Packet;
+                lastOem = oem;
+                lastMotion = sample;
+                lastTouch = touch;
+                lastPublishedAt = tick;
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
