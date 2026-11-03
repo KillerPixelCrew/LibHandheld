@@ -174,7 +174,7 @@ internal sealed class ProfiledProcessorService(
             // screen for this session; the next start leaves it out.
             await RecordRefusalAsync(settingId, exception, token).ConfigureAwait(false);
             return CommandResults.Rejected(command, CapabilityReasonCode.Unsupported,
-                $"This firmware does not support the setting: {exception.Message}");
+                "This device's firmware does not support this setting. It will not be offered after WSGM restarts.");
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -392,7 +392,16 @@ internal sealed class ProfiledProcessorService(
             value =>
             {
                 intel.WriteUndervolt(IntelUndervoltRail.Core, value);
-                intel.WriteUndervolt(IntelUndervoltRail.Cache, value);
+                try
+                {
+                    intel.WriteUndervolt(IntelUndervoltRail.Cache, value);
+                }
+                catch (IntelMailboxRefusedException) when (value != 0)
+                {
+                    // Reported as unsupported and left out from the next start, so nothing could undo Core later.
+                    intel.WriteUndervolt(IntelUndervoltRail.Core, 0);
+                    throw;
+                }
             }, neutral: 0);
         Add("processor.gpu-undervolt", "GPU undervolt", -50, 50, CapabilityUnit.Millivolt,
             value => intel.WriteUndervolt(IntelUndervoltRail.Gpu, value), neutral: 0);

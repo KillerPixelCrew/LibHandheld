@@ -414,6 +414,27 @@ public sealed class ProcessorSettingsTests
     }
 
     [Fact]
+    public async Task RefusedCacheRailPutsCoreBackAtZeroAndSaysSoInPlainWords()
+    {
+        using var directory = new TemporaryDirectory();
+        var module = new MailboxModule();
+        var service = IntelProcessor(directory, module, firmware: "bios");
+        await Acquire(service);
+        module.Commands.Clear();
+        module.Refused.Add(0x80000211);
+
+        var result = await service.ExecuteAsync(Set("processor.cpu-undervolt", -30), "bios", CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        Assert.Equal(CapabilityReasonCode.Unsupported, result.Reason?.Code);
+        Assert.DoesNotContain("mailbox", result.Reason?.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new uint[] { 0x80000011, 0x80000211, 0x80000011 }, module.Commands);
+        Assert.Equal(0x8000001100000000UL, module.LastRequest);
+        Assert.Equal(0, Observed(service, "processor.cpu-undervolt"));
+        await service.DisposeAsync();
+    }
+
+    [Fact]
     public async Task IntelResetPassesOverAMailboxRefusal()
     {
         using var directory = new TemporaryDirectory();
@@ -507,12 +528,14 @@ public sealed class ProcessorSettingsTests
         private long _reply;
         internal HashSet<uint> Refused { get; } = [];
         internal List<uint> Commands { get; } = [];
+        internal ulong LastRequest { get; private set; }
 
         public long[] Execute(string function, long[] input, int outputWords)
         {
             if (function == "ioctl_write_msr")
             {
-                var command = (uint)((ulong)input[1] >> 32);
+                LastRequest = (ulong)input[1];
+                var command = (uint)(LastRequest >> 32);
                 Commands.Add(command);
                 _reply = Refused.Contains(command) ? 1L << 32 : 0;
                 return [];
