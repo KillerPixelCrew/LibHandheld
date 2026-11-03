@@ -93,7 +93,7 @@ internal sealed class WinRtMotionSession : IDisposable
                 return null;
             }
 
-            DeviceTrace.Info("motion",
+            DeviceTrace.Write(DeviceTraceLevel.Debug, "motion",
                 $"WinRT IMU active: gyro {gyrometer.MinimumReportInterval} ms, accel "
                 + $"{accelerometer.MinimumReportInterval} ms minimum interval.");
             return new WinRtMotionSession(gyrometer, accelerometer, builder, publish);
