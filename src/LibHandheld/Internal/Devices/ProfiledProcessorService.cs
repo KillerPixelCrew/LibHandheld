@@ -12,7 +12,8 @@ internal sealed class ProfiledProcessorService(
     CpuPowerKind kind,
     int minimumGpuClock = 100,
     int maximumGpuClock = 3000,
-    Func<AmdSmuTransport>? openAmd = null) : ProfiledFeatureService("processor-settings")
+    Func<AmdSmuTransport>? openAmd = null,
+    Func<IntelMsrSettings>? openIntel = null) : ProfiledFeatureService("processor-settings")
 {
     private readonly Dictionary<string, ProcessorSetting> _settings = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int Value, DateTimeOffset At)> _observed = new(StringComparer.Ordinal);
@@ -32,9 +33,10 @@ internal sealed class ProfiledProcessorService(
 
     internal override IReadOnlyList<CapabilityState> States => _descriptors.Select(descriptor =>
     {
-        var observed = _observed.GetValueOrDefault(descriptor.CapabilityId);
-        return ProviderControls.State(descriptor.CapabilityId, State == DeviceServiceState.Owned,
-            _observed.ContainsKey(descriptor.CapabilityId) ? CapabilityValue.Integer(observed.Value) : null,
+        var owned = State == DeviceServiceState.Owned;
+        var known = _observed.TryGetValue(descriptor.CapabilityId, out var observed);
+        return ProviderControls.State(descriptor.CapabilityId, owned,
+            owned && known ? CapabilityValue.Integer(observed.Value) : null,
             observed.At, descriptor.CapabilityId == CapabilityIds.ProcessorReset ? _resetReason ?? Reason : Reason);
     }).ToArray();
 
@@ -47,7 +49,7 @@ internal sealed class ProfiledProcessorService(
         DeviceCycleContext<ProfiledCycleIdentity> context, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _observed.Clear();
+        KeepNeutralOffsets();
         _settings.Clear();
         _automaticGpu = null;
         var processor = featureContext.Identity.ProcessorName;
@@ -63,7 +65,7 @@ internal sealed class ProfiledProcessorService(
             }
             else
             {
-                _intelMsr = IntelMsrSettings.Open();
+                _intelMsr = openIntel?.Invoke() ?? IntelMsrSettings.Open();
                 DescribeIntel();
             }
 
@@ -166,7 +168,7 @@ internal sealed class ProfiledProcessorService(
             }
             return CommandResults.Applied(command);
         }
-        catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
+        catch (Exception exception) when (IsDefiniteRefusal(exception))
         {
             // The firmware does not take this setting at all and nothing was applied. The control stays on
             // screen for this session; the next start leaves it out.
@@ -229,7 +231,7 @@ internal sealed class ProfiledProcessorService(
                         _observed[id] = (value, DateTimeOffset.UtcNow);
                     }
                 }
-                catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
+                catch (Exception exception) when (IsDefiniteRefusal(exception))
                 {
                     // Refused outright, so nothing changed and the reset goes on with the next setting.
                     writing = null;
@@ -304,8 +306,30 @@ internal sealed class ProfiledProcessorService(
         finally
         {
             await DisposeAsync().ConfigureAwait(false);
-            _observed.Clear();
         }
+    }
+
+    /// <summary>Forgets every value a re-acquire must learn again and keeps the offsets at their neutral value.</summary>
+    /// <remarks>
+    ///     A write-only setting cannot be read back and a wake does not settle again, so without this a settled
+    ///     offset would turn Unknown after every wake. A value the user chose is forgotten: the host compares
+    ///     its desired value with the published one, so it writes that value again in case the wake lost it.
+    /// </remarks>
+    private void KeepNeutralOffsets()
+    {
+        foreach (var (id, observed) in _observed.ToArray())
+        {
+            if (!_settings.TryGetValue(id, out var setting) || setting.Read is not null
+                                                            || setting.Neutral != observed.Value)
+            {
+                _observed.Remove(id);
+            }
+        }
+    }
+
+    private static bool IsDefiniteRefusal(Exception exception)
+    {
+        return exception is IntelMailboxRefusedException || AmdSmuTransport.IsDefiniteRefusal(exception);
     }
 
     internal override ValueTask DisposeAsync()
@@ -437,7 +461,7 @@ internal sealed class ProfiledProcessorService(
                 setting.Write(neutral);
                 _observed[id] = (neutral, DateTimeOffset.UtcNow);
             }
-            catch (Exception exception) when (AmdSmuTransport.IsDefiniteRefusal(exception))
+            catch (Exception exception) when (IsDefiniteRefusal(exception))
             {
                 _withheld!.Add(id);
                 RemoveSetting(id);

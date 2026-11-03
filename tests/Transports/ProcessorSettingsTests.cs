@@ -368,6 +368,117 @@ public sealed class ProcessorSettingsTests
         await service.DisposeAsync();
     }
 
+    [Fact]
+    public async Task IntelMailboxRefusalAtStartHidesTheSettingAndIsRemembered()
+    {
+        using var directory = new TemporaryDirectory();
+        var refusing = new MailboxModule { Refused = { 0x80000111 } };
+        var first = IntelProcessor(directory, refusing, firmware: "bios");
+        await Acquire(first);
+        Assert.DoesNotContain(first.Descriptors, d => d.CapabilityId == "processor.gpu-undervolt");
+        Assert.Equal(0, Observed(first, "processor.cpu-undervolt"));
+        Assert.Equal(0, Observed(first, "processor.system-agent-undervolt"));
+        Assert.True(File.Exists(Path.Combine(directory.Root, UnsupportedSettings.FileName)));
+        await first.DisposeAsync();
+
+        var next = new MailboxModule();
+        var restarted = IntelProcessor(directory, next, firmware: "bios");
+        await Acquire(restarted);
+        Assert.DoesNotContain(restarted.Descriptors, d => d.CapabilityId == "processor.gpu-undervolt");
+        Assert.DoesNotContain(0x80000111u, next.Commands);
+        await restarted.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task IntelMailboxRefusalOfAUserWriteIsUnsupportedAndLeftOutFromTheNextStart()
+    {
+        using var directory = new TemporaryDirectory();
+        var module = new MailboxModule();
+        var service = IntelProcessor(directory, module, firmware: "bios");
+        await Acquire(service);
+        service.AcknowledgeDescriptors();
+        module.Refused.Add(0x80000411);
+
+        var result = await service.ExecuteAsync(Set("processor.system-agent-undervolt", -30), "bios",
+            CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        Assert.Equal(CapabilityReasonCode.Unsupported, result.Reason?.Code);
+        Assert.Contains(service.Descriptors, d => d.CapabilityId == "processor.system-agent-undervolt");
+        await service.DisposeAsync();
+
+        var restarted = IntelProcessor(directory, new MailboxModule(), firmware: "bios");
+        await Acquire(restarted);
+        Assert.DoesNotContain(restarted.Descriptors, d => d.CapabilityId == "processor.system-agent-undervolt");
+        await restarted.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task IntelResetPassesOverAMailboxRefusal()
+    {
+        using var directory = new TemporaryDirectory();
+        var module = new MailboxModule();
+        var service = IntelProcessor(directory, module, firmware: "bios");
+        await Acquire(service);
+        module.Commands.Clear();
+        module.Refused.Add(0x80000111);
+
+        var result = await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = CapabilityIds.ProcessorReset, Deadline = Deadline.Never
+        }, "bios", CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Contains(0x80000411u, module.Commands);
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task WakeKeepsNeutralOffsetsWithoutWritingAndForgetsAChosenValue()
+    {
+        using var directory = new TemporaryDirectory();
+        var module = new MailboxModule();
+        var service = IntelProcessor(directory, module, firmware: "bios");
+        await Acquire(service);
+        await service.ExecuteAsync(Set("processor.gpu-undervolt", -30), "bios", CancellationToken.None);
+        Assert.Equal(-30, Observed(service, "processor.gpu-undervolt"));
+
+        await service.SuspendAsync(Cycle(), CancellationToken.None);
+        Assert.Null(Observed(service, "processor.cpu-undervolt"));
+
+        module.Commands.Clear();
+        await Acquire(service);
+        Assert.Empty(module.Commands);
+        Assert.Equal(0, Observed(service, "processor.cpu-undervolt"));
+        Assert.Equal(0, Observed(service, "processor.system-agent-undervolt"));
+        Assert.Null(Observed(service, "processor.gpu-undervolt"));
+        await service.DisposeAsync();
+    }
+
+    private static CapabilityCommand Set(string id, int value)
+    {
+        return new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = id, Deadline = Deadline.Never,
+            RequestedValue = CapabilityValue.Integer(value)
+        };
+    }
+
+    private static DeviceCycleContext<ProfiledCycleIdentity> Cycle()
+    {
+        return new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never, new ProfiledCycleIdentity("bios"));
+    }
+
+    private static ProfiledProcessorService IntelProcessor(TemporaryDirectory directory, MailboxModule module,
+        string firmware)
+    {
+        return new ProfiledProcessorService(
+            new ProfiledFeatureContext(directory.Root, firmware, new TestPluginHostAdapter(1))
+            {
+                Journal = TestRecovery.Open(directory.Root)
+            }, CpuPowerKind.Intel, openIntel: () => new IntelMsrSettings(module));
+    }
+
     private static ProfiledProcessorService Processor(TemporaryDirectory directory, SettingsModule module,
         uint codeName, string firmware)
     {
@@ -388,6 +499,31 @@ public sealed class ProcessorSettingsTests
     private static long? Observed(ProfiledProcessorService service, string id)
     {
         return service.States.Single(state => state.CapabilityId == id).ObservedValue?.IntegerValue;
+    }
+
+    /// <summary>An Intel OC mailbox whose firmware completes the listed commands with a nonzero status.</summary>
+    private sealed class MailboxModule : IPawnIoModule
+    {
+        private long _reply;
+        internal HashSet<uint> Refused { get; } = [];
+        internal List<uint> Commands { get; } = [];
+
+        public long[] Execute(string function, long[] input, int outputWords)
+        {
+            if (function == "ioctl_write_msr")
+            {
+                var command = (uint)((ulong)input[1] >> 32);
+                Commands.Add(command);
+                _reply = Refused.Contains(command) ? 1L << 32 : 0;
+                return [];
+            }
+
+            return [_reply];
+        }
+
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class SettingsModule : IPawnIoModule

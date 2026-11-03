@@ -39,7 +39,7 @@ public sealed class IntelMsrSettingsTests
         }
         else
         {
-            Assert.Equal(error, Assert.Throws<Win32Exception>(() =>
+            Assert.Equal(error, Assert.Throws<IntelMailboxRefusedException>(() =>
                 settings.WriteUndervolt(IntelUndervoltRail.Cache, 0)).NativeErrorCode);
         }
         Assert.Equal(1, module.Writes);

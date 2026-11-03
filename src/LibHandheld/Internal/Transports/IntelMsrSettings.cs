@@ -11,6 +11,10 @@ internal enum IntelUndervoltRail
     SystemAgent
 }
 
+/// <summary>The firmware completed an OC mailbox command with a nonzero status: nothing was applied.</summary>
+internal sealed class IntelMailboxRefusedException(byte completion)
+    : Win32Exception(31, $"Intel firmware refused OC mailbox command 11 (status {completion:X2}).");
+
 /// <summary>Intel OC-mailbox voltage settings through the signed, allowlisted PawnIO IntelMSR module.</summary>
 /// <remarks>
 ///     The module permits MSR 0150 but no MCHBAR writes, so Intel GPU clock control has no backend.
@@ -50,7 +54,7 @@ internal sealed class IntelMsrSettings(IPawnIoModule module) : IDisposable
                     {
                         // A completed nonzero mailbox status is a definite firmware refusal, not
                         // an uncertain transport timeout. The shared setting owner withholds it.
-                        throw new Win32Exception(31, $"Intel firmware refused OC mailbox command 11 (status {completion:X2}).");
+                        throw new IntelMailboxRefusedException(completion);
                     }
                     return;
                 }
