@@ -14,9 +14,11 @@ internal static class SteamDeckModels
     internal static IReadOnlyList<HandheldDefinition> Definitions { get; } = Array.AsReadOnly<HandheldDefinition>(
     [
         new HandheldDefinition("steamdeck-lcd", FamilyId, "Steam Deck LCD", "steamdeck-lcd")
-            { HardwareAccess = DeviceHardwareAccess.InpOut, NativeSteamController = true, DeclaredRoles = DeckRoles },
+            { HardwareAccess = DeviceHardwareAccess.InpOut, NativeSteamController = true, DeclaredRoles = DeckRoles,
+                GraphicsDriverUpdateRefusal = "Steam Deck requires Valve's Windows APU driver. Get the certified package from https://help.steampowered.com/en/faqs/view/6121-ECCD-D643-BAA8 . Generic AMD packages are not offered." },
         new HandheldDefinition("steamdeck-oled", FamilyId, "Steam Deck OLED", "steamdeck-oled")
-            { HardwareAccess = DeviceHardwareAccess.InpOut, NativeSteamController = true, DeclaredRoles = DeckRoles },
+            { HardwareAccess = DeviceHardwareAccess.InpOut, NativeSteamController = true, DeclaredRoles = DeckRoles,
+                GraphicsDriverUpdateRefusal = "Steam Deck requires Valve's Windows APU driver. Get the certified package from https://help.steampowered.com/en/faqs/view/6121-ECCD-D643-BAA8 . Generic AMD packages are not offered." },
         new HandheldDefinition("steam-machine", FamilyId, "Steam Machine", "steam-machine")
         {
             HardwareAccess = DeviceHardwareAccess.PawnIo, HasController = false,
