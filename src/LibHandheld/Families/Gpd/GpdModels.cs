@@ -153,6 +153,7 @@ internal static class GpdModels
         {
             Definition = new HandheldDefinition(id, FamilyId, name, GlyphProfile(source))
             {
+                GraphicsDriverUpdateRestriction = cpu == CpuPowerKind.Amd ? GraphicsDriverUpdateRestrictions.AmdHandheld : null,
                 HardwareAccess = DeviceHardwareAccess.PawnIo
             },
             SourceFamilyId = source, Manufacturers = ["GPD"], Products = products, Processors = processors,

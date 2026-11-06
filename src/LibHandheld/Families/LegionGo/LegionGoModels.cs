@@ -42,6 +42,7 @@ internal static class LegionGoModels
     public static IReadOnlyList<HandheldDefinition> Definitions { get; } = All.Select(model =>
         new HandheldDefinition(model.DefinitionId, PackageId, model.DisplayName, model.GlyphProfileId)
         {
+            GraphicsDriverUpdateRestriction = GraphicsDriverUpdateRestrictions.AmdHandheld,
             DeclaredRoles =
             [
                 CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,

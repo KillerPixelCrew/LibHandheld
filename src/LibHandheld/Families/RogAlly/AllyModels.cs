@@ -289,7 +289,10 @@ internal static class AllyModels
     public static IReadOnlyList<HandheldDefinition> Definitions { get; } = All.Select(model =>
         new HandheldDefinition(model.DefinitionId, PackageId, model.DisplayName, model.GlyphProfileId)
         {
-            GraphicsDriverUpdateRefusal = "ROG Ally requires the ASUS-certified graphics package for its Ryzen Z-series APU. Get the matching driver from https://www.asus.com/support/download-center/ . Generic AMD packages are not offered.",
+            // AMD Adrenalin Important Notes exclude handhelds; ASUS provides these Z-series packages.
+            GraphicsDriverUpdateRestriction = new GraphicsDriverUpdateRestriction("1002",
+                "ROG Ally requires the ASUS-certified graphics package for its Ryzen Z-series APU. Get the matching "
+                + "driver from https://www.asus.com/support/download-center/ . Generic AMD packages are not offered."),
             DeclaredRoles =
             [
                 CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,

@@ -160,6 +160,7 @@ internal static class AyaneoModels
         {
             Definition = new HandheldDefinition("ayaneo." + id, FamilyId, name, "ayaneo-" + id)
             {
+                GraphicsDriverUpdateRestriction = cpu == CpuPowerKind.Amd ? GraphicsDriverUpdateRestrictions.AmdHandheld : null,
                 HardwareAccess = DeviceHardwareAccess.PawnIo
             },
             SourceFamilyId = FamilyId, Manufacturers = manufacturers ?? Manufacturers,

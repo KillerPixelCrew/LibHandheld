@@ -11,14 +11,19 @@ internal static class SteamDeckModels
 {
     internal const string FamilyId = "valve";
 
+    // Valve's Windows Resources page supplies the Deck APU package; generic AMD handheld drivers are unsupported.
+    private static readonly GraphicsDriverUpdateRestriction DeckApuDriver = new("1002",
+        "Steam Deck requires Valve's Windows APU driver. Get the certified package from "
+        + "https://help.steampowered.com/en/faqs/view/6121-ECCD-D643-BAA8 . Generic AMD packages are not offered.");
+
     internal static IReadOnlyList<HandheldDefinition> Definitions { get; } = Array.AsReadOnly<HandheldDefinition>(
     [
         new HandheldDefinition("steamdeck-lcd", FamilyId, "Steam Deck LCD", "steamdeck-lcd")
             { HardwareAccess = DeviceHardwareAccess.InpOut, NativeSteamController = true, DeclaredRoles = DeckRoles,
-                GraphicsDriverUpdateRefusal = "Steam Deck requires Valve's Windows APU driver. Get the certified package from https://help.steampowered.com/en/faqs/view/6121-ECCD-D643-BAA8 . Generic AMD packages are not offered." },
+                GraphicsDriverUpdateRestriction = DeckApuDriver },
         new HandheldDefinition("steamdeck-oled", FamilyId, "Steam Deck OLED", "steamdeck-oled")
             { HardwareAccess = DeviceHardwareAccess.InpOut, NativeSteamController = true, DeclaredRoles = DeckRoles,
-                GraphicsDriverUpdateRefusal = "Steam Deck requires Valve's Windows APU driver. Get the certified package from https://help.steampowered.com/en/faqs/view/6121-ECCD-D643-BAA8 . Generic AMD packages are not offered." },
+                GraphicsDriverUpdateRestriction = DeckApuDriver },
         new HandheldDefinition("steam-machine", FamilyId, "Steam Machine", "steam-machine")
         {
             HardwareAccess = DeviceHardwareAccess.PawnIo, HasController = false,

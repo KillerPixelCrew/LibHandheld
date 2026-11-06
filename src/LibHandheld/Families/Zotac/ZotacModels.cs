@@ -19,7 +19,8 @@ internal static class ZotacModels
     internal static readonly ProfiledDeviceModel Zone = new()
     {
         Definition = new HandheldDefinition("zotac-zone", FamilyId, "ZOTAC GAMING ZONE", "zotac-zone")
-            { HardwareAccess = DeviceHardwareAccess.PawnIo | DeviceHardwareAccess.InpOut },
+            { HardwareAccess = DeviceHardwareAccess.PawnIo | DeviceHardwareAccess.InpOut,
+                GraphicsDriverUpdateRestriction = GraphicsDriverUpdateRestrictions.AmdHandheld },
         SourceFamilyId = "GamingZone", Manufacturers = ["PC PARTNER LIMITED", "ZOTAC"], Products = ["G0A1W"],
         Cpu = CpuPowerKind.Amd, MinimumWatts = 8, MaximumWatts = 30,
         // HC GamingZone.DevicePowerProfiles, equal sustained/slow targets.

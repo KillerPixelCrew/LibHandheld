@@ -18,12 +18,9 @@ public sealed record HandheldDefinition(string Id, string FamilyId, string Name,
     public bool HardwareVerified { get; init; }
 
     /// <summary>
-    ///     Why generic GPU updates must be refused for this exact model, including its OEM support source;
-    ///     null when the model has no known requirement for an OEM graphics package.
+    ///     The graphics vendor and OEM requirement adopted by this exact model; null when no restriction is declared.
     /// </summary>
-    public string? GraphicsDriverUpdateRefusal { get; init; } =
-        "AMD's generic Adrenalin packages do not support handheld gaming devices. Use the device manufacturer's "
-        + "graphics driver. See https://www.amd.com/en/resources/support-articles/release-notes/ .";
+    public GraphicsDriverUpdateRestriction? GraphicsDriverUpdateRestriction { get; init; }
 
     /// <summary>Semantic roles actually supplied by this model and its optional accessory services.</summary>
     public IReadOnlyList<CapabilityRole> DeclaredRoles

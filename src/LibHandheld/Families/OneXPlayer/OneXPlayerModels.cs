@@ -230,6 +230,7 @@ internal static class OneXPlayerModels
         {
             Definition = new HandheldDefinition(id, FamilyId, name, id)
             {
+                GraphicsDriverUpdateRestriction = cpu == CpuPowerKind.Amd ? GraphicsDriverUpdateRestrictions.AmdHandheld : null,
                 HardwareAccess = DeviceHardwareAccess.PawnIo
             },
             SourceFamilyId = source, Manufacturers = OneNetbook, Products = products,

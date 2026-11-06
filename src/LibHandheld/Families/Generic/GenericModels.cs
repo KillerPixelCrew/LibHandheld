@@ -166,6 +166,7 @@ internal static class GenericModels
     {
         return new HandheldDefinition(id, id.Split('-')[0] == "asus" ? "asus-flow" : id.Split('-')[0], name, id)
         {
+            GraphicsDriverUpdateRestriction = controller ? GraphicsDriverUpdateRestrictions.AmdHandheld : null,
             HasController = controller,
             HardwareAccess = DeviceHardwareAccess.PawnIo
         };
