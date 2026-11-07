@@ -41,16 +41,24 @@ not a duration. Mode 1 is off, mode 2 steady color and mode 4 breathing; mask 1 
 
 A corrected red/blue/off trial sent `A4 80 02 32 00 00 FF 00 00 01 00`,
 `A4 80 02 32 00 00 00 00 FF 01 00`, then `A4 80 01 00 00 00 00 00 00 01 00`. Every feature write was
-accepted. Corrected physical color acceptance remains pending the maintainer's observation. A4 and
-A2 are write-only; GetFeature acceptance on them does not establish lighting-state readback. The
-runtime therefore publishes the logo's initial values as unknown, uses only its declared effects,
-writes a complete report on an explicit control change, and leaves the chosen lighting on release.
-No ring profile, ninth controller slot, controller mode or ROM is changed by this service.
+accepted. With WSGM running, the maintainer still reported no steady colors. After WSGM exited
+through its normal update-exit event, the maintainer observed blue and the final deliberate off
+state. This establishes blue/off on the separate endpoint; red, animation/speed and coexistence with
+WSGM's other active hardware services remain unaccepted. A4 and A2 are write-only; GetFeature
+acceptance on them does not establish lighting-state readback. The runtime therefore publishes the
+logo's initial values as unknown, uses only its declared effects, writes a complete report on an
+explicit control change, and leaves the chosen lighting on release. No ring profile, ninth
+controller slot, controller mode or ROM is changed by this service.
 
 The real LibHandheld battery and logo services were acquired on the unit without changing any
 setting: both reached Owned. The battery published optimized charging enabled and no custom ceiling;
 the logo published its four instance `logo` controls with unknown initial values. Application UI
 acceptance, logo animation/speed and charging behavior remain distinct from these observations.
+
+Adding a named logo instance also exposed a host routing defect: unqualified role-based ring
+brightness/effect setters became ambiguous. WSGM sends lighting through the exact capability ID and
+instance instead of reselecting the control by role. This routing fix does not establish which
+active hardware operation interfered with the raw logo trial.
 
 [OEM input and software control](OEM_INPUT_AND_DISABLE.md) is the complete operational reference:
 physical source/report mapping, rear-mode acquisition/restoration, software disable targets,
