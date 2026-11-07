@@ -1,28 +1,21 @@
 # Acer Predator Atlas 8
 
-## Predator Sense allowed to start again, 2026-11-07
+## Predator Sense for Handheld can be started, 2026-11-07
 
 Acer has started delivering Atlas 8 BIOS updates through Predator Sense for Handheld and does not
-post them separately on its support site. Blocking the app therefore keeps users on old firmware, so
-`AcerModels.ManagerApps` no longer names its processes, ten services, three scheduled tasks
-(including `PredatorHandheldLauncher`) or two MSIX package families. The entry keeps only the
-dedicated controller keyboard leaf `HID\VID_0502&PID_F901&MI_02&COL01` and the PA08-I51 binding;
-that leaf is firmware input (the front-left Win+Tab hold and the front-right F22 hold) that reaches
-Windows with or without Acer software.
+post them separately on its support site. So that the user can open the app and receive them,
+`AcerModels.ManagerApps` no longer names the desktop process `Handheld.Desktop` or its MSIX family
+`ULICTekInc.PredatorSenseforHandHeld_nt9dgb7efx6bt`. WSGM therefore no longer sets that package's
+status to Disabled and no longer asks the desktop window to close. Everything else stays as
+measured: the ten services, the three tasks including `PredatorHandheldLauncher`, the widget package
+and `Handheld.Widget`, and the dedicated controller keyboard leaf.
 
-The decompiled Predator Sense 1.0.1563.0 desktop app (`Handheld.Desktop`, local
-`artifacts/acer-atlas8-rea-20261027/managed`) runs Live Update from its Update page through
-`AcerService`. It asks the local HTTPS XSense service at `localhost:15152` for `driver/getUpdateList`
-and the local Acer driver service at `localhost:54433/api/v1/` for the begin/download/install/end
-item sequence. Update items carry an `IsBios` flag with dedicated BIOS outcomes
-(`SuccessRequiresRestart`, `NoBiosUpdate`, `BiosFailed`). Which installed service listens on each
-port was not traced, so the whole measured set is released rather than a guessed subset.
-
-Running the Acer stack again brings back what the 2026-10-27 measurement removed: the injected
-LeftWin+G and Predator Sense launch about 200 ms after a Guide tap, and Acer's own lighting, power and
-controller-mode writes over the same WMI and HID routes LibHandheld uses. Handheld Companion 1.3.1.6
-has no Atlas definition and no Acer watcher, so it leaves Predator Sense untouched. No attended run
-with Predator Sense and WSGM active together, and no live BIOS delivery, has been recorded yet.
+The decompiled Predator Sense 1.0.1563.0 desktop app (local
+`artifacts/acer-atlas8-rea-20261027/managed`) runs Live Update from its Update page. It asks local
+HTTPS services at `localhost:15152` and `localhost:54433` for the update list and the
+download/install sequence, and its items carry an `IsBios` flag. While the Acer services stay
+disabled, those requests may fail; which service listens on each port was not traced. Neither an app
+start nor a BIOS delivery with WSGM installed has been recorded yet.
 
 ## Native percentage charging and rear-logo lighting, 2026-11-07
 
@@ -362,7 +355,8 @@ completed successfully; it is not an application/runtime feature. The operationa
 lists every target, proof limit and restoration step.
 
 The subsequent WSGM `OtherManagers` integration adds exact-Atlas Full-mode takeover of those ten
-services, three tasks, two MSIX families and the dedicated controller keyboard. Those identities are
+services, three tasks, two MSIX families and the dedicated controller keyboard (since 2026-11-07 the
+desktop family is left out; see the section above). Those identities are
 recorded in `AcerModels.ManagerApps`, bound to the PA08-I51 definition, and reach the host through
 `HandheldDevice.ManagerApps`. It records changes before dispatch, propagates restart requirements to
 setup, rechecks accepted policy at startup and every five minutes, and restores recorded changes on

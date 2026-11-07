@@ -45,18 +45,21 @@ internal static class AcerModels
         // Measured before any change: CUSTOM 48-120 Hz, 0/0 us, both Intel frame rate solutions on.
         new ExtendedVrrFactoryState(7, 48, 120, 0, 0, true, true));
 
-    /// <summary>Predator Sense for Handheld's dedicated controller keyboard leaf, as measured on 2026-10-27.</summary>
+    /// <summary>Predator Sense for Handheld, as the attended 2026-10-27 disable measured it.</summary>
     /// <remarks>
-    ///     Since 2026-11-07 the entry names no process, service, task or package: Acer delivers Atlas BIOS
-    ///     updates only through Predator Sense's Live Update, so the app and its services must be free to
-    ///     start. The keyboard leaf stays because it is firmware input (the Win+Tab hold) that reaches
-    ///     Windows with or without the app. OEM_INPUT_AND_DISABLE.md records both decisions; the identities
-    ///     are exact PA08-I51 findings, so they apply to this definition only.
+    ///     The ten services, three tasks, the widget's MSIX family and dedicated controller keyboard leaf of
+    ///     OEM_INPUT_AND_DISABLE.md. They are exact PA08-I51 findings, so they apply to this definition only.
+    ///     The desktop app (Handheld.Desktop, its own MSIX family) is left out since 2026-11-07, so the user
+    ///     can start it: Acer delivers Atlas BIOS updates through it.
     /// </remarks>
     internal static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
     [
-        new("acer-predator-handheld", "Predator Sense for Handheld", [], [], [])
+        new("acer-predator-handheld", "Predator Sense for Handheld", ["Handheld.Widget"],
+            ["AASHHSvc", "AcerCCAgentSvis", "AcerDeviceEnablingServiceV2", "AcerHandheld.Service",
+                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "AFZsvc", "ALSSvc", "UEIPSvc"],
+            ["PredatorHandheldLauncher", "UEIPInvitation", "UbtFrameworkService"])
         {
+            PackageFamilies = ["ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"],
             DedicatedKeyboardDeviceId = @"HID\VID_0502&PID_F901&MI_02&COL01",
             DefinitionId = AtlasDefinitionId
         }
