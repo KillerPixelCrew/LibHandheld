@@ -21,12 +21,15 @@ attended hardware evidence. Atlas 8 also has the autonomous on-device results de
 
 Acer Predator Atlas 8 PA08-I51 supplies exact system/board detection, XInput/controller rumble,
 Guide/QAM/M1/M2 input, native EC power and performance modes, two firmware-discovered system fans
-with RPM, optimized charging, Windows motion and volatile controller lighting. Eight individual ring segments have attended physical mapping; shared color retains the unassigned ninth wire slot. Power, charge and
-brightness write/readback/restoration passed on BIOS V1.03, controller release 0100. Fan original
-behavior remains unknown; its Auto fallback is reported unverified. Optional processor voltage settings use
-the signed PawnIO IntelMSR module, independently of EC power. HardwareVerified remains false; see
-[Acer provenance](../src/LibHandheld/Families/Acer/PROVENANCE.md) for exact boundaries and the
-remaining physical acceptance.
+with RPM, optimized charging, native custom charge ceilings, Windows motion and volatile lighting.
+Eight individual ring segments have attended physical mapping; shared color retains the unassigned
+ninth wire slot. A separate ENE endpoint supplies rear-logo color, brightness, effect and speed; the
+logo is not that ninth slot. Power, charge and brightness write/readback/restoration passed on BIOS
+V1.03, controller release 0100. Fan original behavior remains unknown; its Auto fallback is reported
+unverified. Optional processor voltage settings use the signed PawnIO IntelMSR module, independently
+of EC power. The definition is hardware verified; the newer ceiling and rear-logo proof limits are
+recorded separately. See [Acer provenance](../src/LibHandheld/Families/Acer/PROVENANCE.md) for exact
+boundaries and the remaining physical acceptance.
 
 DeclaredRoles lists possible model services, including optional accessories. Live descriptors and
 availability determine usable controls and instances; do not expose every declared role

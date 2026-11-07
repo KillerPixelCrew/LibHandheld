@@ -1,5 +1,57 @@
 # Acer Predator Atlas 8
 
+## Native percentage charging and rear-logo lighting, 2026-11-07
+
+The attended unit was reached through the maintainer's paired Orca runtime. Identity was Acer
+`Predator PA08-I51`, PTL / `F900_PTG`; EC data version was `0800`. No Acer OEM service was started.
+
+The percentage-control lead came from static inspection of Winhanced Installer 1.0.0.5, SHA-256
+`CAB494FA1FEE17BED27839D128A4B4CC17BB28104ECDCB14C71D44F6E2898A7B`, specifically
+`HardwareControl.dll`'s `AcerChargeLimit` and `AcerEcProtocol`. LibHandheld's implementation was
+written independently from the packet contract and the live observations below.
+
+- EC command `0B03`, subcommand 2, selector 3 queries the native boundary. Subcommand 1 writes
+  enabled, upper and lower at payload offsets 6, 7 and 8, excluding report ID A0. A single 80/50
+  write was acknowledged and queried back as `00 E0 03 0B 00 03 01 50 32`. This establishes native
+  percentage configuration/readback; charging held at the threshold has not been measured.
+- The previously uninitialized query returned FF in the state/threshold fields. After the bounded
+  test, the native boundary was disabled and queried as `00 E0 03 0B 00 03 00 FF FF`. Disabled
+  firmware clears the thresholds; it does not retain the 100/50 values sent with disable.
+- WMI optimized charging was initially enabled. Its existing mode was restored with an accepted
+  setter and verified status/function bytes `00 00` / `01 00 00 00 00` after the trial.
+- The runtime keeps optimized charging and a custom ceiling as separate controls. Selecting a
+  percentage disables the optimized mode; enabling optimized charging disables the custom ceiling.
+  The custom control offers 51..100%, retaining the tested 50% resume threshold; 100 disables it.
+  Both known originals are journaled and restored. Missing readback remains unknown and does not
+  prohibit a write. An original that cannot be captured is reported as unverified restoration.
+
+The rear logo is a separate I2C HID endpoint: ENE `0CF2:5130`, release 0001, `FF5A:0001`, with
+11-byte feature reports. A1 returned `A1 01 80`, listing target 80. A2 selects the target for A3;
+the capability response was `A3 80 01 05 01 3B 00 00 00 00 00`: one LED, with off, static and
+breathing modes among its advertised effects. The ordinary USB HID path filter cannot enumerate this
+I2C path; the service selects it by exact HID attributes from the complete collection list.
+
+The initial Winhanced-style A4 command (mode 1, zero mask) produced only a brief white flash, as
+reported by the maintainer. It is not the implemented color protocol. Acer's native lightbar encoder
+was inspected alongside
+[ENE protocol observations](https://github.com/shwetankg07/kbrgb/blob/main/PROTOCOL.md) and the
+[descriptor-backed mode/mask correction](https://github.com/cleyton1986/predator-sense/issues/31).
+These are protocol references, not copied implementation code. The final word is a 16-bit LED mask,
+not a duration. Mode 1 is off, mode 2 steady color and mode 4 breathing; mask 1 addresses the logo.
+
+A corrected red/blue/off trial sent `A4 80 02 32 00 00 FF 00 00 01 00`,
+`A4 80 02 32 00 00 00 00 FF 01 00`, then `A4 80 01 00 00 00 00 00 00 01 00`. Every feature write was
+accepted. Corrected physical color acceptance remains pending the maintainer's observation. A4 and
+A2 are write-only; GetFeature acceptance on them does not establish lighting-state readback. The
+runtime therefore publishes the logo's initial values as unknown, uses only its declared effects,
+writes a complete report on an explicit control change, and leaves the chosen lighting on release.
+No ring profile, ninth controller slot, controller mode or ROM is changed by this service.
+
+The real LibHandheld battery and logo services were acquired on the unit without changing any
+setting: both reached Owned. The battery published optimized charging enabled and no custom ceiling;
+the logo published its four instance `logo` controls with unknown initial values. Application UI
+acceptance, logo animation/speed and charging behavior remain distinct from these observations.
+
 [OEM input and software control](OEM_INPUT_AND_DISABLE.md) is the complete operational reference:
 physical source/report mapping, rear-mode acquisition/restoration, software disable targets,
 post-reboot evidence, persistent package activation blocking and recovery.
@@ -588,25 +640,25 @@ Attended on the PA08-I51, BIOS V1.03, on AC. The maintainer reported in-game lag
 path, and the same lag with Predator Sense. MSR 0x610 is unlocked (bit 63 clear). Writing PL1/PL2
 there through PawnIO, with Manual opened once to the firmware maxima, felt better in game.
 
-A read-only capture sampled package energy (MSR 0x611), MSR 0x610, MCHBAR 0x59A0 (signed
-IntelMCHBAR read) and package thermal status (0x1B1) once a second. With PL1 50 W in the register,
-the package ran about 50 W for about a minute, then MCHBAR PL1 stepped 40 -> 38 -> 36 -> 35 W and
-sustained power followed it to 33..37 W. Re-selecting Manual every 5 s returned MCHBAR to 40 W and
-held about 41 W sustained, but FPS swung between 80 and 100, so the re-arm was removed. Manual's
-offset 8 field (PL1 + 5 W in every stock profile, 30 W in Manual) changed nothing.
+A read-only capture sampled package energy (MSR 0x611), MSR 0x610, MCHBAR 0x59A0 (signed IntelMCHBAR
+read) and package thermal status (0x1B1) once a second. With PL1 50 W in the register, the package
+ran about 50 W for about a minute, then MCHBAR PL1 stepped 40 -> 38 -> 36 -> 35 W and sustained
+power followed it to 33..37 W. Re-selecting Manual every 5 s returned MCHBAR to 40 W and held about
+41 W sustained, but FPS swung between 80 and 100, so the re-arm was removed. Manual's offset 8 field
+(PL1 + 5 W in every stock profile, 30 W in Manual) changed nothing.
 
 The MCHBAR writer was Intel's Innovation Platform Framework (`ipfsvc`, processor participant
 `ipf_cpu`, sensors SEN2..SEN4). It overwrote a KX-written 45 W within 5 s at idle and ramped it back
 to 40 W. With `ipfsvc` stopped, MCHBAR held 45 W for two minutes at idle. Under load the package
 reached 100 C within about 15 s and something below the service (the BIOS or `ipf_cpu`) still
-lowered MCHBAR PL1 to 35 W once the thermal thresholds tripped; it returned to 40 W within about
-20 s of cooling. Windows 11 re-enabled Memory Integrity after setup cleared its scenario value
+lowered MCHBAR PL1 to 35 W once the thermal thresholds tripped; it returned to 40 W within about 20
+s of cooling. Windows 11 re-enabled Memory Integrity after setup cleared its scenario value
 (`WasEnabledBy` 2), and HVCI blocked HwRwDrv (Code Integrity event 3077) until it was off.
 
 The runtime therefore offers Firmware, PawnIO and KX, chosen by the user and stored globally. The
 direct paths keep PL1 at the firmware's 40 W maximum, disable and stop IPF while selected, and
-restore it, MSR 0x610 and MCHBAR on Firmware or release. KX loads HwRwDrv for one command and unloads
-it on exit, so it runs only while KX is selected. Raw captures: local
+restore it, MSR 0x610 and MCHBAR on Firmware or release. KX loads HwRwDrv for one command and
+unloads it on exit, so it runs only while KX is selected. Raw captures: local
 `artifacts/acer-power-monitor-20261031-*.jsonl`. The path switch and IPF guard in this build have
 not had an attended game session yet.
 
@@ -640,8 +692,8 @@ setting notifications and Kernel-Power/Kernel-ACPI ETW while the maintainer pres
 
 The button reaches Windows through the Intel HID Event Filter (`ACPI\INTC10CC`, service
 `HidEventFilter`). Its child `HID\INTC816` is a Portable Device Control collection (usage page 1,
-usage 0x0D) with one button, System Power Down (0x81), in input report 0x1C. It reports both edges as
-they happen: `1C01` pressed, `1C00` released. Measured holds were 9 ms, 1.90 s and 1.63 s. Two of
+usage 0x0D) with one button, System Power Down (0x81), in input report 0x1C. It reports both edges
+as they happen: `1C01` pressed, `1C00` released. Measured holds were 9 ms, 1.90 s and 1.63 s. Two of
 three quick taps a second apart arrived as `1C00` alone, with no press report. A normal user opens
 the collection for shared reading and writing; Windows keeps working alongside it.
 
@@ -653,13 +705,14 @@ about 2 s made the converter report the press while held, and winlogon then star
 `SlideToShutDown.exe`. Raw Input, the keyboard hook and the power notifications saw nothing.
 
 Follow-up tests the same day with a stand-alone tool (Atlas8Tweaks power-button 1.0.0), all accepted
-by the maintainer on the device: reading `INTC816` gives working short and long presses with Windows'
-action set to Do nothing; an Image File Execution Options redirect for `SlideToShutDown.exe` stops the
-slide screen; `SetSuspendState(false)` and `NtInitiatePowerAction(PowerActionSleep)` both hibernate
-this S0-only machine (Kernel-Power 187, then a firmware boot); `SC_MONITORPOWER` 2 enters Modern
-Standby (Kernel-Power 506, reason SC_MONITORPOWER, woken by 507 Power Button); an injected Sleep key
-does nothing. Suspending while the button is still held made Windows offer slide-to-shut-down after
-wake, so actions run on release.
+by the maintainer on the device: reading `INTC816` gives working short and long presses with
+Windows' action set to Do nothing; an Image File Execution Options redirect for
+`SlideToShutDown.exe` stops the slide screen; `SetSuspendState(false)` and
+`NtInitiatePowerAction(PowerActionSleep)` both hibernate this S0-only machine (Kernel-Power 187,
+then a firmware boot); `SC_MONITORPOWER` 2 enters Modern Standby (Kernel-Power 506, reason
+SC_MONITORPOWER, woken by 507 Power Button); an injected Sleep key does nothing. Suspending while
+the button is still held made Windows offer slide-to-shut-down after wake, so actions run on
+release.
 
 LibHandheld publishes the button from `IntelPdcPowerButtonService` as a `Power` placement control.
 The Claw 8 investigation (WSGM #116) found an ACPI fixed-feature button with a press edge only, so
@@ -669,45 +722,48 @@ this source does not apply there. The WSGM integration built on it has not had a
 
 Attended on the PA08-I51, BIOS V1.03, on AC, IPF 2.3.20303.5058. WSGM now asks Intel's Innovation
 Platform Framework for PL1/PL2 over its elevated client session instead of fighting it. The protocol
-is IPC mode of the DriverStore `ipfipc.dll`, reversed with Rizin and checked against Intel's archived
-Apache-2.0 sources (github.com/intel/dptf: `ipf_ipc_iface.h`, `esif_sdk_iface_app.h`, `ipf_apploader.c`):
-`GetIpcInterface` (type 8, version 1, 132 bytes, client SDK `1.0.11402`) -> `Ipc_Init` ->
-`Ipc_SetAppIface` (AppInterfaceSet type 0, version 4, 192 bytes) -> `IpcSession_Create`
-(`pipe://ipfsrv.elevated`) -> `IpcSession_Connect`, with `IpcSession_WaitForStop` as the message pump on
-its own thread. `esif_data` is packed to 20 bytes. The server then called `AppCreate` (with the
-primitive function), `ParticipantCreate` for TCPU and its domains PKG/CPU/GFX, then the sensors.
-`GET_RAPL_POWER_LIMIT` (38) read 45/65 W; `SET_RAPL_POWER_LIMIT` (130) with instance 0/1 = PL1/PL2
-moved MCHBAR 0x59A0 to the request (30/50 W in the probe) while MSR 0x610 stayed 45/65 W.
-`SET_RAPL_POWER_LIMIT_CLEAR` is refused for this role (`ESIF_E_SESSION_PERMISSION_DENIED`, 3703);
-closing the session releases the request, after which IPF chose 45/86 W itself.
+is IPC mode of the DriverStore `ipfipc.dll`, reversed with Rizin and checked against Intel's
+archived Apache-2.0 sources (github.com/intel/dptf: `ipf_ipc_iface.h`, `esif_sdk_iface_app.h`,
+`ipf_apploader.c`): `GetIpcInterface` (type 8, version 1, 132 bytes, client SDK `1.0.11402`) ->
+`Ipc_Init` -> `Ipc_SetAppIface` (AppInterfaceSet type 0, version 4, 192 bytes) ->
+`IpcSession_Create` (`pipe://ipfsrv.elevated`) -> `IpcSession_Connect`, with
+`IpcSession_WaitForStop` as the message pump on its own thread. `esif_data` is packed to 20 bytes.
+The server then called `AppCreate` (with the primitive function), `ParticipantCreate` for TCPU and
+its domains PKG/CPU/GFX, then the sensors. `GET_RAPL_POWER_LIMIT` (38) read 45/65 W;
+`SET_RAPL_POWER_LIMIT` (130) with instance 0/1 = PL1/PL2 moved MCHBAR 0x59A0 to the request (30/50 W
+in the probe) while MSR 0x610 stayed 45/65 W. `SET_RAPL_POWER_LIMIT_CLEAR` is refused for this role
+(`ESIF_E_SESSION_PERMISSION_DENIED`, 3703); closing the session releases the request, after which
+IPF chose 45/86 W itself.
 
 Dead ends on the way, kept so they are not repeated: `ipf_uf.exe shell` and `client` print nothing
 ("IPF Shell Disabled"; DCFG `ShellAccessControl` or a release build without shell output); core mode
 through `ipfcore.dll` needs an undocumented `SessionExecute` command syntax; `IpfCore_Init` returned
-`ESIF_E_NO_MEMORY` only because the IPF processor participant (PCI `DEV_B01D`) had been disabled by an
-earlier `Disable-PnpDevice` test, which hides the `{EE27098E-1B22-472A-89D8-5CCCE16B1356}` interface it
-uses to find `InstallDir`. That device must stay enabled.
+`ESIF_E_NO_MEMORY` only because the IPF processor participant (PCI `DEV_B01D`) had been disabled by
+an earlier `Disable-PnpDevice` test, which hides the `{EE27098E-1B22-472A-89D8-5CCCE16B1356}`
+interface it uses to find `InstallDir`. That device must stay enabled.
 
 Result under OCCT with PL1 45 W, PL2 45 W on the IPF path: MCHBAR held 45/45 W for four minutes,
 package power averaged 44.1-45.1 W with 49-51 W peaks, at 99-100 C. The firmware path had lowered
-MCHBAR PL1 to 35 W within about 45 s at the same temperature, and 40 W on the IPF path also held past
-three minutes. IPF arbitrates RAPL limits across its clients and the lowest request wins, so this path
-holds a value only up to what Intel's own policy asks for; at 45 W it did not ask for less. The PL1
-maximum is the firmware's 40 W on every path: 45 W kept the package at its 99-100 C limit, and the
-maintainer set the ceiling back to 40 W and dropped the Extreme Power preset (2026-11-01). Raw captures: local
-`artifacts/acer-power-monitor-20261101-*.jsonl`; probes in `artifacts/ipf-re`.
+MCHBAR PL1 to 35 W within about 45 s at the same temperature, and 40 W on the IPF path also held
+past three minutes. IPF arbitrates RAPL limits across its clients and the lowest request wins, so
+this path holds a value only up to what Intel's own policy asks for; at 45 W it did not ask for
+less. The PL1 maximum is the firmware's 40 W on every path: 45 W kept the package at its 99-100 C
+limit, and the maintainer set the ceiling back to 40 W and dropped the Extreme Power preset
+(2026-11-01). Raw captures: local `artifacts/acer-power-monitor-20261101-*.jsonl`; probes in
+`artifacts/ipf-re`.
 
 ## Pad stall recovery removed (2026-11-01)
 
 Maintainer decision, not an attended run. The maintainer reports that a newer Atlas BIOS fixes the
 pad hanging in XInput after Modern Standby, so the stall recovery added on 2026-10-30 was removed:
-the reader watchdog, the USB port cycle and the profile flag that enabled them. The BIOS version
-was not recorded. A pad that stops answering is now handled only by the ordinary disconnect and
+the reader watchdog, the USB port cycle and the profile flag that enabled them. The BIOS version was
+not recorded. A pad that stops answering is now handled only by the ordinary disconnect and
 reacquire path.
 
 ## Extended VRR range (2026-11-01)
 
-Source: the maintainer's own [Atlas8Tweaks VRR Fix 1.0.0](https://github.com/KillerPixelCrew/Atlas8Tweaks/tree/main/vrr-fix)
+Source: the maintainer's own
+[Atlas8Tweaks VRR Fix 1.0.0](https://github.com/KillerPixelCrew/Atlas8Tweaks/tree/main/vrr-fix)
 (`engine/AcerAtlasVrr.ps1`), clone in `_ref/Atlas8Tweaks` at `89bfb6c`. Its approach follows the
 ClawLab MSI Claw Intel VRR Range Fix 3.0.0 (MIT); the Intel driver calls it borrowed are attributed
 in LibGPUDriverInteract, where they live. The floor, flicker and LFC facts below come from the
@@ -725,9 +781,9 @@ Atlas8Tweaks testing on a PA08-I51, not from a new attended WSGM pass.
   from 10 to 47 with either offset set, are recognized as this fix's own; any other override is
   another tool's and is never replaced.
 - The panel visibly flickers below 28 Hz, so 28 Hz is the floor. Intel's low frame rate solution
-  (LFC) engages below 48 fps whatever the EDID floor and switches between x2/x3/x4 multipliers, which
-  judders; with it off, 30-120 fps run native VRR, frames below the 28 Hz floor show exactly twice
-  and 25-28 fps cadence is mixed. The high frame rate solution stays on.
+  (LFC) engages below 48 fps whatever the EDID floor and switches between x2/x3/x4 multipliers,
+  which judders; with it off, 30-120 fps run native VRR, frames below the 28 Hz floor show exactly
+  twice and 25-28 fps cadence is mixed. The high frame rate solution stays on.
 - With the 28 Hz EDID active, Intel Arc Sync EXCELLENT reports 28-120 Hz. Factory state measured
   before any change: Arc Sync CUSTOM 48-120 Hz, frame time limits 0/0 us, LFC on, high frame rate
   solution on.

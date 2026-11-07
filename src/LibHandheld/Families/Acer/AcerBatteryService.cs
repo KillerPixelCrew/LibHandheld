@@ -9,14 +9,15 @@ using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Acer;
 
-/// <summary>Acer's battery health switch, without invoking calibration or the Care Center service.</summary>
+/// <summary>Acer native charge thresholds, with the OEM optimized-charging switch on older firmware.</summary>
 /// <remarks>
 ///     The root\WMI BatteryControl provider exposes one optimized-charging boolean for battery 1,
-///     function bit 0. This is the OEM protection mode, not an arbitrary percentage ceiling, charging
-///     bypass or a calibration cycle. It persists in the device, so the service journals a readable
-///     original before changing it and restores that original on normal release.
+///     function bit 0. Native EC command 0B03 supplies a percentage ceiling and a 50% resume threshold.
+///     The native control disables the separate optimized mode while it owns charging. Both originals
+///     are retained and restored on release; calibration and charging bypass are never requested.
 /// </remarks>
-internal sealed class AcerBatteryService(ProfiledFeatureContext context) : ProfiledFeatureService("acer-battery")
+internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec)
+    : ProfiledFeatureService("acer-battery")
 {
     private static readonly IReadOnlyList<CapabilityDescriptor> Controls =
     [
@@ -24,17 +25,25 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             CapabilityDescriptors.Label("Optimized battery charging"), read: true,
             persistence: CapabilityPersistence.DevicePersistent)
     ];
+    private static readonly IReadOnlyList<CapabilityDescriptor> BoundaryControls =
+    [
+        Controls[0],
+        CapabilityDescriptors.Integer(CapabilityIds.ChargeLimit, CapabilityRole.ChargeLimit,
+            CapabilityDescriptors.Label("Custom charge limit"), minimum: 51, maximum: 100, CapabilityUnit.Percent,
+            read: true, write: true, CapabilityPersistence.DevicePersistent)
+    ];
     private readonly ObservedValues _observed = new();
     private ManagementObject? _wmi;
     private bool _supported = true;
     private bool _unknownOriginalChanged;
     private bool _visibilityDecided;
+    private IAcerEcTransport? _ec;
+    private bool _boundarySupported;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _supported ? Controls : [];
-    internal override IReadOnlyList<CapabilityState> States => _supported
-        ? [ProviderControls.State(CapabilityIds.ChargeProtection, State == DeviceServiceState.Owned,
-            _observed.Value(CapabilityIds.ChargeProtection), _observed.Time(CapabilityIds.ChargeProtection), Reason)]
-        : [];
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => _supported
+        ? _boundarySupported ? BoundaryControls : Controls : [];
+    internal override IReadOnlyList<CapabilityState> States => Descriptors.Select(control =>
+        ProviderControls.Observed(control, _observed, State == DeviceServiceState.Owned, Reason)).ToArray();
     public override bool Suspendable => true;
 
     /// <summary>Opens BatteryControl, reconciles saved state, and decides firmware support once per service lifetime.</summary>
@@ -50,6 +59,21 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             return Set(DeviceServiceState.Passive, Missing("Acer BatteryControl WMI is unavailable."));
         }
 
+        _ec = ec.Acquire();
+        if (!_visibilityDecided && _ec is not null)
+        {
+            try
+            {
+                // An acknowledged 0B03 query establishes this lane. FF fields mean unset, not unsupported.
+                _ = ReadBoundary(token);
+                _boundarySupported = true;
+            }
+            catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+            {
+                DeviceTrace.Warn(ServiceId, $"Native charge boundary unavailable: {exception.Message}");
+            }
+        }
+
         await context.Journal.ReconcileAsync<AcerBatteryOriginal>(ServiceId, context.Firmware,
             RestoreAsync, token).ConfigureAwait(false);
         try
@@ -57,12 +81,18 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             var status = Read();
             if (!_visibilityDecided)
             {
-                _supported = status.Supported;
+                _supported = _boundarySupported || status.Supported;
             }
             _observed.Read(CapabilityIds.ChargeProtection,
                 status.Enabled is { } enabled ? CapabilityValue.Boolean(enabled) : null);
+            if (_boundarySupported)
+            {
+                var boundary = ReadBoundary(token);
+                _observed.Read(CapabilityIds.ChargeLimit, boundary is null ? null
+                    : CapabilityValue.Integer(boundary.Enabled ? boundary.Upper : 100));
+            }
         }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
+        catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
         {
             DeviceTrace.Warn(ServiceId, $"Charge protection observation unavailable: {exception.Message}");
         }
@@ -71,6 +101,11 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
 
         return Set(_supported ? DeviceServiceState.Owned : DeviceServiceState.Passive,
             _supported ? null : Missing("Firmware does not declare battery health control."));
+    }
+
+    private AcerChargeBoundary? ReadBoundary(CancellationToken token)
+    {
+        return AcerChargeBoundary.Read(_ec!.Exchange(AcerChargeBoundary.Query(), token));
     }
 
     /// <summary>Queries battery 1/function 1 and decodes the provider's two-byte status plus five function bytes.</summary>
@@ -114,7 +149,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         }
     }
 
-    /// <summary>Retains the first available original, dispatches one boolean write, and publishes the accepted value.</summary>
+    /// <summary>Retains the original charging policy and publishes each accepted explicit charging change.</summary>
     /// <remarks>
     ///     Readback is not a write gate. If the original is unavailable, control still works but exact
     ///     restoration cannot be claimed. A failure after dispatch forgets the value and is not retried.
@@ -131,6 +166,33 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
         var dispatched = false;
         try
         {
+            if (_boundarySupported && command.CapabilityId == CapabilityIds.ChargeLimit)
+            {
+                if (command.RequestedValue?.IntegerValue is not { } percent || percent is < 51 or > 100)
+                {
+                    return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
+                        "Charge limit must be 51 through 100 percent; charging resumes at 50 percent.");
+                }
+                if (_ec is null)
+                {
+                    return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                        "Acer charge-boundary transport is unavailable.");
+                }
+                var original = await context.Journal.BeginAsync<AcerBatteryOriginal>(ServiceId, context.Firmware,
+                    () => Read().Enabled is { } protection ? new AcerBatteryOriginal
+                    {
+                        Enabled = protection, UsesBoundary = true, Boundary = ReadBoundary(token)
+                    } : null, token).ConfigureAwait(false);
+                _unknownOriginalChanged |= original?.Entry.OriginalState.Boundary is null;
+                // The OEM optimized mode can impose its own ceiling. The explicit percentage owns charging.
+                Write(enabled: false, token, () => dispatched = true);
+                var boundary = new AcerChargeBoundary(percent < 100, checked((byte)percent),
+                    AcerChargeBoundary.ResumePercent);
+                _ec.Exchange(boundary.Packet(), token, () => dispatched = true);
+                _observed.Written(CapabilityIds.ChargeProtection, CapabilityValue.Boolean(false));
+                _observed.Written(CapabilityIds.ChargeLimit, CapabilityValue.Integer(percent));
+                return CommandResults.Applied(command);
+            }
             if (command.RequestedValue?.BooleanValue is not { } enabled)
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
@@ -138,9 +200,20 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             }
 
             var recovery = await context.Journal.BeginAsync<AcerBatteryOriginal>(ServiceId, context.Firmware,
-                () => Read().Enabled is { } original ? new AcerBatteryOriginal { Enabled = original } : null, token)
+                () => Read().Enabled is { } original ? new AcerBatteryOriginal
+                {
+                    Enabled = original, UsesBoundary = _boundarySupported,
+                    Boundary = _boundarySupported ? ReadBoundary(token) : null
+                } : null, token)
                 .ConfigureAwait(false);
             _unknownOriginalChanged |= recovery is null;
+            if (_boundarySupported && enabled)
+            {
+                _unknownOriginalChanged |= recovery?.Entry.OriginalState.Boundary is null;
+                _ec!.Exchange(new AcerChargeBoundary(false, 100, AcerChargeBoundary.ResumePercent).Packet(), token,
+                    () => dispatched = true);
+                _observed.Written(CapabilityIds.ChargeLimit, CapabilityValue.Integer(100));
+            }
             Write(enabled, token, () => dispatched = true);
             _observed.Written(CapabilityIds.ChargeProtection, CapabilityValue.Boolean(enabled));
             return CommandResults.Applied(command);
@@ -150,6 +223,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
             if (dispatched)
             {
                 _observed.Forget(CapabilityIds.ChargeProtection);
+                _observed.Forget(CapabilityIds.ChargeLimit);
             }
 
             return CommandResults.TransportFailure(command, dispatched, exception);
@@ -159,9 +233,25 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
     /// <summary>Writes the retained protection bit once; the accepted write completes the restore.</summary>
     private async ValueTask RestoreAsync(AcerBatteryOriginal original, CancellationToken token)
     {
+        if (original.UsesBoundary && original.Boundary is { } boundary)
+        {
+            _ec!.Exchange(boundary.Packet(), token);
+        }
         Write(original.Enabled, token);
         await context.Journal.CompleteRestoreAsync(ServiceId,
-            () => Read().Enabled is { } enabled ? enabled == original.Enabled : null).ConfigureAwait(false);
+            () =>
+            {
+                if (Read().Enabled is not { } enabled)
+                {
+                    return null;
+                }
+                if (original.UsesBoundary)
+                {
+                    return original.Boundary is { } expected && ReadBoundary(token) is { } actual
+                        ? enabled == original.Enabled && expected == actual : null;
+                }
+                return enabled == original.Enabled;
+            }).ConfigureAwait(false);
     }
 
     /// <summary>Restores a captured original before closing WMI; unknown originals remain ReleasedUnverified.</summary>
@@ -186,11 +276,15 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
     }
 
     /// <summary>Disposes the provider only; ReleaseAsync owns restoration of this device-persistent setting.</summary>
-    internal override ValueTask DisposeAsync()
+    internal override async ValueTask DisposeAsync()
     {
         _wmi?.Dispose();
         _wmi = null;
-        return ValueTask.CompletedTask;
+        if (_ec is not null)
+        {
+            _ec = null;
+            await ec.ReleaseAsync().ConfigureAwait(false);
+        }
     }
 }
 
@@ -198,4 +292,8 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context) : Profi
 internal sealed record AcerBatteryOriginal
 {
     public bool Enabled { get; init; }
+
+    public bool UsesBoundary { get; init; }
+
+    public AcerChargeBoundary? Boundary { get; init; }
 }

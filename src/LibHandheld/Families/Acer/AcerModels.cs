@@ -85,7 +85,8 @@ internal static class AcerModels
         NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
             CapabilityRole.PowerBackend,
             CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,
-            CapabilityRole.ChargeProtectionMode, CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
+            CapabilityRole.ChargeProtectionMode, CapabilityRole.ChargeLimit, CapabilityRole.LightingBrightness,
+            CapabilityRole.LightingEffect,
             CapabilityRole.LightingEffectSpeed, CapabilityRole.LightingZoneColor, CapabilityRole.Telemetry],
         // Generic bounds are unused: AcerPowerService discovers PL1/PL2 bounds from the EC itself.
         MinimumWatts = 0,
@@ -163,7 +164,8 @@ internal static class AcerModels
             ServiceFactories = [context => new AcerControllerModeService(context, controller),
                 context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open),
                 context => new AcerFanService(context, ec),
-                context => new AcerBatteryService(context), context => new AcerLightingService(context, controller),
+                context => new AcerBatteryService(context, ec), context => new AcerLightingService(context, controller),
+                _ => new AcerLogoLightingService(),
                 context => new IntelPdcPowerButtonService(context)]
         });
     }
