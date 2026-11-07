@@ -43,22 +43,35 @@ A corrected red/blue/off trial sent `A4 80 02 32 00 00 FF 00 00 01 00`,
 `A4 80 02 32 00 00 00 00 FF 01 00`, then `A4 80 01 00 00 00 00 00 00 01 00`. Every feature write was
 accepted. With WSGM running, the maintainer still reported no steady colors. After WSGM exited
 through its normal update-exit event, the maintainer observed blue and the final deliberate off
-state. This establishes blue/off on the separate endpoint; red, animation/speed and coexistence with
-WSGM's other active hardware services remain unaccepted. A4 and A2 are write-only; GetFeature
-acceptance on them does not establish lighting-state readback. The runtime therefore publishes the
-logo's initial values as unknown, uses only its declared effects, writes a complete report on an
-explicit control change, and leaves the chosen lighting on release. No ring profile, ninth
-controller slot, controller mode or ROM is changed by this service.
+state. After the host routing fix below was deployed, the maintainer selected red through WSGM and
+confirmed that it stayed on with WSGM running. This establishes normal application color control and
+blue/off on the separate endpoint; animation/speed remain separately unmeasured. A4 and A2 are
+write-only; GetFeature acceptance on them does not establish lighting-state readback. The runtime
+therefore publishes the logo's initial values as unknown, uses only its declared effects, writes a
+complete report on an explicit control change, and leaves the chosen lighting on release. No ring
+profile, ninth controller slot, controller mode or ROM is changed by this service.
 
 The real LibHandheld battery and logo services were acquired on the unit without changing any
 setting: both reached Owned. The battery published optimized charging enabled and no custom ceiling;
-the logo published its four instance `logo` controls with unknown initial values. Application UI
-acceptance, logo animation/speed and charging behavior remain distinct from these observations.
+the logo published its four instance `logo` controls with unknown initial values. Normal application
+color control was subsequently accepted as described above; animation/speed and charging behavior
+remain distinct from those observations.
 
 Adding a named logo instance also exposed a host routing defect: unqualified role-based ring
 brightness/effect setters became ambiguous. WSGM sends lighting through the exact capability ID and
 instance instead of reselecting the control by role. This routing fix does not establish which
-active hardware operation interfered with the raw logo trial.
+active hardware operation interfered with the raw logo trial. The running application's log then
+recorded Applied for shared ring brightness/effect and `lighting.zone-color#logo`, matching the
+maintainer's red-light observation. No periodic logo reapply or power-mode workaround was added.
+
+The requested on-device static vendor inspection matched installed `AcerHIDLightbarController.dll`,
+SHA-256 `8C498523D7AAF8C2804583E2EC7FBFAA68ADB76F9D38AC0B3B9403FD53906099`. Its A4 writer is at
+image VA `180011650`; the logo's per-LED setter supplies mask 1, while the general mode setter
+supplies mask 0. The successful A4 path has no extra enable/select call. Earlier cached writer
+`18000eb40` belongs to `AcerHIDStickController.dll`, not this lightbar binary. The cached desktop
+UI's separate logo-beacon mode remains a qualified ownership lead, not an established firmware side
+effect or a justification for additional WMI/HID writes. The single mode-0 reselect trial kept mode
+0 unchanged, but had no reliable visual timing report and establishes no reset causality.
 
 [OEM input and software control](OEM_INPUT_AND_DISABLE.md) is the complete operational reference:
 physical source/report mapping, rear-mode acquisition/restoration, software disable targets,
