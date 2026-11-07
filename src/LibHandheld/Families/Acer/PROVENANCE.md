@@ -773,6 +773,28 @@ limit, and the maintainer set the ceiling back to 40 W and dropped the Extreme P
 (2026-11-01). Raw captures: local `artifacts/acer-power-monitor-20261101-*.jsonl`; probes in
 `artifacts/ipf-re`.
 
+## IPF voltage discovery and GPU cap-register access (2026-11-07)
+
+Attended research on PA08-I51, BIOS V1.04, installed IPF 2.3.20303.5058. The
+[interface map](../../../../docs/intel-ipf-map.md) records REA/Ghidra binary identities, all 832
+primitive names and current role permissions, and all 3,941 shipped platform bindings. This is
+bounded protocol evidence, not acceptance of a new application control.
+
+The ordinary elevated IPC session read PKG undervolt protection = 1, overclocking enabled = 0 and
+overclocking secured = 1. XTU and DPTF telemetry endpoints refused connection with 3108. No voltage
+or mailbox write, security-policy change or service restart was attempted.
+
+GFX primitive 987 read the original cap-register byte as 255. Primitive 304 accepted raw 120, which
+read back as 120 immediately and after two seconds. One restoration to raw 255 succeeded and read
+back as 255; a separate session after disconnect also read 255. No write was retried. The probe used
+a distinct application name and WSGM stayed running. GPU frequency-table read 137 was denied with
+3703; the measured RP capability bytes from primitive 277 were 132/0/6. Actual frequency under load,
+MHz conversion, arbitration and sleep/reset behavior remain unverified. No GPU or undervolt
+capability was added and this run does not change the model's overall hardware acceptance status.
+
+Local logs and probe source: `artifacts/ipf-map-20261107/`, especially `live-cap-write.txt` and
+`live-after-disconnect.txt`.
+
 ## Pad stall recovery removed (2026-11-01)
 
 Maintainer decision, not an attended run. The maintainer reports that a newer Atlas BIOS fixes the

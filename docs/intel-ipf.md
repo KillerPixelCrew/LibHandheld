@@ -1,5 +1,8 @@
 # Intel IPF power-limit interface
 
+The [extended interface map](intel-ipf-map.md) records the installed primitive and permission
+inventories, CPU undervolt-protection status and the attended GPU cap-register experiment.
+
 LibHandheld can ask Intel's Innovation Platform Framework (IPF, the successor of Dynamic Tuning
 Technology) for the CPU's RAPL power limits instead of writing MSR 0x610 or the MCHBAR mirror
 itself. IPF applies the request through its own Intel-signed driver, so no driver blocklist or
