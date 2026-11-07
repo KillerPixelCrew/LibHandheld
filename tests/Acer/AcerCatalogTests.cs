@@ -38,9 +38,12 @@ public sealed class AcerCatalogTests
             HandheldDevice.ManagerApps.Select(app => app.Id));
         var predator = HandheldDevice.ManagerApps.Single(app => app.Id == "acer-predator-handheld");
         Assert.Equal(AcerModels.Atlas8.Definition.Id, predator.DefinitionId);
-        Assert.Equal(10, predator.Services.Count);
-        Assert.Equal(3, predator.Tasks.Count);
-        Assert.Equal(2, predator.PackageFamilies.Count);
+        // Acer delivers Atlas BIOS updates through Predator Sense (2026-11-07): nothing may keep the app,
+        // its launcher task, its services or its packages from starting. Only the firmware keyboard leaf stays.
+        Assert.Empty(predator.Processes);
+        Assert.Empty(predator.Services);
+        Assert.Empty(predator.Tasks);
+        Assert.Empty(predator.PackageFamilies);
         Assert.Equal(@"HID\VID_0502&PID_F901&MI_02&COL01", predator.DedicatedKeyboardDeviceId);
         Assert.All(HandheldDevice.ManagerApps.Where(app => app != predator), app =>
         {

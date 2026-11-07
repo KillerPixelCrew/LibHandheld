@@ -4,6 +4,12 @@ Measured on Acer Predator PA08-I51, PTL F900_PTG, BIOS V1.03, controller 0502:F9
 2026-10-27. These are exact model findings, not a policy for every Acer PC.
 [Provenance](PROVENANCE.md) records the source research and test limits.
 
+Since 2026-11-07 Predator Sense for Handheld must be free to start: Acer delivers Atlas BIOS updates
+only through its Live Update. The software disable below is the measured 2026-10-27 configuration and
+remains evidence of what the Acer stack does; it is no longer applied by WSGM or by a maintenance
+guard. Only the dedicated keyboard leaf disable stays managed, because it is firmware input that
+exists with or without the app. See [Predator Sense allowed to start again](PROVENANCE.md#predator-sense-allowed-to-start-again-2026-11-07).
+
 ## Where input comes from
 
 | Physical action                           | Device and report                                                                           | Meaning and prerequisites                                                                                                                                                                                     |
@@ -104,23 +110,18 @@ Microsoft documents the
 and the
 [deployment status flag](https://learn.microsoft.com/en-us/uwp/api/windows.management.deployment.packagestatus).
 
-### Keeping the identified targets disabled
+### Keeping the identified targets disabled (retired 2026-11-07)
 
-On the maintainer's machine, the elevated local scheduled task `\WSGM-Atlas-OemDisabledState` runs
-at this user's sign-in and every five minutes while the interactive user is signed in. It rechecks
-only the ten exact service names, three task names and two package identities above. It reapplies
-Disabled only when needed, including a replacement package version found under the same identity. It
-does not disable arbitrary Acer-named devices, force keyboard changes, install drivers, uninstall
-apps, or use a global keyboard blocker. A newly installed, differently named OEM component needs
-separate review; an update may briefly reactivate an allowed target before the next five-minute
-check.
+From 2026-10-27 to 2026-11-07 the maintainer's machine ran the elevated local scheduled task
+`\WSGM-Atlas-OemDisabledState` at sign-in and every five minutes. It reapplied Disabled to the ten
+service names, three task names and two package identities above, through the admin-protected copy
+`C:\ProgramData\WSGM\AtlasOemControl\Keep-Acer-OemDisabled.ps1` with health in `last-check.json`.
 
-The task runs the admin-protected script
-`C:\ProgramData\WSGM\AtlasOemControl\Keep-Acer-OemDisabled.ps1`; its source is tracked in WSGM as
-`eng/atlas-oem-disabled-state.ps1`. `C:\ProgramData\WSGM\AtlasOemControl\last-check.json` records
-health and any changes. The first elevated run completed successfully with no changes needed. This
-is an explicitly authorized local maintenance task, separate from WSGM's subsequent manager-takeover
-integration and from LibHandheld's device lifecycle.
+The guard is retired because Acer's BIOS delivery needs these targets. WSGM now tracks
+`eng/retire-atlas-oem-guard.ps1` instead: run elevated once on that machine, it unregisters the task
+and deletes the installed copy, and changes nothing else. The guard disabled the targets before WSGM's
+takeover ran, so WSGM holds no records for them there; restore them from the local snapshots with
+`artifacts/Restore-Acer-OemSoftware.ps1`.
 
 ## Exact keyboard disable and reboot result
 
@@ -154,7 +155,7 @@ problem/status and FSE value existence/type before mutation. Preserve the first 
 original snapshots are copied into `C:\ProgramData\WSGM\AtlasOemControl`.
 
 To restore OEM software, first stop and unregister `WSGM-Atlas-OemDisabledState` so it cannot
-reapply the disable. Clear only the package Disabled bit with elevated
+reapply the disable (`eng/retire-atlas-oem-guard.ps1` in WSGM does this). Clear only the package Disabled bit with elevated
 `PackageManager.ClearPackageStatus(fullName, PackageStatus.Disabled)` when it was not originally
 set; retain other status flags. Restore each service/task to its recorded state, not blanket
 Automatic/Enabled. Then reopen Predator Sense normally if desired. The local
@@ -164,27 +165,29 @@ The keyboard is a separate opt-in change: use `pnputil /enable-device <exact id>
 reboot requirement. The local `artifacts/Enable-Acer-OemKeyboard.cmd` contains the measured
 instance. Restoring software does not implicitly re-enable this keyboard or FSE.
 
-WSGM's subsequent `OtherManagers` integration extends its existing Full-mode/setup takeover and
-Settings > System takeover action to this exact LibHandheld definition. Its catalog entry, published
-as `AcerModels.ManagerApps` through `HandheldDevice.ManagerApps`, includes the ten services and
-three tasks above, the two exact MSIX package families, and the dedicated
-`HID\VID_0502&PID_F901&MI_02&COL01` keyboard identity. It discovers the current keyboard instance
-instead of copying this machine's suffix, uses the targeted PnPUtil force-disable operation, and
-propagates restart-required outcomes into setup. It never disables a composite parent or a shared
-keyboard service.
+WSGM's `OtherManagers` integration extends its Full-mode/setup takeover and Settings > System
+takeover action to this exact LibHandheld definition. From 2026-10-27 its catalog entry, published as
+`AcerModels.ManagerApps` through `HandheldDevice.ManagerApps`, named the ten services and three
+tasks above, the two exact MSIX package families and the dedicated
+`HID\VID_0502&PID_F901&MI_02&COL01` keyboard identity. Since 2026-11-07 it names only the keyboard
+identity, so Predator Sense, its `PredatorHandheldLauncher` task, its services and its packages start
+as Acer installed them and its Live Update can deliver BIOS updates. WSGM discovers the current
+keyboard instance instead of copying this machine's suffix, uses the targeted PnPUtil force-disable
+operation, and propagates restart-required outcomes into setup. It never disables a composite parent
+or a shared keyboard service.
 
-Package activation is blocked with the Disabled bit; each changed package version and device is
-recorded before mutation alongside the existing service/task records. Uninstall restores recorded
-changes. Accepted takeover is reconciled at session startup and every five minutes; a non-elevated
-session reports changes it cannot apply rather than prompting during startup. Existing processes are
-asked to close, without being killed; a remaining packaged helper can require a Windows restart. The
-host owns application policy and these install-lifecycle recovery records; LibHandheld continues to
-own only physical input/controller mode and device protocols.
+Each change is recorded before mutation. Setup (install, update or repair, elevated) puts back once
+every recorded service, task and package change the catalog no longer asks for, and only where the
+setting still holds the value WSGM wrote; a state the user set afterwards stays. Uninstall restores
+every remaining record. Accepted takeover is reconciled at session startup and every five minutes; a
+non-elevated session reports changes it cannot apply rather than prompting during startup. The host
+owns application policy and these install-lifecycle recovery records; LibHandheld continues to own
+only physical input/controller mode and device protocols.
 
-This host implementation is awaiting the new setup's installation and live WSGM/Steam acceptance.
-The earlier local guard and private snapshots remain separate administrative evidence; they are not
-proof of the new runtime's disable/restore lifecycle. Disabling the keyboard still removes F22, so
-the implementation does not add native front-right long-press routing.
+Disabling the keyboard still removes F22, so the implementation does not add native front-right
+long-press routing. With Predator Sense running again, its injected Win+G and Predator Sense launch
+after a Guide tap come back, and Acer's lighting, power and controller-mode writes share the routes
+WSGM uses; neither has been measured together with WSGM yet.
 
 ## Remaining acceptance
 
