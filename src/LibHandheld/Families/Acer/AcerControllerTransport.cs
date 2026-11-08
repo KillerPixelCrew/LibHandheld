@@ -108,6 +108,27 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         return packet;
     }
 
+    /// <summary>Every present collection of USB vendor 0502, for the log when the command lane is missing.</summary>
+    /// <returns>Product, release, usage and report lengths of each, or a note that there is none.</returns>
+    internal static string DescribePresent()
+    {
+        IReadOnlyList<HidCollection> all;
+        try
+        {
+            all = HidDevices.EnumerateAll();
+        }
+        catch (Win32Exception ex)
+        {
+            return "unlisted (" + ex.Message + ")";
+        }
+
+        var found = all.Where(item => item.VendorId == 0x0502)
+            .Select(item => $"{item.ProductId:X4} rel {item.ReleaseNumber:X4} {item.UsagePage:X4}:{item.Usage:X4} "
+                            + $"in {item.InputLength} out {item.OutputLength}")
+            .Distinct().ToArray();
+        return found.Length == 0 ? "none" : string.Join(", ", found);
+    }
+
     /// <summary>Opens the measured command lane in either supported controller topology.</summary>
     internal static AcerControllerTransport? Open()
     {

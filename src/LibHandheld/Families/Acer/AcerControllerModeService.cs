@@ -44,6 +44,11 @@ internal sealed class AcerControllerModeService(ProfiledFeatureContext context,
         _transport = lane.Acquire();
         if (_transport is null)
         {
+            // A firmware update or a mode Acer's software selected (Desktop, Offline) changes the product or
+            // release this lane admits; the log has to show which, because a tester can only send wsgm.log.
+            DeviceTrace.Write(DeviceTraceLevel.Warn, ServiceId,
+                "No measured command lane (0502:F901 or F90A, release 0100); Acer collections present: "
+                + AcerControllerTransport.DescribePresent());
             return Set(DeviceServiceState.Passive, Missing("The measured Atlas controller mode lane is unavailable."));
         }
 

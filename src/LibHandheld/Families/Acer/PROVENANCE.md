@@ -1,5 +1,30 @@
 # Acer Predator Atlas 8
 
+## AFZsvc left startable, 2026-11-08
+
+A remote tester's Atlas 8 received "Acer Incorporated Software Component Driver Update (1.0.1000.4)"
+through Windows Update. Afterwards a process named "Focus Zoom" ran with high CPU, and the built-in
+controller stopped working whenever that service was disabled, which WSGM did. Re-enabling the Acer
+services and starting Predator Sense was the only recovery. `AcerModels.ManagerApps` therefore no
+longer names `AFZsvc`; the other nine services, three tasks, widget package and keyboard leaf stay.
+
+Evidence and inference: the package version matches none of the supplied archives (Acer APP Base
+1.0.0.6, DES 1.0.0.3020, PredatorService 1.3.3000.18), and neither the Microsoft Update Catalog nor
+public sources list it, so its INF, AddService entries and binaries are not inspected. `AFZsvc` as
+the host of "Focus Zoom" is inferred from the name only. The 2026-10-27 set was chosen to turn all
+Acer software off, not as the Win+G cause, so AFZsvc was never shown to be part of the Win+G path.
+The decompiled Predator Sense gamepad core defines controller modes Offline 0, XInput 1, DInput 2,
+Special 3, Desktop 4, BIOS 5 and TESTING 6, and its desktop app switches them; LibHandheld's mode
+lane opens only for 0502:F901 or F90A at release 0100. When it cannot open, the mode service now
+logs every present 0502 collection with product, release and usage, so a tester's wsgm.log shows
+whether a controller firmware or topology change is involved.
+
+The "XBOX Synthetic Gamepad Bus" warning the tester saw is Microsoft's GameInput VHF source device
+`SWD\SYNTHETICGAMEPADENUM\SYNTHETICGAMEPAD0`. It fails with Code 10 while HidHide's HIDClass upper
+filter is installed (HidHide issue 223, open since 2026-11-03), independent of WSGM's virtual pad,
+which does not use it. Remaining: the tester's wsgm.log, the identity of the component that hosts
+Focus Zoom, and an attended Atlas run with that component installed.
+
 ## Predator Sense for Handheld can be started, 2026-11-07
 
 Acer has started delivering Atlas 8 BIOS updates through Predator Sense for Handheld and does not

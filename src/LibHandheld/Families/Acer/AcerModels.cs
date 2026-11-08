@@ -47,16 +47,17 @@ internal static class AcerModels
 
     /// <summary>Predator Sense for Handheld, as the attended 2026-10-27 disable measured it.</summary>
     /// <remarks>
-    ///     The ten services, three tasks, the widget's MSIX family and dedicated controller keyboard leaf of
+    ///     The services, three tasks, the widget's MSIX family and dedicated controller keyboard leaf of
     ///     OEM_INPUT_AND_DISABLE.md. They are exact PA08-I51 findings, so they apply to this definition only.
     ///     The desktop app (Handheld.Desktop, its own MSIX family) is left out since 2026-11-07, so the user
-    ///     can start it: Acer delivers Atlas BIOS updates through it.
+    ///     can start it: Acer delivers Atlas BIOS updates through it. AFZsvc is left out since 2026-11-08: a
+    ///     tester's built-in controller stopped working while it was disabled after Acer's component update.
     /// </remarks>
     internal static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
     [
         new("acer-predator-handheld", "Predator Sense for Handheld", ["Handheld.Widget"],
             ["AASHHSvc", "AcerCCAgentSvis", "AcerDeviceEnablingServiceV2", "AcerHandheld.Service",
-                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "AFZsvc", "ALSSvc", "UEIPSvc"],
+                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "ALSSvc", "UEIPSvc"],
             ["PredatorHandheldLauncher", "UEIPInvitation", "UbtFrameworkService"])
         {
             PackageFamilies = ["ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"],

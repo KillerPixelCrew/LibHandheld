@@ -38,7 +38,9 @@ public sealed class AcerCatalogTests
             HandheldDevice.ManagerApps.Select(app => app.Id));
         var predator = HandheldDevice.ManagerApps.Single(app => app.Id == "acer-predator-handheld");
         Assert.Equal(AcerModels.Atlas8.Definition.Id, predator.DefinitionId);
-        Assert.Equal(10, predator.Services.Count);
+        // AFZsvc stays startable: the tester's controller needed it after Acer's component update (2026-11-08).
+        Assert.Equal(9, predator.Services.Count);
+        Assert.DoesNotContain("AFZsvc", predator.Services);
         Assert.Equal(3, predator.Tasks.Count);
         // The user can start the desktop app for Acer's BIOS updates (2026-11-07); only the widget stays blocked.
         Assert.Equal(["Handheld.Widget"], predator.Processes);
