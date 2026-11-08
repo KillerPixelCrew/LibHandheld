@@ -128,6 +128,7 @@ internal sealed class LegacyMotionStream : IDisposable
     private static void Poll(LegacyMotionSensors sensors, Action<MotionSensorReading> onReading,
         CancellationToken cancellationToken)
     {
+        ThreadQos.UseHigh();
         try
         {
             PollCore(sensors, onReading, cancellationToken);

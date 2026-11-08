@@ -292,6 +292,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
         CancellationToken stop,
         Func<StandardTouchSample>? touchpad)
     {
+        ThreadQos.UseHigh();
         try
         {
             using var ticker = new PrecisionTicker(TimeSpan.FromMilliseconds(8), stop);

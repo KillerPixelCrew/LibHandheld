@@ -180,6 +180,7 @@ internal sealed partial class LowLevelHook : IAsyncDisposable
 
     private void Run(TaskCompletionSource<bool> started, Action? prepare, Action? stopped)
     {
+        ThreadQos.UseHigh();
         lock (_gate)
         {
             _threadId = GetCurrentThreadId();

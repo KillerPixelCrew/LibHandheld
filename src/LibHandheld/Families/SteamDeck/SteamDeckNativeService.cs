@@ -4,6 +4,7 @@ using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Input;
 using LibHandheld.Internal.Services;
+using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.SteamDeck;
 
@@ -213,6 +214,7 @@ internal sealed partial class SteamDeckNativeService(
 
     private void ReadLoop()
     {
+        ThreadQos.UseHigh();
         var buffer = new byte[65];
         try
         {
@@ -347,6 +349,7 @@ internal sealed partial class SteamDeckNativeService(
 
     private void RumbleLoop()
     {
+        ThreadQos.UseHigh();
         // The firmware renders short pulses; continuous game rumble requires HC's 10 ms repetition.
         while (!_rumbleStop.Wait(10))
         {
