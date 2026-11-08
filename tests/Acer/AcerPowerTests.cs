@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using LibHandheld.Families.Acer;
 using LibHandheld.Internal.Devices;
+using LibHandheld.Internal.Transports;
+using LibHandheld.Internal.Windows;
 using LibHandheld.Testing;
 
 namespace LibHandheld.Tests.Acer;
@@ -273,6 +275,86 @@ public sealed class AcerPowerTests
         Assert.Equal(DeviceServiceState.Idle, release.State);
         Assert.Empty(context.Journal.OutstandingEntries);
         Assert.Equal(new[] { "profile", "mode:3", "profile", "mode:0" }, ec.Writes);
+    }
+
+    [Fact]
+    public async Task AStandbyKeepsTheIpfSessionAndAWakeWritesThroughItAgain()
+    {
+        var policy = IntelPowerPaths.PolicyControl;
+        var present = IntelPowerPaths.IpfPresent;
+        var open = IntelPowerPaths.OpenIpf;
+        List<RecordingIpf> sessions = [];
+        IntelPowerPaths.PolicyControl = new RunningPolicy();
+        IntelPowerPaths.IpfPresent = () => true;
+        IntelPowerPaths.OpenIpf = _ =>
+        {
+            RecordingIpf session = new();
+            sessions.Add(session);
+            return session;
+        };
+        try
+        {
+            using var directory = new TemporaryDirectory();
+            var context = Context(directory.Root);
+            var service = new AcerPowerService(context, () => new FixtureEc());
+            var cycle = Cycle(context);
+            await service.AcquireAsync(cycle, CancellationToken.None);
+            Assert.Empty(sessions);
+            Assert.Equal(CommandOutcome.Applied,
+                (await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None)).Outcome);
+
+            await service.SuspendAsync(cycle, CancellationToken.None);
+            var kept = Assert.Single(sessions);
+            Assert.False(kept.Disposed);
+
+            await service.AcquireAsync(cycle, CancellationToken.None);
+            Assert.Equal(CommandOutcome.Applied,
+                (await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None)).Outcome);
+            Assert.Same(kept, Assert.Single(sessions));
+            Assert.Equal(new[] { (20, 40), (20, 40) }, kept.Writes);
+
+            await service.ReleaseAsync(cycle, CancellationToken.None);
+            Assert.True(kept.Disposed);
+        }
+        finally
+        {
+            IntelPowerPaths.PolicyControl = policy;
+            IntelPowerPaths.IpfPresent = present;
+            IntelPowerPaths.OpenIpf = open;
+        }
+    }
+
+    private sealed class RunningPolicy : IIntelPolicyControl
+    {
+        public WindowsServiceState? Read(string name) =>
+            name == "ipfsvc" ? new WindowsServiceState(2, true) : null;
+
+        public bool IsRunning(string name) => name == "ipfsvc";
+
+        public void DisableAndStop(string name)
+        {
+        }
+
+        public void Stop(string name)
+        {
+        }
+
+        public void Restore(string name, WindowsServiceState original)
+        {
+        }
+    }
+
+    private sealed class RecordingIpf : IIntelIpfSession
+    {
+        internal List<(int, int)> Writes { get; } = [];
+        internal bool Disposed { get; private set; }
+        public bool Alive => !Disposed;
+
+        public CpuPowerLimits ReadLimits() => new(20, 40, 40);
+
+        public void WriteLimits(int sustainedWatts, int boostWatts) => Writes.Add((sustainedWatts, boostWatts));
+
+        public void Dispose() => Disposed = true;
     }
 
     private static ProfiledFeatureContext Context(string directory)

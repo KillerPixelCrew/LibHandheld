@@ -618,6 +618,22 @@ internal sealed class AcerPowerService(
         int boost, Action dispatched, CancellationToken token)
     {
         ClearHold();
+        if (_paths.ViaIpf)
+        {
+            // Before anything is written, so a session that cannot open is a plain refusal.
+            try
+            {
+                await _paths.EnsureIpfAsync(token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException
+                                              && exception is not OperationCanceledException)
+            {
+                DeviceTrace.Warn(ServiceId, $"IPF session unavailable: {exception.Message}");
+                return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                    "The IPF session could not be opened: " + exception.Message);
+            }
+        }
+
         if (!_manualOpened)
         {
             byte[]? manual = null;
@@ -661,6 +677,7 @@ internal sealed class AcerPowerService(
             token.ThrowIfCancellationRequested();
             dispatched();
             _paths.WriteIpf(sustained, boost);
+            ConfirmLimits("IPF", _paths.ReadIpf, sustained, boost);
             _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
             _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
             return CommandResults.Applied(command);
@@ -671,11 +688,27 @@ internal sealed class AcerPowerService(
         var limits = new CpuPowerLimits(sustained, boost, boost);
         dispatched();
         _cpu!.WriteLimits(limits);
+        ConfirmLimits("MSR 0x610", _cpu.ReadLimits, sustained, boost);
         _cpuWritten = limits;
         _cpuDriftReported = false;
         _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
         _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
         return CommandResults.Applied(command);
+    }
+
+    /// <summary>Logs what the path reports after a write; a readback never decides the command.</summary>
+    private void ConfirmLimits(string path, Func<CpuPowerLimits> read, int sustained, int boost)
+    {
+        try
+        {
+            var limits = read();
+            DeviceTrace.Change(ServiceId, "power-confirmed",
+                $"{sustained}/{boost} W requested; {path} reads PL1 {limits.SustainedWatts:0.###} W, PL2 {limits.BoostWatts:0.###} W.");
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            DeviceTrace.Warn(ServiceId, $"{path} limits could not be read back: {exception.Message}");
+        }
     }
 
     /// <summary>Switches the power-limit path and re-applies the current PL1/PL2 through it.</summary>
@@ -830,8 +863,25 @@ internal sealed class AcerPowerService(
     }
 
     /// <summary>Reconciles both originals before closing EC access, preserving incomplete recovery in the journal.</summary>
-    public override async ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+    public override ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
+    {
+        return ReleaseCoreAsync(keepIpf: false, token);
+    }
+
+    /// <summary>As a release, except the IPF session stays open across the standby.</summary>
+    /// <remarks>
+    ///     IPF tells a connected client about a standby itself (AppSuspend, AppResume). A client that
+    ///     disconnects and reconnects around it found the server not creating its session for over ten
+    ///     seconds after the wake (2026-11-08).
+    /// </remarks>
+    public override ValueTask<DeviceServiceResult> SuspendAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+        CancellationToken token)
+    {
+        return ReleaseCoreAsync(keepIpf: true, token);
+    }
+
+    private async ValueTask<DeviceServiceResult> ReleaseCoreAsync(bool keepIpf, CancellationToken token)
     {
         try
         {
@@ -842,7 +892,8 @@ internal sealed class AcerPowerService(
                     RestoreCpuAsync, token).ConfigureAwait(false);
             }
 
-            await _paths.ReleaseAsync(context.Firmware, token).ConfigureAwait(false);
+            await (keepIpf ? _paths.RestoreAsync(context.Firmware, token) : _paths.ReleaseAsync(context.Firmware, token))
+                .ConfigureAwait(false);
 
             if (_ec is not null)
             {
@@ -860,12 +911,17 @@ internal sealed class AcerPowerService(
         }
         finally
         {
-            await DisposeAsync().ConfigureAwait(false);
+            await CloseAsync(keepIpf).ConfigureAwait(false);
         }
     }
 
     /// <summary>Closes transport and forgets caches only; restoration belongs to ReleaseAsync, not disposal.</summary>
-    internal override async ValueTask DisposeAsync()
+    internal override ValueTask DisposeAsync()
+    {
+        return CloseAsync(keepIpf: false);
+    }
+
+    private async ValueTask CloseAsync(bool keepIpf)
     {
         ClearHold();
         _holdCancellation?.Cancel();
@@ -877,7 +933,11 @@ internal sealed class AcerPowerService(
         _cpuWritten = null;
         _cpu?.Dispose();
         _cpu = null;
-        _paths.CloseIpf();
+        if (!keepIpf)
+        {
+            _paths.CloseIpf();
+        }
+
         if (_ec is not null)
         {
             _ec = null;

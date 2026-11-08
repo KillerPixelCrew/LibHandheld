@@ -66,6 +66,25 @@ or default mode is unknown, and no change to the release-0100 admission is propo
 serial of a unit that was offered 1.05, or a tester's wsgm.log with the `acer-controller-mode`
 collection line. Local responses and hashes are in ignored `artifacts/acer-bios/`.
 
+## IPF session across Modern Standby, 2026-11-08
+
+The maintainer's log (build 3.0.2.2012) showed IPF lost after a wake. `AcerPowerService` closed the IPF
+session on suspend and reconnected on resume. `IntelIpfTransport.Connect` blocks for up to 10 s waiting
+for the server's AppCreate callback; after the wake the callback never came. That wait outran the 5 s
+resume deadline (TaskCanceled, "starting a fresh cycle"), and when it expired the fallback selected
+firmware and disabled and stopped `ipfsvc`. The same reconnect failed again across the next standby.
+
+The session now stays open across a standby, since IPF signals a connected client itself (AppSuspend,
+AppResume). Acquisition no longer opens it: a dead or missing session is opened by the next limit write
+before anything is dispatched, a failed open refuses that write, and the path never leaves IPF or stops
+`ipfsvc`. A refused write closes the session so the following one starts fresh. The write path logs what
+IPF or MSR 0x610 reports afterwards. Why the server withholds AppCreate after a standby was not
+established, and survival of a connected session across standby awaits an attended run.
+
+The controller re-enumerates just after a wake, so a handle opened moments earlier fails
+`HidD_FlushQueue` with error 1167. Before anything is sent, the command lane now reopens the same
+collection on its physical port, for up to 3 s, instead of faulting lighting for the session.
+
 ## AFZsvc left startable, 2026-11-08
 
 A remote tester's Atlas 8 received "Acer Incorporated Software Component Driver Update (1.0.1000.4)"

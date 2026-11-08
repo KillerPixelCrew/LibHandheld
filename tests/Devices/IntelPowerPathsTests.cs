@@ -14,14 +14,14 @@ public sealed class IntelPowerPathsTests : IDisposable
     private readonly List<FakeSession> _sessions = [];
     private readonly IIntelPolicyControl _savedPolicy = IntelPowerPaths.PolicyControl;
     private readonly Func<bool> _savedPresent = IntelPowerPaths.IpfPresent;
-    private readonly Func<IIntelIpfSession>? _savedOpen = IntelPowerPaths.OpenIpf;
+    private readonly Func<CancellationToken, IIntelIpfSession>? _savedOpen = IntelPowerPaths.OpenIpf;
     private bool _openFails;
 
     public IntelPowerPathsTests()
     {
         IntelPowerPaths.PolicyControl = _policy;
         IntelPowerPaths.IpfPresent = () => true;
-        IntelPowerPaths.OpenIpf = () =>
+        IntelPowerPaths.OpenIpf = _ =>
         {
             if (_openFails)
             {
@@ -117,7 +117,7 @@ public sealed class IntelPowerPathsTests : IDisposable
     }
 
     [Fact]
-    public async Task APreferredIpfIsTheDefaultAndFallsBackWhenItCannotOpen()
+    public async Task APreferredIpfIsTheDefaultAndAFailedOpenNeverLeavesItOrStopsTheService()
     {
         using TemporaryDirectory directory = new();
         var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
@@ -127,7 +127,7 @@ public sealed class IntelPowerPathsTests : IDisposable
         Assert.Equal(IntelPowerPath.Ipf, preferred.Selected);
         await preferred.ResumeAsync(Firmware, CancellationToken.None);
         Assert.True(preferred.ViaIpf);
-        Assert.Single(_sessions);
+        Assert.Empty(_sessions);
         Assert.True(_policy.Running);
 
         _openFails = true;
@@ -135,8 +135,40 @@ public sealed class IntelPowerPathsTests : IDisposable
             preferIpf: true);
         broken.Acquire(pawnIo: true);
         await broken.ResumeAsync(Firmware, CancellationToken.None);
-        Assert.Equal(IntelPowerPath.Firmware, broken.Selected);
-        Assert.False(_policy.Running);
+        await Assert.ThrowsAsync<IOException>(() => broken.EnsureIpfAsync(CancellationToken.None).AsTask());
+        Assert.True(broken.ViaIpf);
+        Assert.True(_policy.Running);
+
+        // The server came back: the next write opens a session on the same path.
+        _openFails = false;
+        await broken.EnsureIpfAsync(CancellationToken.None);
+        broken.WriteIpf(20, 40);
+        Assert.Equal((20, 40), Assert.Single(_sessions).Written);
+    }
+
+    [Fact]
+    public async Task ASessionTheServerClosedIsReplacedAndARefusedWriteIsNotRepeated()
+    {
+        using TemporaryDirectory directory = new();
+        var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        var paths = new IntelPowerPaths(journal, "power", hasFirmware: true, policyOffOnFirmware: true,
+            preferIpf: true);
+        paths.Acquire(pawnIo: true);
+        await paths.EnsureIpfAsync(CancellationToken.None);
+        await paths.EnsureIpfAsync(CancellationToken.None);
+        var first = Assert.Single(_sessions);
+
+        first.Alive = false;
+        await paths.EnsureIpfAsync(CancellationToken.None);
+        Assert.True(first.Disposed);
+        Assert.Equal(2, _sessions.Count);
+
+        var second = _sessions[1];
+        second.RefuseWrites = true;
+        Assert.Throws<IOException>(() => paths.WriteIpf(20, 40));
+        Assert.Equal(1, second.WriteAttempts);
+        Assert.True(second.Disposed);
+        Assert.True(paths.ViaIpf);
     }
 
     private sealed class FakePolicy : IIntelPolicyControl
@@ -176,6 +208,10 @@ public sealed class IntelPowerPathsTests : IDisposable
     {
         internal (int Sustained, int Boost)? Written { get; private set; }
         internal bool Disposed { get; private set; }
+        internal bool RefuseWrites { get; set; }
+        internal int WriteAttempts { get; private set; }
+
+        public bool Alive { get; set; } = true;
 
         public CpuPowerLimits ReadLimits()
         {
@@ -184,6 +220,12 @@ public sealed class IntelPowerPathsTests : IDisposable
 
         public void WriteLimits(int sustainedWatts, int boostWatts)
         {
+            WriteAttempts++;
+            if (RefuseWrites)
+            {
+                throw new IOException("primitive 130/0 failed with ESIF error 0x3EA.");
+            }
+
             Written = (sustainedWatts, boostWatts);
         }
 

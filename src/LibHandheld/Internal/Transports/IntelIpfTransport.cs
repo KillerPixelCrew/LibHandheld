@@ -7,6 +7,9 @@ namespace LibHandheld.Internal.Transports;
 /// <summary>An open IPF client session that requests PL1/PL2; disposing it releases the request.</summary>
 internal interface IIntelIpfSession : IDisposable
 {
+    /// <summary>Whether the server still holds the session; its message pump ends when the session closes.</summary>
+    bool Alive { get; }
+
     /// <summary>Reads PL1/PL2 as IPF reports them, in watts.</summary>
     CpuPowerLimits ReadLimits();
 
@@ -86,13 +89,16 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
         return ResolveIpc() is not null;
     }
 
+    public bool Alive => _pump is { IsAlive: true };
+
     /// <summary>Opens the elevated IPF session and waits for the CPU participant; ipfsvc must be running.</summary>
-    internal static IntelIpfTransport Open()
+    /// <param name="token">Ends the wait for the server's callbacks, so a caller's deadline holds.</param>
+    internal static IntelIpfTransport Open(CancellationToken token)
     {
         var transport = new IntelIpfTransport();
         try
         {
-            transport.Connect();
+            transport.Connect(token);
             return transport;
         }
         catch
@@ -178,7 +184,7 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
         }
     }
 
-    private void Connect()
+    private void Connect(CancellationToken token)
     {
         var path = ResolveIpc() ?? throw new IOException("Intel IPF (ipfipc.dll) is not installed.");
         _library = NativeLibrary.Load(path);
@@ -227,6 +233,7 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (!(_created && _cpu != 0 && _cpuDomain != 0) && DateTime.UtcNow < deadline)
         {
+            token.ThrowIfCancellationRequested();
             Thread.Sleep(25);
         }
 

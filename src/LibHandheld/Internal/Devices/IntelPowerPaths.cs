@@ -57,7 +57,7 @@ internal sealed class IntelPowerPaths(
     private IIntelIpfSession? _ipf;
 
     /// <summary>Opens the IPF session; the test assembly replaces it so no fixture loads Intel's library.</summary>
-    internal static Func<IIntelIpfSession>? OpenIpf { get; set; } = IntelIpfTransport.Open;
+    internal static Func<CancellationToken, IIntelIpfSession>? OpenIpf { get; set; } = IntelIpfTransport.Open;
 
     /// <summary>Whether IPF's client library is installed; the test assembly replaces it.</summary>
     internal static Func<bool> IpfPresent { get; set; } = IntelIpfTransport.Present;
@@ -124,10 +124,43 @@ internal sealed class IntelPowerPaths(
     private IntelPowerPath Fallback => hasFirmware ? IntelPowerPath.Firmware : IntelPowerPath.PawnIo;
 
     /// <summary>Requests PL1/PL2 from IPF; sent once, never retried.</summary>
+    /// <remarks>A failed request closes the session, so the next write starts from a fresh one.</remarks>
     internal void WriteIpf(int sustainedWatts, int boostWatts)
     {
         var ipf = _ipf ?? throw new InvalidOperationException("The IPF session is not open.");
-        ipf.WriteLimits(sustainedWatts, boostWatts);
+        try
+        {
+            ipf.WriteLimits(sustainedWatts, boostWatts);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            DeviceTrace.Warn(serviceId, $"IPF refused the power limits: {exception.Message}");
+            CloseIpf();
+            throw;
+        }
+    }
+
+    /// <summary>PL1/PL2 as IPF reports them, for confirming a write in the log.</summary>
+    internal CpuPowerLimits ReadIpf()
+    {
+        return (_ipf ?? throw new InvalidOperationException("The IPF session is not open.")).ReadLimits();
+    }
+
+    /// <summary>Opens the IPF session if it is not open or the server has closed it; nothing is written.</summary>
+    /// <param name="token">The caller's deadline, which also ends the wait for the server.</param>
+    internal async ValueTask EnsureIpfAsync(CancellationToken token)
+    {
+        if (_ipf is { Alive: false })
+        {
+            CloseIpf();
+        }
+
+        if (_ipf is null)
+        {
+            await WaitForPolicyAsync(token).ConfigureAwait(false);
+            _ipf = (OpenIpf ?? throw new InvalidOperationException("No IPF session opener."))(token);
+            DeviceTrace.Change(serviceId, "power-path", "IPF elevated session open; IPF applies the power limits.");
+        }
     }
 
     /// <summary>Withdraws WSGM's IPF request and closes the session; IPF's own policy value applies again.</summary>
@@ -191,28 +224,28 @@ internal sealed class IntelPowerPaths(
         DeviceTrace.Change(serviceId, "power-path", $"Power limit path: {Name(path)}.");
     }
 
-    /// <summary>Puts the selected path's policy-service state in place after acquisition, and the IPF session.</summary>
+    /// <summary>Puts the selected path's policy-service state in place after acquisition.</summary>
     /// <remarks>
-    ///     An IPF session that cannot open here (a default or saved choice, not a user's switch) falls back to
-    ///     the model's default path so the power service still starts; the reason is logged.
+    ///     The IPF session is not opened here: on a wake it was kept across the standby, and otherwise the
+    ///     first write opens it. Connecting can take the server seconds after a standby, which outran the
+    ///     resume deadline and restarted the whole device cycle, so a slow or failed open now costs only
+    ///     that write and never changes the path or stops ipfsvc.
     /// </remarks>
-    internal async ValueTask ResumeAsync(string firmware, CancellationToken token)
+    internal ValueTask ResumeAsync(string firmware, CancellationToken token)
     {
-        try
-        {
-            await ApplyAsync(firmware, token).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (ViaIpf && exception is not OutOfMemoryException
-                                                 && exception is not OperationCanceledException)
-        {
-            DeviceTrace.Warn(serviceId, $"IPF power path unavailable, using {Name(Fallback)}: {exception.Message}");
-            CloseIpf();
-            Selected = Fallback;
-            await ApplyAsync(firmware, CancellationToken.None).ConfigureAwait(false);
-        }
+        return ApplyPolicyAsync(firmware, token);
     }
 
     private async ValueTask ApplyAsync(string firmware, CancellationToken token)
+    {
+        await ApplyPolicyAsync(firmware, token).ConfigureAwait(false);
+        if (ViaIpf)
+        {
+            await EnsureIpfAsync(token).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask ApplyPolicyAsync(string firmware, CancellationToken token)
     {
         if (PolicyOff)
         {
@@ -221,12 +254,6 @@ internal sealed class IntelPowerPaths(
         }
 
         await RestoreAsync(firmware, token).ConfigureAwait(false);
-        if (ViaIpf && _ipf is null)
-        {
-            await WaitForPolicyAsync(token).ConfigureAwait(false);
-            _ipf = (OpenIpf ?? throw new InvalidOperationException("No IPF session opener."))();
-            DeviceTrace.Change(serviceId, "power-path", "IPF elevated session open; IPF applies the power limits.");
-        }
     }
 
     // A restored ipfsvc takes a few seconds before its elevated listener accepts a session.

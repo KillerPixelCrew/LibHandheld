@@ -19,6 +19,7 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
     internal const int LightingOffset = 586;
     /// <summary>Complete retained section: selected-animation byte, four 220-byte animations and trailing bytes.</summary>
     internal const int LightingLength = 883;
+    private const int DeviceNotConnected = 1167;
     private FileStream _stream;
     private HidCollection _collection;
 
@@ -28,12 +29,55 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         _stream = HidDevices.OpenStream(collection);
     }
 
-    private void FlushReplies()
+    /// <summary>Discards queued input, reopening first when the pad re-enumerated under this handle.</summary>
+    /// <remarks>
+    ///     The pad re-enumerates just after a wake, so a handle opened a moment earlier reports error 1167.
+    ///     Nothing has been sent at this point, so reopening repeats no write.
+    /// </remarks>
+    private async ValueTask FlushRepliesAsync(CancellationToken token)
     {
-        if (!NativeHid.HidD_FlushQueue(_stream.SafeFileHandle))
+        if (NativeHid.HidD_FlushQueue(_stream.SafeFileHandle))
         {
-            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Atlas controller input queue could not be flushed.");
+            return;
         }
+
+        var error = Marshal.GetLastPInvokeError();
+        if (error == DeviceNotConnected)
+        {
+            await _stream.DisposeAsync().ConfigureAwait(false);
+            if (await ReopenAsync(_collection.ProductId, millisecondsBudget: 3000, token).ConfigureAwait(false)
+                && NativeHid.HidD_FlushQueue(_stream.SafeFileHandle))
+            {
+                return;
+            }
+
+            error = Marshal.GetLastPInvokeError();
+        }
+
+        throw new Win32Exception(error, "Atlas controller input queue could not be flushed.");
+    }
+
+    /// <summary>Waits for the command collection on this physical port and opens it.</summary>
+    /// <returns>Whether it arrived within the budget.</returns>
+    private async ValueTask<bool> ReopenAsync(ushort product, int millisecondsBudget, CancellationToken token)
+    {
+        var deadline = Environment.TickCount64 + millisecondsBudget;
+        while (Environment.TickCount64 < deadline)
+        {
+            var replacement = HidDevices.Unique(HidDevices.Enumerate(0x0502, [product]),
+                item => IsCommandCollection(item)
+                        && HidDevices.SamePhysicalLocation(item.PhysicalLocation, _collection.PhysicalLocation));
+            if (replacement is not null)
+            {
+                _stream = HidDevices.OpenStream(replacement);
+                _collection = replacement;
+                return true;
+            }
+
+            await Task.Delay(100, token).ConfigureAwait(false);
+        }
+
+        return false;
     }
 
     /// <summary>Discards stale command replies, sends query 26 and reads the gamepad/rear-key bytes from reply 27.</summary>
@@ -41,7 +85,7 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
     public async ValueTask<AcerControllerMode> ReadModeAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        FlushReplies();
+        await FlushRepliesAsync(token).ConfigureAwait(false);
         var reply = await HidDevices.ExchangeAsync(_stream, ModePacket(), responseLength: 64,
             data => data[0] == 0x10 && data[3] == 0x3C && data[4] == 0x27,
             timeout: TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
@@ -69,21 +113,10 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
             await _stream.DisposeAsync().ConfigureAwait(false);
             // The acknowledged dispatch changes the USB topology. Poll only for arrival; never
             // resend the mode command when Windows has not finished enumerating its replacement.
-            var deadline = Environment.TickCount64 + 5000;
-            while (Environment.TickCount64 < deadline)
+            if (!await ReopenAsync(product, millisecondsBudget: 5000, CancellationToken.None).ConfigureAwait(false))
             {
-                var replacement = HidDevices.Unique(HidDevices.Enumerate(0x0502, [product]),
-                    item => IsCommandCollection(item)
-                            && HidDevices.SamePhysicalLocation(item.PhysicalLocation, _collection.PhysicalLocation));
-                if (replacement is not null)
-                {
-                    _stream = HidDevices.OpenStream(replacement);
-                    _collection = replacement;
-                    return;
-                }
-                await Task.Delay(100, CancellationToken.None).ConfigureAwait(false);
+                throw new IOException("The Atlas mode command was sent, but its replacement command interface did not arrive.");
             }
-            throw new IOException("The Atlas mode command was sent, but its replacement command interface did not arrive.");
         }
     }
 
@@ -156,7 +189,7 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         token.ThrowIfCancellationRequested();
         // This dedicated command handle also receives other clients' query replies. Discard
         // already queued input before requesting a fresh snapshot; never flush an OEM reader.
-        FlushReplies();
+        await FlushRepliesAsync(token).ConfigureAwait(false);
         var lighting = new byte[LightingLength];
         for (var offset = 0; offset < lighting.Length; offset += 55)
         {
