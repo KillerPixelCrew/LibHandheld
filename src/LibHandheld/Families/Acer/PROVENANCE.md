@@ -1,5 +1,30 @@
 # Acer Predator Atlas 8
 
+## BIOS delivery sources and BIOS 1.05, 2026-11-08
+
+Read-only research into whether Atlas 8 BIOS 1.05 changes the controller; nothing was run or flashed.
+Predator Sense 1.0.1563.0 Live Update asks its local XSense service (`localhost:15152`,
+`driver/getUpdateList`), which is `AcerService.exe` in the Predator Sense package, a bundled Node
+service. It fetches `GET https://backend-prd-imub2p4wyq-uc.a.run.app/xsense/api/getDriverList3/{model}/{serial}`
+(or `getDriverList2/{model}`) with an HS256 bearer token built from a constant in the service. The model
+is SMBIOS `SystemProductName` (`Predator PA08-I51`). The response is `{"driver":[...],"bios":[...]}`
+with `global-download.acer.com` file paths, and a BIOS item is shown only when it is an INF capsule
+package. On 2026-11-08 the backend returned 31 drivers and an empty BIOS list for the PA08-I51 without
+a real serial, so a serial- or version-targeted rollout cannot be excluded.
+
+Acer's website (`POST https://www.acer.com/us-en/DynamicContent/GetDriversAndManuals`,
+`{"ModelName":"Predator PA08-I51","Local":"en-us"}`) lists only BIOS 1.04 (2026-10-30, "Updates Insyde
+patches"); only the us-en site has the model. Winhanced reads that same website response through a
+browser and downloads from `global-download.acer.com`, so it offers nothing beyond it. A 1.05 file
+cannot be fetched without its per-file `acerid`, and the Microsoft Update Catalog lists no Atlas BIOS
+capsule or the 1.0.1000.4 component. The 1.04 package is an Insyde wrapper (`F7V_V1_04.exe`) whose
+packed payload was not decoded; no controller firmware identity was found in it.
+
+Result: BIOS 1.05 was not obtainable, so its effect on the controller's USB product ID, release 0100
+or default mode is unknown, and no change to the release-0100 admission is proposed. Next evidence: the
+serial of a unit that was offered 1.05, or a tester's wsgm.log with the `acer-controller-mode`
+collection line. Local responses and hashes are in ignored `artifacts/acer-bios/`.
+
 ## AFZsvc left startable, 2026-11-08
 
 A remote tester's Atlas 8 received "Acer Incorporated Software Component Driver Update (1.0.1000.4)"
