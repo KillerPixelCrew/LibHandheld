@@ -6,9 +6,12 @@ Measured on Acer Predator PA08-I51, PTL F900_PTG, BIOS V1.03, controller 0502:F9
 
 Since 2026-11-07 the Predator Sense for Handheld desktop app (`Handheld.Desktop`, package
 `ULICTekInc.PredatorSenseforHandHeld`) is no longer blocked or closed, so the user can start it to get
-Acer's BIOS updates. Since 2026-11-08 `AFZsvc` stays startable too, because a tester's built-in
-controller stopped working while it was disabled after Acer's component update 1.0.1000.4. Every
-other target below stays disabled. See
+Acer's BIOS updates. The maintainer's later 2026-11-08 decision disables `AFZsvc` again and includes
+the optional `FocusZoomUserService` service and both Focus Zoom child process names. A tester's
+controller stopped working while AFZsvc was disabled after Acer component update 1.0.1000.4; the
+maintainer explicitly accepted that risk. Recorded start types remain recoverable on uninstall;
+the driver package is retained. On the attended unit FocusZoomUserService is an ordinary child
+process, with no Windows service template, Run entry or scheduled task. See
 [Predator Sense for Handheld can be started](PROVENANCE.md#predator-sense-for-handheld-can-be-started-2026-11-07).
 
 ## Where input comes from
@@ -84,7 +87,7 @@ to remove Win+G. Hardware drivers are retained.
 | Target type                     | Exact names                                                                                                   | Applied state             |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------- |
 | Predator core/lighting services | `AASHHSvc`, `AcerHandheld.Service`, `AcerLightingServiceHH`, `ALSSvc`                                         | Stopped; startup Disabled |
-| Other installed Acer services   | `AcerCCAgentSvis`, `AcerDeviceEnablingServiceV2`, `AcerORDService`, `AcerServiceSvc`, `AFZsvc`                | Stopped; startup Disabled (AFZsvc no longer since 2026-11-08) |
+| Other installed Acer services   | `AcerCCAgentSvis`, `AcerDeviceEnablingServiceV2`, `AcerORDService`, `AcerServiceSvc`, `AFZsvc`, optional `FocusZoomUserService` | Stopped; startup Disabled |
 | Acer telemetry service          | `UEIPSvc`                                                                                                     | Stopped; startup Disabled |
 | Scheduled tasks in `\`          | `PredatorHandheldLauncher`, `UEIPInvitation`, `UbtFrameworkService`                                           | Disabled                  |
 | Packaged desktop app            | `ULICTekInc.PredatorSenseforHandHeld`, family `ULICTekInc.PredatorSenseforHandHeld_nt9dgb7efx6bt`             | Package status Disabled   |

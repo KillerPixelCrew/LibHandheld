@@ -95,7 +95,52 @@ The controller re-enumerates just after a wake, so a handle opened moments earli
 `HidD_FlushQueue` with error 1167. Before anything is sent, the command lane now reopens the same
 collection on its physical port, for up to 3 s, instead of faulting lighting for the session.
 
-## AFZsvc left startable, 2026-11-08
+## Focus Zoom disabled by maintainer decision, 2026-11-08
+
+This supersedes the earlier same-day AFZsvc exemption below. The maintainer explicitly chose to
+disable Focus Zoom despite the tester's reported controller dependency. The exact PA08-I51 OEM
+takeover again includes `AFZsvc`, optionally `FocusZoomUserService` if installed as a service, and
+the `FocusZoom`/`FocusZoomUserService` process names. Setup's unblocked-package recovery still
+allows Predator Sense's desktop app for BIOS delivery, but never restores service records. The
+existing accepted takeover persists across exit and Device Integration off; uninstall restores
+recorded start types. No driver package or binary is removed.
+
+Attended read-only evidence on the maintainer's PA08-I51, PTL F900_PTG:
+
+- AFZsvc was Automatic/Running, PID 4424, under
+  `focuszoomservice.inf_amd64_88fac5f6103aea02`. Its INF declares DriverVer
+  `07/17/2026,1.0.1000.3`, software component
+  `SWC\VEN_1025&DEV_165F&11&SWComp_AcerFocusZoomDriver` and `AddService=AFZsvc`.
+- Process ancestry was AFZsvc -> FocusZoomUserService (PID 13068) -> FocusZoomUserService
+  `launch` (13076) -> FocusZoom (13448). No FocusZoomUserService Windows service/template, Focus
+  Zoom Run entry or scheduled task was installed. Missing optional services are skipped.
+- SHA256: FocusZoomService.exe
+  `2CACBFDFAAA870B9956BD518D0A8270153D39DC649D8DB06581DDF00BD588DD8`,
+  FocusZoomUserService.exe `FC538AE8DE7172DF9677F830771FDD3497FE5CEE27D265770BA4EDDDC90431BE`,
+  FocusZoom.exe `DB4D8FD67D143A6B681BECBBB7761310D0136B4DD978E217DFE9EAE47FE0B1EF`.
+- Static Ghidra 12.1.4 inspection of FocusZoom.exe: `0x1400171f0` opens the first HID with usage
+  page FFF1, read/write and shared, without a VID/PID filter. `0x140017fd0` performs blocking
+  ReadFile, interprets 9A zoom events and 9B stick reports, and has 500 ms open-failure / 1500 ms
+  read-failure backoff. It drives Windows.Graphics.Capture and D3D11. That is controller-related
+  input, but does not establish that the base controller requires the service.
+- A 20 s snapshot measured 0 CPU seconds for all four processes, 0% sampled GPU engine use and
+  zero sampled I/O. A longer 10 s sampler caught FocusZoom.exe at 1.15625 CPU seconds in
+  10.3513 s. This is activity, not a reproduced extreme-power fault or a demonstrated busy loop.
+- SRUM export attributed raw CPU-energy sums of 720267 to FocusZoomUserService (Nov 6-8),
+  153565 to FocusZoom.exe (Nov 8 14:35-15:29) and 2356 to FocusZoomService (same hour).
+  These are unconverted SRUM values with different aggregation windows, not watts. SleepStudy
+  also lists the user service. No Focus Zoom event provider/channel was registered; Application
+  Error 1000 records a FocusZoom.exe fail-fast crash at 10:42:13, exception C0000409, offset 28CED.
+  Text logging is conditional on `HKLM\SOFTWARE\OEM\FocusZoom\Log`; that key was absent.
+
+Live disable recorded AFZsvc's original start type 2 in WSGM's takeover journal before changing
+SCM, then stopped/disabled it and ended the authorized Focus Zoom children. The driver package
+remains installed. XInputGetState from an unallowlisted diagnostic process returned 1167 for every
+slot while WSGM's HidHide cloak was active, so this does not prove a controller failure or pass.
+Attended button acceptance and uninstall recovery remain to be exercised. Raw local evidence is
+under WSGM `artifacts/focuszoom-2026-11-08`; it is not library build input.
+
+## AFZsvc left startable, 2026-11-08 (superseded)
 
 A remote tester's Atlas 8 received "Acer Incorporated Software Component Driver Update (1.0.1000.4)"
 through Windows Update. Afterwards a process named "Focus Zoom" ran with high CPU, and the built-in

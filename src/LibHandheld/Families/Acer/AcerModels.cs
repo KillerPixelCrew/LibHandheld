@@ -50,14 +50,16 @@ internal static class AcerModels
     ///     The services, three tasks, the widget's MSIX family and dedicated controller keyboard leaf of
     ///     OEM_INPUT_AND_DISABLE.md. They are exact PA08-I51 findings, so they apply to this definition only.
     ///     The desktop app (Handheld.Desktop, its own MSIX family) is left out since 2026-11-07, so the user
-    ///     can start it: Acer delivers Atlas BIOS updates through it. AFZsvc is left out since 2026-11-08: a
-    ///     tester's built-in controller stopped working while it was disabled after Acer's component update.
+    ///     can start it: Acer delivers Atlas BIOS updates through it. Focus Zoom is disabled by the
+    ///     maintainer's 2026-11-08 decision despite a tester's reported controller dependency; see provenance.
     /// </remarks>
     internal static IReadOnlyList<OemManagerApp> ManagerApps { get; } =
     [
-        new("acer-predator-handheld", "Predator Sense for Handheld", ["Handheld.Widget"],
+        new("acer-predator-handheld", "Predator Sense for Handheld",
+            ["Handheld.Widget", "FocusZoom", "FocusZoomUserService"],
             ["AASHHSvc", "AcerCCAgentSvis", "AcerDeviceEnablingServiceV2", "AcerHandheld.Service",
-                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "ALSSvc", "UEIPSvc"],
+                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "AFZsvc", "FocusZoomUserService",
+                "ALSSvc", "UEIPSvc"],
             ["PredatorHandheldLauncher", "UEIPInvitation", "UbtFrameworkService"])
         {
             PackageFamilies = ["ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"],
