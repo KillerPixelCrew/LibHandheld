@@ -7,7 +7,7 @@ namespace LibHandheld.Families.Acer;
 
 /// <summary>The Atlas controller's dedicated command lane for reversible mode and volatile lighting changes.</summary>
 /// <remarks>
-///     Measured USB 0502:F901 release 0100, FFA0:0001, uses 64-byte input/output reports. The outer
+///     Measured USB 0502:F901 release 0100 (and 0105 after the 1.05 firmware), FFA0:0001, uses 64-byte input/output reports. The outer
 ///     header is 0F 00 00 3C for requests and 10 00 00 3C for replies. Profile offsets are big endian,
 ///     unlike the separate EC transport. Only lighting RAM and immediate gamepad/rear-key modes are
 ///     writable here: key mappings, sensor configuration, calibration and command 22 ROM save are excluded.
@@ -136,10 +136,14 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         return collection is null ? null : new AcerControllerTransport(collection);
     }
 
-    private static bool IsCommandCollection(HidCollection item) =>
-        item.InputLength == 64 && item.OutputLength == 64 && item.ReleaseNumber == 0x0100
-        && (item.ProductId == 0xF901 && item.UsagePage == 0xFFA0 && item.Usage == 1
-            || item.ProductId == 0xF90A && item.UsagePage == 0xFFF0 && item.Usage == 0x40);
+    /// <remarks>
+    ///     Both topologies are admitted at firmware 1.00 and 1.05 (release 0100/0105), which keep the
+    ///     same collection shapes and command protocol.
+    /// </remarks>
+    internal static bool IsCommandCollection(HidCollection item) =>
+        item.InputLength == 64 && item.OutputLength == 64
+        && (item is { ProductId: 0xF901, UsagePage: 0xFFA0, Usage: 1, ReleaseNumber: 0x0100 or 0x0105 }
+            || item is { ProductId: 0xF90A, UsagePage: 0xFFF0, Usage: 0x40, ReleaseNumber: 0x0100 or 0x0105 });
 
     /// <summary>Reads all 883 retained lighting bytes in correlated chunks of at most 55 data bytes.</summary>
     /// <remarks>

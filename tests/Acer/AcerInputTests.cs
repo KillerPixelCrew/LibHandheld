@@ -78,6 +78,40 @@ public sealed class AcerInputTests
     }
 
     [Fact]
+    public void Firmware105KeepsTheMeasuredXInputCollectionShapes()
+    {
+        // Shapes logged on the PA08-I51 after Predator Sense flashed controller firmware 1.05.
+        var vendor = Collection("mi_01", 0xFFF1, 0xF5, 15) with { ReleaseNumber = 0x0105 };
+        var qam = Collection("mi_02", 0x88, 1, 3) with { ReleaseNumber = 0x0105 };
+        var command = Collection("mi_01", 0xFFA0, 1, 64) with { ReleaseNumber = 0x0105, OutputLength = 64 };
+        Assert.True(AcerInputProtocol.IsVendorCollection(vendor));
+        Assert.True(AcerInputProtocol.IsQamCollection(qam));
+        Assert.True(AcerControllerTransport.IsCommandCollection(command));
+        Assert.True(AcerControllerTransport.IsCommandCollection(command with { ReleaseNumber = 0x0100 }));
+        Assert.False(AcerInputProtocol.IsVendorCollection(vendor with { InputLength = 16 }));
+        Assert.False(AcerInputProtocol.IsVendorCollection(vendor with { ReleaseNumber = 0x0106 }));
+        Assert.False(AcerInputProtocol.IsQamCollection(qam with { ReleaseNumber = 0x0106 }));
+        Assert.False(AcerControllerTransport.IsCommandCollection(command with { ReleaseNumber = 0x0106 }));
+        Assert.False(AcerControllerTransport.IsCommandCollection(command with { OutputLength = 0 }));
+    }
+
+    [Fact]
+    public void DInputLanesAdmitBothMeasuredFirmwareReleases()
+    {
+        var command = Collection("mi_00", 0xFFF0, 0x40, 64) with
+        {
+            ProductId = 0xF90A, ReleaseNumber = 0x0105, OutputLength = 64,
+            InstancePath = @"HID\VID_0502&PID_F90A&MI_00&COL02\fixture"
+        };
+        Assert.True(AcerControllerTransport.IsCommandCollection(command));
+        Assert.True(AcerControllerTransport.IsCommandCollection(command with { ReleaseNumber = 0x0100 }));
+        Assert.True(AcerInputProtocol.IsDInputCompanion(command));
+        Assert.False(AcerControllerTransport.IsCommandCollection(command with { ReleaseNumber = 0x0106 }));
+        Assert.False(AcerInputProtocol.IsDInputCompanion(command with { ReleaseNumber = 0x0106 }));
+        Assert.False(AcerControllerTransport.IsCommandCollection(command with { UsagePage = 0xFFA0, Usage = 1 }));
+    }
+
+    [Fact]
     public void DInputUsagesFromTheGamepadReaderProduceSingleEdges()
     {
         var edges = new List<(string Id, bool Down)>();

@@ -6,8 +6,9 @@ namespace LibHandheld.Families.Acer;
 
 /// <summary>Decodes the Atlas's OEM HID reports independently of the ordinary XInput gamepad.</summary>
 /// <remarks>
-///     The measured variants are USB 0502:F901 release 0004 with 16-byte vendor input and release
-///     0100 with 15-byte input. Report lengths include the report ID. These selectors deliberately
+///     The measured variants are USB 0502:F901 release 0004 with 16-byte vendor input and releases
+///     0100 and 0105 (Acer controller firmware 1.00 and 1.05) with 15-byte input. Report lengths
+///     include the report ID. These selectors deliberately
 ///     reject other releases and ambiguous collections; a shared VID/PID is not a protocol guarantee.
 ///     The separate keyboard's Win+Tab/F22 holds and I2C volume input are outside this parser.
 /// </remarks>
@@ -34,7 +35,7 @@ internal static class AcerInputProtocol
 
     internal static bool IsDInputCompanion(HidCollection item)
     {
-        return item is { VendorId: 0x0502, ProductId: 0xF90A, ReleaseNumber: 0x0100 }
+        return item is { VendorId: 0x0502, ProductId: 0xF90A, ReleaseNumber: 0x0100 or 0x0105 }
                && !string.IsNullOrWhiteSpace(item.PhysicalLocation)
                && item is { UsagePage: 0xFFF0, Usage: 0x40, InputLength: 64, OutputLength: 64 }
                && item.InstancePath.Contains("&MI_00&COL02\\", StringComparison.OrdinalIgnoreCase);
@@ -46,7 +47,7 @@ internal static class AcerInputProtocol
         return IsAtlasCollection(collection, "mi_01") && collection.UsagePage == 0xFFF1
                && collection.Usage == 0xF5
                && (collection.ReleaseNumber == 4 && collection.InputLength == 16
-                   || collection.ReleaseNumber == 0x0100 && collection.InputLength == 15);
+                   || collection.ReleaseNumber is 0x0100 or 0x0105 && collection.InputLength == 15);
     }
 
     /// <summary>Matches MI_02's 0088:0001 three-byte front-right/QAM collection.</summary>
@@ -59,7 +60,7 @@ internal static class AcerInputProtocol
     private static bool IsAtlasCollection(HidCollection collection, string usbInterface)
     {
         return collection.VendorId == 0x0502 && collection.ProductId == 0xF901
-               && collection.ReleaseNumber is 4 or 0x0100
+               && collection.ReleaseNumber is 4 or 0x0100 or 0x0105
                && collection.DevicePath.Contains(usbInterface, StringComparison.OrdinalIgnoreCase)
                && !string.IsNullOrWhiteSpace(collection.PhysicalLocation);
     }

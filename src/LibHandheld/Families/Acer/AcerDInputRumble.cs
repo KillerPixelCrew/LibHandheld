@@ -16,7 +16,7 @@ internal sealed class AcerDInputRumble : IHidControllerRumble
 
     internal AcerDInputRumble(HidCollection collection)
     {
-        if (collection is not { VendorId: 0x0502, ProductId: 0xF90A, ReleaseNumber: 0x0100,
+        if (collection is not { VendorId: 0x0502, ProductId: 0xF90A, ReleaseNumber: 0x0100 or 0x0105,
                 UsagePage: 1, Usage: 5, InputLength: 64, OutputLength: 32 })
         {
             throw new NotSupportedException("The Atlas DInput rumble report shape is not supported.");

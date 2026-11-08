@@ -1,5 +1,46 @@
 # Acer Predator Atlas 8
 
+## Controller firmware 1.05, 2026-11-08
+
+The "BIOS 1.05" update Predator Sense offered is controller firmware. On the maintainer's PA08-I51
+(BIOS V1.04 dated 2026-09-08, EC 1.2, both unchanged), Predator Sense 1.0.1563.0 flashed the
+controller over HID DFU at 03:12. Its `core-20261108.log` shows `acer_fw_1.05.ufw`, image
+`pid: DG_3315T, vid: 1.05, UfwChecksum: 5CB2-0787E5BE`, device before `DG_3315T, vid: 1.00`, then
+`upgrade success`. A 2026-11-07 20:47 WSGM start on the same BIOS still owned the mode lane, so the
+release was 0100 until this flash. The remote tester, whose BIOS also stayed 1.04, matches.
+
+After the flash the USB device is still 0502:F901 in XInput mode, now release 0105 (`REV_0105` on
+the composite, MI_00..02 and every MI_01/MI_02 collection). The interfaces and every collection shape
+are unchanged from 0100: MI_00 Xbox 360 (`xusb22`) with IG_00 gamepad 0001:0005, input 15;
+MI_01 FFA0:0001 in/out 64 and FFF1:00F5 in 15; MI_02 keyboard 0001:0006, mouse 0001:0002 in 8,
+consumer 000C:0001 in 5, QAM 0088:0001 in 3 and FF5A:0001. WSGM's start then logged
+`acer-controller-mode=Passive(PrerequisiteMissing)` and `acer-lighting=Passive` because the lane
+admitted 0100 only. The rear/QAM button source refused the same collections, so the rear keys stayed
+in Predator Sense's Macro mode and neither the back buttons nor the QAM key reached the virtual
+pad. The virtual Steam Deck pad itself was created.
+
+An attended gyro trial on 1.05 (WSGM stopped) repeated the 2026-10-27 method. In XInput the
+command lane answered mode query 26 (`01 00 00 01 00`), read SensorModule `E0 01 00 04 00 19 32 FF FF
+00`, accepted MotionEnable bit 0 with readback, and took 2F 01/2F 00. Switching with 24 02 00
+re-enumerated F90A release 0105 with the 0100 DInput shapes: gamepad 0001:0005 in 64/out 32/feature
+48, vendor FFF0:0040 in/out/feature 64, keyboard 0001:0006 in 9/out 2, mouse 0001:0002 in 8,
+consumer 000C:0001 in 5. Its command lane read and gated the module the same way. Both modules,
+then the original mode, were restored and read back exactly.
+
+Gyro result: no raw controller gyro on 1.05 either. FFA0/FFF0 delivered no 0x30 motion packets
+in either mode during a 5 s rest and 15 s rotation (Windows reference peaks 250/161/107 and
+381/193/134 degrees/s). The DInput report ran at 125 Hz and only left-stick bytes 1 and 2 changed;
+offsets 13..24 stayed zero with the fixed 0x10 at 22. The XInput HID gamepad (IG_00, release 0000)
+changed only stick bytes. The Windows LSM6DSO source remains the motion source. Evidence: ignored
+`artifacts/acer-fw105-gyro/` (trial log, results.json, raw report and Windows sample captures) and
+the probe in `artifacts/acer-fw105-probe/`.
+
+Change: release 0105 is admitted with the exact 0100 shapes in both topologies: the command lane
+(mode and lighting) on F901 FFA0:0001 and F90A FFF0:0040, FFF1:00F5 15-byte rear input, 0088:0001
+QAM input, the F90A gamepad button source, DInput companion and DInput rumble shape. Remaining: an
+attended WSGM run on 1.05 confirming that the managed XInput/Combination pair is applied and
+restored, lighting reads its 883 bytes, rear keys produce report 9A, and DInput rumble is felt.
+
 ## BIOS delivery sources and BIOS 1.05, 2026-11-08
 
 Read-only research into whether Atlas 8 BIOS 1.05 changes the controller; nothing was run or flashed.

@@ -45,7 +45,7 @@ internal sealed class AcerButtonSource : IProfiledOemSource, IHidButtonObserver
     {
         token.ThrowIfCancellationRequested();
         var dinput = HidDevices.Unique(HidDevices.Enumerate(0x0502, [0xF90A]),
-            item => item is { ReleaseNumber: 0x0100, UsagePage: 1, Usage: 5, InputLength: 64, OutputLength: 32 });
+            item => item is { ReleaseNumber: 0x0100 or 0x0105, UsagePage: 1, Usage: 5, InputLength: 64, OutputLength: 32 });
         if (dinput is not null)
         {
             // The controller's HID reader already decodes every gamepad report; it hands the usages to
