@@ -171,6 +171,41 @@ public sealed class IntelPowerPathsTests : IDisposable
         Assert.True(paths.ViaIpf);
     }
 
+    [Fact]
+    public async Task ARefusedStaleSessionIsReplacedAndTheWriteGoesThroughTheNewOne()
+    {
+        using TemporaryDirectory directory = new();
+        var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        var paths = new IntelPowerPaths(journal, "power", hasFirmware: true, preferIpf: true);
+        paths.Acquire(pawnIo: true);
+        await paths.EnsureIpfAsync(CancellationToken.None);
+        var stale = Assert.Single(_sessions);
+        stale.Stale = true;
+
+        await paths.WriteIpfAsync(20, 40, CancellationToken.None);
+
+        Assert.Equal(1, stale.WriteAttempts);
+        Assert.True(stale.Disposed);
+        Assert.Equal(2, _sessions.Count);
+        Assert.Equal((20, 40), _sessions[1].Written);
+    }
+
+    [Fact]
+    public async Task AnUncertainFailureIsNotSentAgain()
+    {
+        using TemporaryDirectory directory = new();
+        var journal = await DeviceRecoveryJournal.OpenAsync(directory.Root, CancellationToken.None);
+        var paths = new IntelPowerPaths(journal, "power", hasFirmware: true, preferIpf: true);
+        paths.Acquire(pawnIo: true);
+        await paths.EnsureIpfAsync(CancellationToken.None);
+        var session = Assert.Single(_sessions);
+        session.RefuseWrites = true;
+
+        await Assert.ThrowsAsync<IOException>(() => paths.WriteIpfAsync(20, 40, CancellationToken.None).AsTask());
+
+        Assert.Equal(1, session.WriteAttempts);
+        Assert.Single(_sessions);
+    }
     private sealed class FakePolicy : IIntelPolicyControl
     {
         private int _startType = 2;
@@ -208,7 +243,8 @@ public sealed class IntelPowerPathsTests : IDisposable
     {
         internal (int Sustained, int Boost)? Written { get; private set; }
         internal bool Disposed { get; private set; }
-        internal bool RefuseWrites { get; set; }
+        internal bool RefuseWrites { get; set; }        internal bool Stale { get; set; }
+
         internal int WriteAttempts { get; private set; }
 
         public bool Alive { get; set; } = true;
@@ -220,7 +256,12 @@ public sealed class IntelPowerPathsTests : IDisposable
 
         public void WriteLimits(int sustainedWatts, int boostWatts)
         {
-            WriteAttempts++;
+            WriteAttempts++;            if (Stale)
+            {
+                throw new IntelIpfStaleSessionException("IPF no longer knows this session's handles.");
+            }
+
+
             if (RefuseWrites)
             {
                 throw new IOException("primitive 130/0 failed with ESIF error 0x3EA.");

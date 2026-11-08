@@ -81,6 +81,16 @@ before anything is dispatched, a failed open refuses that write, and the path ne
 IPF or MSR 0x610 reports afterwards. Why the server withholds AppCreate after a standby was not
 established, and survival of a connected session across standby awaits an attended run.
 
+The next log (build 3.0.3.2015) showed the kept session alive but refused after a wake: the first write
+failed with ESIF error 0x3EC, `ESIF_E_INVALID_HANDLE`. A reconnect then again never got AppCreate. Intel's
+archived source (github.com/intel/dptf) gives one explanation for each. ESIF hands out a new domain handle
+each time it creates a domain (`esif_uf_app.c`), and the transport kept the first one it saw, so it now
+follows ParticipantCreate/Destroy and DomainCreate/Destroy. And `ipfsrv_iface_cli.c` states that an app name
+must be unique or the connection is terminated; every connection used "WSGM" and a closing session stops
+asynchronously, so each connection now has its own name. A first request refused as invalid applied
+nothing, so it is the one write sent again, through a new session. The transport logs AppSuspend, AppResume
+and handle changes, and a failed connect says whether IPF asked the name and whether the session closed.
+This is the Linux archive, not the Windows 2.3 build, and no attended run has confirmed either cause yet.
 The controller re-enumerates just after a wake, so a handle opened moments earlier fails
 `HidD_FlushQueue` with error 1167. Before anything is sent, the command lane now reopens the same
 collection on its physical port, for up to 3 s, instead of faulting lighting for the session.

@@ -4,16 +4,20 @@ using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Transports;
 
+/// <summary>IPF refused a session's first request as naming unknown handles, so nothing was applied.</summary>
+internal sealed class IntelIpfStaleSessionException(string message) : IOException(message);
+
 /// <summary>An open IPF client session that requests PL1/PL2; disposing it releases the request.</summary>
 internal interface IIntelIpfSession : IDisposable
 {
-    /// <summary>Whether the server still holds the session; its message pump ends when the session closes.</summary>
+    /// <summary>Whether the server still holds the session: its pump is running and it has not destroyed the app.</summary>
     bool Alive { get; }
 
     /// <summary>Reads PL1/PL2 as IPF reports them, in watts.</summary>
     CpuPowerLimits ReadLimits();
 
     /// <summary>Requests PL1/PL2 in watts; sent once, never retried.</summary>
+    /// <exception cref="IntelIpfStaleSessionException">IPF refused the first request, so nothing was applied.</exception>
     void WriteLimits(int sustainedWatts, int boostWatts);
 }
 
@@ -38,6 +42,9 @@ internal interface IIntelIpfSession : IDisposable
 internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
 {
     private const int EsifOk = 0;
+
+    // ESIF_E_INVALID_HANDLE: IPF no longer knows the app, participant or domain the request names.
+    private const int EsifInvalidHandle = 1004;
     private const int GetRaplPowerLimit = 38;
     private const int SetRaplPowerLimit = 130;
     private const int SetRaplPowerLimitEnable = 222;
@@ -62,6 +69,11 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
 
     private readonly Lock _gate = new();
     private readonly List<Delegate> _rooted = [];
+
+    // IPF ends a connection whose app name is still registered, and a closing session's name stays
+    // registered until its asynchronous stop has run, so every connection gets its own name.
+    private static int _connectionCount;
+    private readonly string _appName = $"WSGM{Environment.ProcessId:X}N{Interlocked.Increment(ref _connectionCount)}";
     private IntPtr _library;
     private byte* _iface;
     private byte* _set;
@@ -73,7 +85,10 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
     private bool _disposed;
 
     // Captured from the server's callbacks on the IPC thread.
+    private volatile bool _nameAsked;
     private volatile bool _created;
+    private volatile bool _destroyed;
+    private volatile bool _open;
     private ulong _esifHandle;
     private IntPtr _primitive;
     private ulong _cpu;
@@ -89,7 +104,7 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
         return ResolveIpc() is not null;
     }
 
-    public bool Alive => _pump is { IsAlive: true };
+    public bool Alive => _pump is { IsAlive: true } && !_destroyed;
 
     /// <summary>Opens the elevated IPF session and waits for the CPU participant; ipfsvc must be running.</summary>
     /// <param name="token">Ends the wait for the server's callbacks, so a caller's deadline holds.</param>
@@ -126,7 +141,13 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            Set(SetRaplPowerLimitEnable, 1, EsifDataUint32, Pl1);
+            var first = Send(SetRaplPowerLimitEnable, 1, EsifDataUint32, Pl1);
+            if (first == EsifInvalidHandle || Volatile.Read(ref _cpu) == 0 || Volatile.Read(ref _cpuDomain) == 0)
+            {
+                throw new IntelIpfStaleSessionException($"IPF no longer knows this session's handles (ESIF error 0x{first:X}).");
+            }
+
+            Check(first, $"primitive {SetRaplPowerLimitEnable}/{Pl1}");
             Set(SetRaplPowerLimitEnable, 1, EsifDataUint32, Pl2);
             Set(SetRaplPowerLimit, checked((uint)boostWatts * 1000), EsifDataPower, Pl2);
             Set(SetRaplPowerLimit, checked((uint)sustainedWatts * 1000), EsifDataPower, Pl1);
@@ -206,7 +227,7 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
 
         _info = (byte*)NativeMemory.AllocZeroed(SessionInfoSize);
         *(uint*)_info = 1;
-        Put(_info + 4, "WSGM");
+        Put(_info + 4, _appName);
         Put(_info + 4 + 64, "1.0.0");
         Put(_info + 4 + 64 + 20, "WSGM power limits");
         Put(_info + 4 + 64 + 20 + 64 + 1024, ElevatedServer);
@@ -231,7 +252,8 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
 
         // The server introduces the app and its participants within about 0.1 s on the Atlas.
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (!(_created && _cpu != 0 && _cpuDomain != 0) && DateTime.UtcNow < deadline)
+        while (!(_created && Volatile.Read(ref _cpu) != 0 && Volatile.Read(ref _cpuDomain) != 0)
+               && _pump.IsAlive && DateTime.UtcNow < deadline)
         {
             token.ThrowIfCancellationRequested();
             Thread.Sleep(25);
@@ -239,14 +261,16 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
 
         if (!_created || _primitive == IntPtr.Zero)
         {
-            throw new IOException("IPF connected but never created the WSGM app session.");
+            throw new IOException("IPF connected but never created the WSGM app session "
+                                  + $"(asked the name: {_nameAsked}, session closed: {!_pump.IsAlive}).");
         }
 
-        if (_cpu == 0 || _cpuDomain == 0)
+        if (Volatile.Read(ref _cpu) == 0 || Volatile.Read(ref _cpuDomain) == 0)
         {
             throw new IOException("IPF did not report its TCPU participant.");
         }
 
+        _open = true;
         DeviceTrace.Change("ipf", "session", $"IPF elevated session open; TCPU {_cpu}, domain {_cpuDomain}.");
     }
 
@@ -261,16 +285,21 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
 
     private void Set(int primitive, uint value, uint type, byte instance)
     {
+        Check(Send(primitive, value, type, instance), $"primitive {primitive}/{instance}");
+    }
+
+    private int Send(int primitive, uint value, uint type, byte instance)
+    {
         var data = value;
         var request = new EsifData { Type = type, Buf = (IntPtr)(&data), BufLen = sizeof(uint), DataLen = sizeof(uint) };
         var response = default(EsifData);
-        Check(Primitive(&request, &response, primitive, instance), $"primitive {primitive}/{instance}");
+        return Primitive(&request, &response, primitive, instance);
     }
 
     private int Primitive(EsifData* request, EsifData* response, int primitive, byte instance)
     {
         var call = (delegate* unmanaged[Cdecl]<ulong, ulong, ulong, EsifData*, EsifData*, int, byte, int>)_primitive;
-        return call(_esifHandle, _cpu, _cpuDomain, request, response, primitive, instance);
+        return call(_esifHandle, Volatile.Read(ref _cpu), Volatile.Read(ref _cpuDomain), request, response, primitive, instance);
     }
 
     /// <summary>Fills the 15 AppInterface callbacks; the EsifInterface half is the server's.</summary>
@@ -282,20 +311,43 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
         *(ushort*)(_set + 6) = AppInterfaceSetSize;
         var app = (IntPtr*)(_set + 8);
         app[0] = Root<AppCreateDelegate>(OnCreate);
-        app[1] = Root<HandleDelegate>(_ => EsifOk);
-        app[2] = Root<HandleDelegate>(_ => EsifOk);
-        app[3] = Root<HandleDelegate>(_ => EsifOk);
+        app[1] = Root<HandleDelegate>(_ => OnDestroy());
+        app[2] = Root<HandleDelegate>(_ => OnPowerNotice("suspended"));
+        app[3] = Root<HandleDelegate>(_ => OnPowerNotice("resumed"));
         app[4] = Root<StringDelegate>(data => WriteString(data, "1.0.0"));
         app[5] = Root<CommandDelegate>((_, _, _, _) => EsifOk);
-        app[6] = Root<IntroDelegate>((_, data) => WriteString(data, "WSGM"));
+        app[6] = Root<IntroDelegate>((_, data) => WriteString(data, _appName));
         app[7] = Root<StringDelegate>(data => WriteString(data, "WSGM power limits"));
-        app[8] = Root<StringDelegate>(data => WriteString(data, "WSGM"));
+        app[8] = Root<StringDelegate>(OnGetName);
         app[9] = Root<StatusDelegate>((_, _, _, _) => EsifOk);
         app[10] = Root<ParticipantCreateDelegate>(OnParticipant);
-        app[11] = Root<Handle2Delegate>((_, _) => EsifOk);
+        app[11] = Root<Handle2Delegate>(OnParticipantDestroy);
         app[12] = Root<DomainCreateDelegate>(OnDomain);
-        app[13] = Root<Handle3Delegate>((_, _, _) => EsifOk);
+        app[13] = Root<Handle3Delegate>(OnDomainDestroy);
         app[14] = Root<EventDelegate>((_, _, _, _, _) => EsifOk);
+    }
+
+    private int OnGetName(EsifData* data)
+    {
+        _nameAsked = true;
+        return WriteString(data, _appName);
+    }
+
+    private int OnDestroy()
+    {
+        _destroyed = true;
+        if (_open)
+        {
+            DeviceTrace.Info("ipf", "IPF destroyed the WSGM app session.");
+        }
+
+        return EsifOk;
+    }
+
+    private static int OnPowerNotice(string notice)
+    {
+        DeviceTrace.Info("ipf", $"IPF {notice} the WSGM app session.");
+        return EsifOk;
     }
 
     private int OnCreate(byte* set, ulong esifHandle, ulong* appHandle, IntPtr appData, int state)
@@ -313,7 +365,9 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
         // AppParticipantData (pack 1): version + reserved (4), EsifData fDriverType, fDeviceType, fName.
         if (string.Equals(EsifString(data, 4 + (2 * sizeof(EsifData))), CpuParticipant, StringComparison.OrdinalIgnoreCase))
         {
-            _cpu = participant;
+            // The participant's domains follow with new handles, also when IPF creates it again after a standby.
+            Volatile.Write(ref _cpuDomain, 0);
+            Volatile.Write(ref _cpu, participant);
         }
 
         return EsifOk;
@@ -322,9 +376,36 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
     private int OnDomain(ulong app, ulong participant, ulong domain, IntPtr data, int state)
     {
         // The participant's first domain is its package domain (D0, "PKG" on TCPU).
-        if (participant == _cpu && _cpuDomain == 0)
+        if (participant == Volatile.Read(ref _cpu) && Volatile.Read(ref _cpuDomain) == 0)
         {
-            _cpuDomain = domain;
+            Volatile.Write(ref _cpuDomain, domain);
+            if (_open)
+            {
+                DeviceTrace.Info("ipf", $"IPF created the TCPU domain again; domain {domain}.");
+            }
+        }
+
+        return EsifOk;
+    }
+
+    private int OnParticipantDestroy(ulong app, ulong participant)
+    {
+        if (participant == Volatile.Read(ref _cpu))
+        {
+            Volatile.Write(ref _cpuDomain, 0);
+            Volatile.Write(ref _cpu, 0);
+            DeviceTrace.Info("ipf", "IPF destroyed the TCPU participant.");
+        }
+
+        return EsifOk;
+    }
+
+    private int OnDomainDestroy(ulong app, ulong participant, ulong domain)
+    {
+        if (domain == Volatile.Read(ref _cpuDomain))
+        {
+            Volatile.Write(ref _cpuDomain, 0);
+            DeviceTrace.Info("ipf", "IPF destroyed the TCPU domain.");
         }
 
         return EsifOk;

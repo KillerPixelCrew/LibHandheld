@@ -676,7 +676,7 @@ internal sealed class AcerPowerService(
             // IPF applies the limits itself; MSR 0x610 stays at its original.
             token.ThrowIfCancellationRequested();
             dispatched();
-            _paths.WriteIpf(sustained, boost);
+            await _paths.WriteIpfAsync(sustained, boost, token).ConfigureAwait(false);
             ConfirmLimits("IPF", _paths.ReadIpf, sustained, boost);
             _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
             _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));

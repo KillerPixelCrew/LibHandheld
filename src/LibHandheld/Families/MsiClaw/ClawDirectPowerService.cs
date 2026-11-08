@@ -72,7 +72,7 @@ internal sealed class ClawDirectPowerService(
         {
             token.ThrowIfCancellationRequested();
             dispatched();
-            Paths.WriteIpf(sustained, boost);
+            await Paths.WriteIpfAsync(sustained, boost, token).ConfigureAwait(false);
             return;
         }
 

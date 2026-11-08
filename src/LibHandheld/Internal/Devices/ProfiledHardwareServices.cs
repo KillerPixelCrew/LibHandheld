@@ -111,7 +111,7 @@ internal sealed partial class ProfiledPowerService(
             // IPF applies the limits itself; MSR 0x610 stays at its original.
             token.ThrowIfCancellationRequested();
             dispatched();
-            _paths.WriteIpf((int)Math.Round(limits.SustainedWatts), (int)Math.Round(limits.BoostWatts));
+            await _paths.WriteIpfAsync((int)Math.Round(limits.SustainedWatts), (int)Math.Round(limits.BoostWatts), token).ConfigureAwait(false);
         }
         else
         {

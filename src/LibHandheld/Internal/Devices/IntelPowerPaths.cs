@@ -140,6 +140,24 @@ internal sealed class IntelPowerPaths(
         }
     }
 
+    /// <summary>Requests PL1/PL2 from IPF, opening a new session once if IPF no longer knows this one.</summary>
+    /// <remarks>Only a request IPF refused before applying anything is sent again.</remarks>
+    /// <param name="sustainedWatts">PL1 in watts.</param>
+    /// <param name="boostWatts">PL2 in watts.</param>
+    /// <param name="token">The caller's deadline, which also ends the wait for a new session.</param>
+    internal async ValueTask WriteIpfAsync(int sustainedWatts, int boostWatts, CancellationToken token)
+    {
+        try
+        {
+            WriteIpf(sustainedWatts, boostWatts);
+        }
+        catch (IntelIpfStaleSessionException)
+        {
+            await EnsureIpfAsync(token).ConfigureAwait(false);
+            WriteIpf(sustainedWatts, boostWatts);
+        }
+    }
+
     /// <summary>PL1/PL2 as IPF reports them, for confirming a write in the log.</summary>
     internal CpuPowerLimits ReadIpf()
     {
