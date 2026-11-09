@@ -106,6 +106,20 @@ internal sealed class AcerRingLights
         return frames;
     }
 
+    /// <summary>The writes that black out every LED of every target.</summary>
+    internal static IReadOnlyList<byte[]> DarkFrames(IReadOnlyList<AcerRingTarget> targets)
+    {
+        List<byte[]> frames = [];
+        foreach (var target in targets)
+        {
+            for (var bit = 0; bit < target.LedCount; bit++)
+            {
+                frames.Add(Packet(target.Id, SteadyMode, 0, 0, 0, (ushort)(1 << bit)));
+            }
+        }
+
+        return frames;
+    }
 
     private static int Color(ReadOnlySpan<byte> rgb)
     {
@@ -168,6 +182,11 @@ internal sealed class AcerRingLights
         return WriteAsync(Frames(RequireTargets(), lighting), token);
     }
 
+    /// <summary>Blacks out the rings for sleep.</summary>
+    internal ValueTask DarkenAsync(CancellationToken token)
+    {
+        return WriteAsync(DarkFrames(RequireTargets()), token);
+    }
 
     private IReadOnlyList<AcerRingTarget> RequireTargets()
     {

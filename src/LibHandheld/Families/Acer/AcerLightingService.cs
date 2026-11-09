@@ -132,6 +132,24 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
         return true;
     }
 
+    /// <summary>Blacks out the Atlas 7's rings before the cycle stops; the Atlas 8 path is a plain release.</summary>
+    public override async ValueTask<DeviceServiceResult> SuspendAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+        CancellationToken token)
+    {
+        if (rings is not null && State == DeviceServiceState.Owned)
+        {
+            try
+            {
+                await rings.DarkenAsync(token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+            {
+                DeviceTrace.Failure(ServiceId, "Atlas 7 rings could not be blacked out for sleep", exception);
+            }
+        }
+
+        return await ReleaseAsync(cycle, token).ConfigureAwait(false);
+    }
 
     /// <summary>Validates the selected animation and returns its offset inside the lighting section.</summary>
     /// <remarks>

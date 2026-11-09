@@ -254,7 +254,7 @@ internal static class AcerModels
                     context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open, AcerPowerTable.Atlas7),
                     context => new AcerFanService(context, ec),
                     context => new AcerBatteryService(context, ec), context => new AcerLightingService(context, controller, rings),
-                    _ => new AcerLogoLightingService(),
+                    _ => new AcerLogoLightingService(darkenForSleep: true),
                     context => new IntelPdcPowerButtonService(context)]
             });
         }

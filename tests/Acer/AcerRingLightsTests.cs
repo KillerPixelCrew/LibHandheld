@@ -96,6 +96,15 @@ public sealed class AcerRingLightsTests
         Assert.Equal(new byte[] { 0xA4, 0x41, 2, 50, 0, 0, 10, 11, 12, 0, 2 }, frames[9]);
     }
 
+    [Fact]
+    public void DarkFramesBlackOutEveryLed()
+    {
+        var frames = AcerRingLights.DarkFrames(EightLeds);
+
+        Assert.Equal(8, frames.Count);
+        Assert.All(frames, frame => Assert.Equal(new byte[] { 0xA4, 0x41, 2, 0, 0, 0, 0, 0, 0 }, frame[..9]));
+        Assert.Equal(new byte[] { 0x80, 0 }, frames[7][9..]);
+    }
 
     [Fact]
     public void BreathingSpeedScalesToTheTopSpeedTheAtlas7Reports()
@@ -113,6 +122,7 @@ public sealed class AcerRingLightsTests
         var rings = new AcerRingLights();
 
         await Assert.ThrowsAsync<IOException>(async () => await rings.ShowAsync(Lighting(effect: 1), CancellationToken.None));
+        await Assert.ThrowsAsync<IOException>(async () => await rings.DarkenAsync(CancellationToken.None));
     }
 
     [Theory]

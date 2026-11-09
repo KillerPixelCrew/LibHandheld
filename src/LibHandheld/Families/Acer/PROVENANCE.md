@@ -56,7 +56,7 @@ to Manual. Touch in Big Picture's main view failed while Focus Zoom ran and work
 and the unit restarted. Later it stopped intermittently with Focus Zoom off; the cause is unknown.
 
 Known gaps: EC command 0B03 is not acknowledged, so no custom charge limit is offered. Optimized charging
-reported Applied, with no charging measurement. LEDs stay on during suspend. Motion axes, haptics, the QAM report and fan RPM during
+reported Applied, with no charging measurement. Motion axes, haptics, the QAM report and fan RPM during
 commands have not been individually confirmed. The 8 W power floor comes from the Atlas 8's attended trials;
 the lowest limit attended on this unit is 10 W.
 
@@ -73,12 +73,14 @@ mask, 20 ms apart; an animated effect is one A4 with mask 0.
 WSGM opened `0502:F310` release `0100`, `FF5A:0001`, 11-byte features. A1 returned
 `A101450000000000000000` and A3 for target 45 returned `A345010E017F0001000000`: one LED and effect mask
 `0001007F`. The runtime keeps the section write and, on this model only, sends the A4 report after each
-edit. At takeover an effect other than solid or breathing is written back as solid in its first color, because
-this output cannot draw the others. Each time the collection opens it shows the retained section, one write on
-this model, instead of relying on the host's restore.
+edit. Before a suspend it blacks out the rings. At takeover an effect other than solid or breathing is written
+back as solid in its first color, because this output cannot draw the others. Each time the collection opens it
+shows that section, one write on this model, instead of relying on the host's restore. A rear logo is turned off
+for sleep and relit only if it was commanded in the session, since A4 has no getter and the firmware's own logo
+state could not be brought back.
 
-On the first build of this output the tester confirmed visible ring changes and whole-ring color changes.
-Per-zone colors had no visible effect, as expected with one LED in the capability reply, so this
+On the first build of this output the tester confirmed visible ring changes, whole-ring color changes, dark
+LEDs during sleep and relit LEDs after wake. Per-zone colors had no visible effect, as expected with one LED in the capability reply, so this
 model publishes only the whole-ring color. The rear logo was not reported separately.
 
 ## Controller firmware 1.05, 2026-11-08
