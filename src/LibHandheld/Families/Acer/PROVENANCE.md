@@ -46,11 +46,23 @@ WSGM reported every service Owned and created the managed Steam Deck target. IPF
 10/45 and 40/45 W read back exactly. Selecting Balanced set EC mode 1, confirming the mode table with a
 real write. Crimson Desert ran through Steam Input with no GPU hang.
 
-Opening Manual to 40/65 W raised the two fans to about 6700 RPM, against about 3700 RPM in Quiet and about
-4200 RPM in Balanced. The Atlas 8 measured about 3600 RPM in Manual, so this firmware's Manual is much
-more aggressive. Fan control, charging, lighting, the 8 W floor and the full takeover are composed from
-the Atlas 8 for parity and have not been attended on this model. Attended acceptance still needs those,
-plus M1/M2/Guide/QAM reports, motion axes, haptics and suspend/resume.
+Manual opened to 40/65 W ran the two fans at about 6700 RPM at 69 degrees C shortly after a game and about
+3000 RPM at 58 degrees C idle; Balanced was about 4200 RPM at 75 degrees C.
+
+A second attended run used the parity composition. All services reported Owned, and M2, M1 and Guide
+arrived as `9A04`, `9A02` and `9E 0000 0005`. Fan mode and duty commands applied. Suspend and resume
+completed with every service Owned again, and the saved limit re-applied on wake moved the EC from Balanced
+to Manual. Touch in Big Picture's main view failed while Focus Zoom ran and worked after it was disabled
+and the unit restarted. Later it stopped intermittently with Focus Zoom off; the cause is unknown.
+
+Known gaps: ring and logo lighting commands report Applied but the LEDs did not change, although the
+lighting section reads back in the Atlas 8 layout and the write matches Predator Sense's controller path.
+Predator Sense uses that path only as a fallback; its primary route is the Agent and lighting service,
+which load `AcerHIDStickController.dll` and use HID feature reports, so this model may need that transport.
+EC command 0B03 is not acknowledged, so no custom charge limit is offered. Optimized charging reported
+Applied, with no charging measurement. LEDs stay on during suspend. Motion axes, haptics, the QAM report and
+fan RPM during commands have not been individually confirmed. The 8 W power floor comes from the Atlas 8's attended trials;
+the lowest limit attended on this unit is 10 W.
 
 ## Controller firmware 1.05, 2026-11-08
 
