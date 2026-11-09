@@ -15,6 +15,9 @@ namespace LibHandheld.Families.Acer;
 /// </remarks>
 internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControllerModeTransport
 {
+    /// <summary>The Atlas 7 PA07-I51's XInput controller product; its other topologies are unmeasured.</summary>
+    internal const ushort Atlas7ProductId = 0xF310;
+
     /// <summary>Byte offset of the lighting section in the complete vendor profile.</summary>
     internal const int LightingOffset = 586;
     /// <summary>Complete retained section: selected-animation byte, four 220-byte animations and trailing bytes.</summary>
@@ -102,12 +105,12 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
     /// </remarks>
     public async ValueTask WriteModeAsync(AcerControllerMode mode, CancellationToken token)
     {
+        var product = ProductAfter(mode, _collection.ProductId);
         var packet = ModePacket(mode);
         token.ThrowIfCancellationRequested();
         await _stream.WriteAsync(packet, token).ConfigureAwait(false);
         await _stream.FlushAsync(token).ConfigureAwait(false);
         await Task.Delay(millisecondsDelay: 20, CancellationToken.None).ConfigureAwait(false);
-        var product = mode.Gamepad == 2 ? (ushort)0xF90A : (ushort)0xF901;
         if (_collection.ProductId != product)
         {
             await _stream.DisposeAsync().ConfigureAwait(false);
@@ -118,6 +121,23 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
                 throw new IOException("The Atlas mode command was sent, but its replacement command interface did not arrive.");
             }
         }
+    }
+
+    /// <summary>The USB product a mode enumerates as.</summary>
+    /// <param name="mode">The mode about to be written.</param>
+    /// <param name="current">The product the command lane is open on.</param>
+    /// <returns>The product to expect after the write.</returns>
+    /// <exception cref="NotSupportedException">An Atlas 7 mode other than XInput, refused before dispatch.</exception>
+    internal static ushort ProductAfter(AcerControllerMode mode, ushort current)
+    {
+        if (current == Atlas7ProductId)
+        {
+            return mode.Gamepad == 1
+                ? current
+                : throw new NotSupportedException("Only the Atlas 7's XInput topology is measured; the mode was not sent.");
+        }
+
+        return mode.Gamepad == 2 ? (ushort)0xF90A : (ushort)0xF901;
     }
 
     /// <summary>Builds query 26 when null, or mode command 24 with payload bytes at offsets 5/6.</summary>
@@ -165,18 +185,19 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
     /// <summary>Opens the measured command lane in either supported controller topology.</summary>
     internal static AcerControllerTransport? Open()
     {
-        var collection = HidDevices.Unique(HidDevices.Enumerate(0x0502, [0xF901, 0xF90A]), IsCommandCollection);
+        var collection = HidDevices.Unique(HidDevices.Enumerate(0x0502, [0xF901, 0xF90A, Atlas7ProductId]), IsCommandCollection);
         return collection is null ? null : new AcerControllerTransport(collection);
     }
 
     /// <remarks>
     ///     Both topologies are admitted at firmware 1.00 and 1.05 (release 0100/0105), which keep the
-    ///     same collection shapes and command protocol.
+    ///     same collection shapes and command protocol. The Atlas 7 is admitted only at its measured 0100.
     /// </remarks>
     internal static bool IsCommandCollection(HidCollection item) =>
         item.InputLength == 64 && item.OutputLength == 64
         && (item is { ProductId: 0xF901, UsagePage: 0xFFA0, Usage: 1, ReleaseNumber: 0x0100 or 0x0105 }
-            || item is { ProductId: 0xF90A, UsagePage: 0xFFF0, Usage: 0x40, ReleaseNumber: 0x0100 or 0x0105 });
+            || item is { ProductId: 0xF90A, UsagePage: 0xFFF0, Usage: 0x40, ReleaseNumber: 0x0100 or 0x0105 }
+            || item is { ProductId: Atlas7ProductId, UsagePage: 0xFFA0, Usage: 1, ReleaseNumber: 0x0100 });
 
     /// <summary>Reads all 883 retained lighting bytes in correlated chunks of at most 55 data bytes.</summary>
     /// <remarks>

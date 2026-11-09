@@ -16,8 +16,15 @@ matches that snapshot. A friendly model name or CPU vendor cannot override the n
 
 The native families cover Acer, AYANEO, GPD, Legion Go, MSI Claw, ONEXPLAYER/AOKZOE, ROG Ally,
 Valve, Zotac and additional exact models under Generic. Generic is a source grouping, not a CPU
-fallback. The catalog has 113 definitions and 107 glyph profiles. Claw 8 A2VM and Xbox Ally X have
+fallback. The catalog has 114 definitions and 107 glyph profiles. Claw 8 A2VM and Xbox Ally X have
 attended hardware evidence. Atlas 8 also has the autonomous on-device results described below.
+
+Acer Predator Atlas 7 PA07-I51 (board PTL/G310_PTG) is hardware unverified. It supplies exact
+detection, XInput controller input, Guide/QAM/M1/M2 input, native EC power and performance modes from
+this firmware's own limits and mode order, and Windows motion. Fans, charge limits, lighting and
+extended VRR remain Atlas 8 only. The Predator Sense takeover matches the Atlas 8's, except that Focus
+Zoom and the controller keyboard leaf stay enabled. See the "PA07-I51 read-only evidence" section
+of the [Acer provenance](../src/LibHandheld/Families/Acer/PROVENANCE.md).
 
 Acer Predator Atlas 8 PA08-I51 supplies exact system/board detection, XInput/controller rumble,
 Guide/QAM/M1/M2 input, native EC power and performance modes, two firmware-discovered system fans

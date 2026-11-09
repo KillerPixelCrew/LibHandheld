@@ -59,8 +59,9 @@ internal static class AcerInputProtocol
 
     private static bool IsAtlasCollection(HidCollection collection, string usbInterface)
     {
-        return collection.VendorId == 0x0502 && collection.ProductId == 0xF901
-               && collection.ReleaseNumber is 4 or 0x0100 or 0x0105
+        return collection.VendorId == 0x0502
+               && (collection.ProductId == 0xF901 && collection.ReleaseNumber is 4 or 0x0100 or 0x0105
+                   || collection.ProductId == AcerControllerTransport.Atlas7ProductId && collection.ReleaseNumber == 0x0100)
                && collection.DevicePath.Contains(usbInterface, StringComparison.OrdinalIgnoreCase)
                && !string.IsNullOrWhiteSpace(collection.PhysicalLocation);
     }

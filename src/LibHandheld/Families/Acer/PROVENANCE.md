@@ -1,5 +1,53 @@
 # Acer Predator Atlas 8
 
+## PA07-I51 read-only evidence, 2026-11-09
+
+Unit: Acer Predator PA07-I51 (Atlas 7), board PTL / G310_PTG, BIOS V1.03, Predator Sense 1.0.1563.0.
+A standalone probe held Acer's EC mutex and sent only documented read queries, plus controller query
+26. Nothing in this section came from a write by the probe or by LibHandheld, and the definition stays
+`HardwareVerified = false`.
+
+Shared with the measured PA08-I51:
+
+- `AcerHardwareService.exe` and `AcerAgentService.exe` have the SHA-256 values in
+  POWER_FAN_PROTOCOL.md, so the vendor's EC code is byte-identical.
+- EC 1025:174B FF05:0001 with 65-byte feature reports, data version 0800, limit selectors 1/2/4
+  returning 10/40/65 W.
+- Controller 0502:F310 release 0100 has the F901 layout: MI_01 COL01 FFA0:0001 (64/64) and COL02
+  FFF1:00F5 (15); MI_02 COL01 keyboard, COL02 mouse, COL03 consumer, COL04 0088:0001 (3), COL05
+  FF5A:0001. Query 26 returned reply 27 with XInput 1 and rear Macro 0.
+
+Different, and why the Atlas 8 profile cannot be reused directly:
+
+| EC mode | Predator Sense | Slot id on readback | PL1 / field 8 / PL2 (W) |
+| ------- | -------------- | ------------------- | ----------------------- |
+| 0       | Turbo          | 4                   | 35 / 40 / 65            |
+| 1       | Balanced       | 0                   | 30 / 35 / 65            |
+| 2       | Quiet          | 2                   | 25 / 30 / 45            |
+| 3       | Manual         | 5                   | 40 / 45 / 65            |
+
+The tester selected Quiet, Balanced, Turbo and Manual in Predator Sense while the probe polled; the EC
+reported modes 2, 1, 0, 3. Turbo and Balanced are swapped against the PA08-I51 table, and slot ids do
+not equal selectors, so the existing readback check would refuse every Manual edit. Slot 3 held the
+40/65 W that Predator Sense stores for Manual; the Manual values were not changed during the watch.
+Slot id is informational: `14000EAA1`..`14000EAC2` pass one register to read, write and mode select,
+and the writer stores it at payload offset 5 (`14001AFB4`). Writes therefore address selector 3.
+
+Other differences: health mask 00CC against 02CD, about 4450 RPM on health indices 4 and 8 under
+load, and panel BOE0C33 NS070FH0-MX1. The DInput product is unmeasured, so every controller mode
+except XInput is refused before dispatch. Fan curves, charge limits, lighting and extended VRR are not
+composed. The firmware's 10 W floor applies, not the Atlas 8's attended 8 W.
+
+The Predator Sense takeover is bound to this definition and uses the Atlas 8's services, tasks and
+widget package, because every Atlas 8 acceptance ran with Acer's software off and coexistence was never
+tested. `AFZsvc`, `FocusZoomUserService` and the controller keyboard leaf stay enabled: they are
+unmeasured here, and a tester reported a controller dependency on Focus Zoom.
+
+Attended acceptance still needs: Manual/IPF/MSR limit writes with readback and restoration, rear-mode
+writes and M1/M2/Guide/QAM reports, hiding the four auxiliary leaves with the keyboard checked after
+each, motion axes, haptics, suspend/resume, and firmware fan behaviour, lighting and charging with
+Acer's services off.
+
 ## Controller firmware 1.05, 2026-11-08
 
 The "BIOS 1.05" update Predator Sense offered is controller firmware. On the maintainer's PA08-I51

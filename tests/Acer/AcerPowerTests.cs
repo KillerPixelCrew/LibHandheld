@@ -357,6 +357,90 @@ public sealed class AcerPowerTests
         public void Dispose() => Disposed = true;
     }
 
+    // Selectors 0..3 of the PA07-I51 V1.03 EC, read 2026-11-09.
+    private static FixtureEc Atlas7Ec() => new() { SlotIds = [4, 0, 2, 5], SlotWatts = [35, 30, 25] };
+
+    private static AcerPowerService Atlas7Service(ProfiledFeatureContext context, FixtureEc ec)
+    {
+        return new AcerPowerService(context, new AcerLease<IAcerEcTransport>(() => ec), attendedMinimumWatts: null,
+            table: AcerPowerTable.Atlas7);
+    }
+
+    [Theory]
+    [InlineData("turbo", 0, 35)]
+    [InlineData("balanced", 1, 30)]
+    [InlineData("quiet", 2, 25)]
+    public async Task Atlas7StockNamesSelectItsOwnFirmwareOrder(string name, int mode, int watts)
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var result = await service.ExecuteAsync(new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "power.scenario",
+            RequestedValue = CapabilityValue.Choice(name), Deadline = Deadline.Never
+        }, context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(mode, ec.Mode);
+        Assert.Equal(name, service.States.Single(state => state.CapabilityId == "power.scenario").ObservedValue?.ChoiceValue);
+        Assert.Equal(watts, service.States.Single(state => state.CapabilityId == "power.primary-limit").ObservedValue?.IntegerValue);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Atlas7ManualEditAddressesSlotThreeAndRestoresItsRetainedBytes()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var original = (byte[])ec.Profile.Clone();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var result = await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(["profile", "mode:3"], ec.Writes.Take(2));
+        // The write carries the selector, not the identifier 5 that the slot reports on readback.
+        Assert.Equal(3, ec.Profile[5]);
+        Assert.Equal(20, BinaryPrimitives.ReadUInt16LittleEndian(ec.Profile.AsSpan(6)));
+        Assert.Equal(40, BinaryPrimitives.ReadUInt16LittleEndian(ec.Profile.AsSpan(10)));
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Equal(original, ec.Profile);
+        Assert.Equal(0, ec.Mode);
+    }
+
+    [Fact]
+    public async Task TheAtlas8TableStillRefusesAnUnexpectedSlotIdentifier()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var result = await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None);
+        Assert.NotEqual(CommandOutcome.Applied, result.Outcome);
+        Assert.Empty(ec.Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task AModelWithoutAnAttendedFloorKeepsTheFirmwareMinimum()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc();
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, new AcerLease<IAcerEcTransport>(() => ec), attendedMinimumWatts: null);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal(10, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Minimum);
+        Assert.Equal(10, service.Descriptors.Single(item => item.CapabilityId == "power.boost-limit").Minimum);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
     private static ProfiledFeatureContext Context(string directory)
     {
         return new ProfiledFeatureContext(directory, "atlas|V1.03", new TestPluginHostAdapter(1))
@@ -388,6 +472,8 @@ public sealed class AcerPowerTests
         public bool IgnoreProfileWrite { get; set; }
         public bool FailModeRead { get; init; }
         public bool FailProfileRead { get; init; }
+        public byte[]? SlotIds { get; init; }
+        public int[]? SlotWatts { get; init; }
         public List<string> Writes { get; } = [];
         public List<int> ProfileReads { get; } = [];
 
@@ -420,13 +506,13 @@ public sealed class AcerPowerTests
                     throw new IOException("Profile getter unavailable.");
                 }
                 Profile.CopyTo(reply, index: 0);
-                reply[5] = payload[5];
+                reply[5] = SlotIds?[payload[5]] ?? payload[5];
                 if (payload[5] < 3)
                 {
-                    BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(6), payload[5] switch
+                    BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(6), checked((ushort)(SlotWatts?[payload[5]] ?? payload[5] switch
                     {
                         0 => 35, 1 => 40, _ => 30
-                    });
+                    })));
                     BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(10), 65);
                 }
             }

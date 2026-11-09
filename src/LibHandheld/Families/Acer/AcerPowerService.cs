@@ -27,9 +27,12 @@ namespace LibHandheld.Families.Acer;
 internal sealed class AcerPowerService(
     ProfiledFeatureContext context,
     IAcerLease<IAcerEcTransport> ec,
-    Func<ICpuPowerTransport>? openCpu = null)
+    Func<ICpuPowerTransport>? openCpu = null,
+    int? attendedMinimumWatts = AcerPowerService.AttendedMinimumWatts,
+    AcerPowerTable? table = null)
     : ProfiledFeatureService("acer-power")
 {
+    private readonly AcerPowerTable _table = table ?? AcerPowerTable.Atlas8;
     private const string ModeId = CapabilityIds.Scenario;
     private const string ProfileRecoveryId = "acer.manual-profile";
     private const string ModeRecoveryId = "acer.operating-mode";
@@ -294,7 +297,9 @@ internal sealed class AcerPowerService(
         // Maxima are firmware capabilities, not desktop fallback values or guessed CPU limits.
         try
         {
-            var minimum = Math.Min(ReadLimit(selector: 1, token), AttendedMinimumWatts);
+            // A model with no attended floor (null) keeps the minimum its own firmware advertises.
+            var firmwareMinimum = ReadLimit(selector: 1, token);
+            var minimum = attendedMinimumWatts is { } attended ? Math.Min(firmwareMinimum, attended) : firmwareMinimum;
             var maximum = ReadLimit(selector: 2, token);
             var boostMaximum = ReadLimit(selector: 4, token);
             if (minimum > 0 && maximum >= minimum && boostMaximum >= maximum && boostMaximum <= 200)
@@ -447,7 +452,7 @@ internal sealed class AcerPowerService(
     private byte[] ReadProfile(byte selector, CancellationToken token)
     {
         var profile = _ec!.Exchange([0, 0xA0, 2, 0, 2, selector], token);
-        if (profile[5] != selector)
+        if (profile[5] != _table.ProfileIds[selector])
         {
             throw new IOException("Acer power profile selector mismatch.");
         }
@@ -484,11 +489,7 @@ internal sealed class AcerPowerService(
             int selected;
             if (command.CapabilityId == ModeId)
             {
-                selected = command.RequestedValue?.ChoiceValue switch
-                {
-                    "turbo" => 1, "balanced" => 0, "quiet" => 2, "manual" => 3,
-                    _ => throw new ArgumentException("Unknown Acer operating mode.")
-                };
+                selected = _table.ModeNumber(command.RequestedValue?.ChoiceValue);
                 // A stock mode changes its limits without a PL1/PL2 write. Capture the selected
                 // profile independently so its accepted selection can publish those limits at once.
                 // Missing observation never prevents the mode command.
@@ -838,7 +839,7 @@ internal sealed class AcerPowerService(
     /// <remarks>The logged comparison excludes the reply header and includes profile selector plus all 19 data bytes.</remarks>
     private async ValueTask RestoreProfileAsync(AcerProfileOriginal original, CancellationToken token)
     {
-        if (original.Profile.Length != 25 || original.Profile[5] != 3)
+        if (original.Profile.Length != 25 || original.Profile[5] != _table.ProfileIds[ManualMode])
         {
             throw new IOException("Invalid retained Acer manual profile.");
         }
@@ -945,9 +946,50 @@ internal sealed class AcerPowerService(
         }
     }
 
-    private static string ModeName(int mode)
+    private string ModeName(int mode)
     {
-        return mode switch { 0 => "balanced", 1 => "turbo", 2 => "quiet", 3 => "manual", _ => "unknown" };
+        return _table.ModeName(mode);
+    }
+}
+
+/// <summary>A firmware's stock-mode order and the identifier each profile slot reports on readback.</summary>
+/// <param name="ModeNames">Scenario names by EC mode number.</param>
+/// <param name="ProfileIds">The identifier at reply offset 5 for each profile selector.</param>
+/// <remarks>
+///     The selector always addresses the slot: Acer's writer sends its caller's selector at offset 5 and
+///     never the identifier it read. Only the readback identifier and the name order differ by model.
+/// </remarks>
+internal sealed record AcerPowerTable(IReadOnlyList<string> ModeNames, IReadOnlyList<byte> ProfileIds)
+{
+    /// <summary>PA08-I51 V1.03: Balanced, Turbo, Quiet, Manual, with identifiers equal to selectors.</summary>
+    internal static AcerPowerTable Atlas8 { get; } = new(["balanced", "turbo", "quiet", "manual"], [0, 1, 2, 3]);
+
+    /// <summary>PA07-I51 V1.03, from the attended correlation in PROVENANCE.md: Turbo and Balanced swap.</summary>
+    internal static AcerPowerTable Atlas7 { get; } = new(["turbo", "balanced", "quiet", "manual"], [4, 0, 2, 5]);
+
+    /// <summary>The EC mode number for a scenario name.</summary>
+    /// <param name="name">The requested scenario.</param>
+    /// <returns>The firmware's mode number.</returns>
+    /// <exception cref="ArgumentException">The name is not one of this firmware's modes.</exception>
+    internal int ModeNumber(string? name)
+    {
+        for (var mode = 0; mode < ModeNames.Count; mode++)
+        {
+            if (ModeNames[mode] == name)
+            {
+                return mode;
+            }
+        }
+
+        throw new ArgumentException("Unknown Acer operating mode.");
+    }
+
+    /// <summary>The scenario name for an EC mode number, or "unknown" outside the table.</summary>
+    /// <param name="mode">The firmware's mode number.</param>
+    /// <returns>The scenario name.</returns>
+    internal string ModeName(int mode)
+    {
+        return mode >= 0 && mode < ModeNames.Count ? ModeNames[mode] : "unknown";
     }
 }
 

@@ -18,6 +18,8 @@ internal static class AcerModels
 
     private const string AtlasDefinitionId = "acer-predator-atlas-8-pa08-i51";
 
+    private const string Atlas7DefinitionId = "acer-predator-atlas-7-pa07-i51";
+
     /// <summary>The Atlas fan presets, from the 2026-10-29 calibration in PROVENANCE.md.</summary>
     /// <remarks>
     ///     Near-inaudible shapes up to 60 °C with slow, averaged smoothing against the noisy EC package
@@ -48,7 +50,7 @@ internal static class AcerModels
     /// <summary>Predator Sense for Handheld, as the attended 2026-10-27 disable measured it.</summary>
     /// <remarks>
     ///     The services, three tasks, the widget's MSIX family and dedicated controller keyboard leaf of
-    ///     OEM_INPUT_AND_DISABLE.md. They are exact PA08-I51 findings, so they apply to this definition only.
+    ///     OEM_INPUT_AND_DISABLE.md. They are exact PA08-I51 findings, so that entry applies to this definition only.
     ///     The desktop app (Handheld.Desktop, its own MSIX family) is left out since 2026-11-07, so the user
     ///     can start it: Acer delivers Atlas BIOS updates through it. Focus Zoom is disabled by the
     ///     maintainer's 2026-11-08 decision despite a tester's reported controller dependency; see provenance.
@@ -65,6 +67,17 @@ internal static class AcerModels
             PackageFamilies = ["ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"],
             DedicatedKeyboardDeviceId = @"HID\VID_0502&PID_F901&MI_02&COL01",
             DefinitionId = AtlasDefinitionId
+        },
+        // The same Acer stack on the Atlas 7. Focus Zoom and the controller's keyboard leaf stay enabled:
+        // neither is measured on this model, and a tester reported a controller dependency on Focus Zoom.
+        new("acer-predator-handheld-atlas-7", "Predator Sense for Handheld",
+            ["Handheld.Widget"],
+            ["AASHHSvc", "AcerCCAgentSvis", "AcerDeviceEnablingServiceV2", "AcerHandheld.Service",
+                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "ALSSvc", "UEIPSvc"],
+            ["PredatorHandheldLauncher", "UEIPInvitation", "UbtFrameworkService"])
+        {
+            PackageFamilies = ["ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"],
+            DefinitionId = Atlas7DefinitionId
         }
     ];
 
@@ -139,18 +152,82 @@ internal static class AcerModels
         OemControls = AcerButtonSource.Controls
     };
 
-    internal static IReadOnlyList<HandheldDefinition> Definitions { get; } = [Atlas8.DeclaredDefinition];
+    /// <summary>The Atlas 7 PA07-I51, which shares the Atlas 8's protocols but not its calibration.</summary>
+    /// <remarks>
+    ///     Its EC endpoint, command lane, OEM collections, BIOS V1.03 and Acer service binaries match the
+    ///     measured Atlas 8; "PA07-I51 read-only evidence" in PROVENANCE.md records the comparison. Only
+    ///     services whose limits come from this unit's own firmware are composed. Fan curves, the charge
+    ///     ceiling, the lighting layout and the panel's VRR range are Atlas 8 measurements, so they stay with
+    ///     Acer's firmware here. Predator Sense is taken over as on the Atlas 8, because every Atlas 8 acceptance
+    ///     ran with Acer's software off, minus Focus Zoom and the keyboard leaf. Unverified until an attended pass.
+    /// </remarks>
+    internal static ProfiledDeviceModel Atlas7 { get; } = new()
+    {
+        Definition = new HandheldDefinition(Atlas7DefinitionId, FamilyId,
+            "Acer Predator Atlas 7 (PA07-I51)", "acer-predator-atlas-8")
+        {
+            HardwareVerified = false
+        },
+        SourceFamilyId = "PredatorAtlas7",
+        IdentitySource = ProfileIdentitySource.System,
+        Manufacturers = ["Acer"],
+        Products = ["Predator PA07-I51"],
+        Cpu = CpuPowerKind.Intel,
+        UseStandardServices = false,
+        NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
+            CapabilityRole.PowerBackend],
+        // Generic bounds are unused: AcerPowerService discovers PL1/PL2 bounds from the EC itself.
+        MinimumWatts = 0,
+        MaximumWatts = 0,
+        // Only the XInput topology is measured. Its DInput product is unknown, so no HID fallback exists.
+        Controller = new StandardControllerProfile([new ControllerUsbId(0x0502, AcerControllerTransport.Atlas7ProductId)])
+        {
+            // The same usages at the same interface and collection indexes as the Atlas 8's four leaves.
+            AuxiliaryHidCollections =
+            [
+                "&PID_F310&MI_01&COL01\\", "&PID_F310&MI_02&COL03\\", "&PID_F310&MI_02&COL04\\",
+                "&PID_F310&MI_02&COL05\\"
+            ],
+            Haptics = new HapticCapabilities
+            {
+                LowFrequency = OutputChannelSupport.Native,
+                HighFrequency = OutputChannelSupport.Native
+            }
+        },
+        Motion = new StandardMotionProfile(new MotionAxisMap(0, 2, 1, 1, 1, -1),
+            new MotionAxisMap(0, 2, 1, 1, 1, -1)),
+        CreateOemSource = () => new AcerButtonSource(),
+        OemControls = AcerButtonSource.Controls
+    };
 
-    /// <summary>Pure detection against a supplied snapshot: Acer PA08-I51 plus PTL/F900_PTG baseboard.</summary>
+    internal static IReadOnlyList<HandheldDefinition> Definitions { get; } =
+        [Atlas8.DeclaredDefinition, Atlas7.DeclaredDefinition];
+
+    /// <summary>The profile that owns a detected definition.</summary>
+    internal static ProfiledDeviceModel Profile(HandheldDefinition definition)
+    {
+        return definition.Id == Atlas7DefinitionId ? Atlas7 : Atlas8;
+    }
+
+    /// <summary>Pure detection against a supplied snapshot: the exact Acer system plus its PTL baseboard.</summary>
     /// <returns>The one built-in definition ID, or null without opening hardware or probing OEM software.</returns>
     internal static string? Match(DeviceIdentitySnapshot identity)
     {
         // The system and board are independent selectors in the published inventory. Do not match
         // other Acer PCs or a future Atlas variant solely because it shares the controller VID/PID.
-        return Atlas8.Matches(identity)
-               && string.Equals(identity.BaseboardManufacturer?.Trim(), "PTL", StringComparison.OrdinalIgnoreCase)
-               && string.Equals(identity.BaseboardProduct?.Trim(), "F900_PTG", StringComparison.OrdinalIgnoreCase)
-            ? Atlas8.Definition.Id
+        if (!string.Equals(identity.BaseboardManufacturer?.Trim(), "PTL", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var board = identity.BaseboardProduct?.Trim();
+        if (Atlas8.Matches(identity) && string.Equals(board, "F900_PTG", StringComparison.OrdinalIgnoreCase))
+        {
+            return Atlas8.Definition.Id;
+        }
+
+        return Atlas7.Matches(identity) && string.Equals(board, "G310_PTG", StringComparison.OrdinalIgnoreCase)
+            ? Atlas7.Definition.Id
             : null;
     }
 
@@ -161,6 +238,18 @@ internal static class AcerModels
         // enumerated once, and lighting keeps working when a mode change re-enumerates the controller.
         var ec = new AcerLease<IAcerEcTransport>(AcerEcTransport.Open);
         var controller = new AcerLease<AcerControllerTransport>(AcerControllerTransport.Open);
+        if (definition.Id == Atlas7DefinitionId)
+        {
+            return new ProfiledDeviceEngine(Atlas7 with
+            {
+                // Mode owner first, as on the Atlas 8. The power floor is this firmware's own: 8 W is unattended here.
+                ServiceFactories = [context => new AcerControllerModeService(context, controller),
+                    context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open, attendedMinimumWatts: null,
+                        AcerPowerTable.Atlas7),
+                    context => new IntelPdcPowerButtonService(context)]
+            });
+        }
+
         return new ProfiledDeviceEngine(Atlas8 with
         {
             // The mode owner supplies Combination rear reports; it must precede the dependent OEM readers.
