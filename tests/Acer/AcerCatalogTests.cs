@@ -26,7 +26,8 @@ public sealed class AcerCatalogTests
                 presets.AverageSamples));
         Assert.Same(presets, HandheldDevice.Definitions.Single(item => item.Id == AcerModels.Atlas8.Definition.Id)
             .FanCurvePresets);
-        Assert.All(HandheldDevice.Definitions.Where(item => item.Id != AcerModels.Atlas8.Definition.Id),
+        Assert.All(HandheldDevice.Definitions.Where(item => item.Id != AcerModels.Atlas8.Definition.Id
+                                                            && item.Id != AcerModels.Atlas7.Definition.Id),
             item => Assert.Null(item.FanCurvePresets));
     }
 

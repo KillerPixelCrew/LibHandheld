@@ -44,42 +44,36 @@ public sealed class AcerAtlas7Tests
     }
 
     [Fact]
-    public void Atlas7DeclaresOnlyControlsBackedByItsOwnFirmware()
+    public void Atlas7HasTheAtlas8ControlsExceptTheEdidBoundVrrOverride()
     {
         var definition = DeviceFamilies.Detect(Identity);
         Assert.NotNull(definition);
+        Assert.Equal(AcerModels.Atlas8.NativeRoles, AcerModels.Atlas7.NativeRoles);
         Assert.Contains(CapabilityRole.ControllerSource, definition.DeclaredRoles);
         Assert.Contains(CapabilityRole.MotionSource, definition.DeclaredRoles);
-        Assert.Contains(CapabilityRole.PowerSustainedLimit, definition.DeclaredRoles);
-        Assert.Contains(CapabilityRole.ScenarioMode, definition.DeclaredRoles);
-        foreach (var excluded in new[]
-                 {
-                     CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,
-                     CapabilityRole.ChargeProtectionMode, CapabilityRole.ChargeLimit,
-                     CapabilityRole.LightingBrightness, CapabilityRole.LightingEffect,
-                     CapabilityRole.LightingEffectSpeed, CapabilityRole.LightingZoneColor
-                 })
-        {
-            // DeclaredRoles also carries the roles any model gains from an approved USB accessory.
-            Assert.DoesNotContain(excluded, AcerModels.Atlas7.NativeRoles);
-        }
-
-        Assert.Null(definition.FanCurvePresets);
+        Assert.Same(AcerModels.Atlas8.Definition.FanCurvePresets, definition.FanCurvePresets);
         Assert.Null(definition.ExtendedVrrPanel);
     }
 
     [Fact]
-    public void PredatorSenseTakeoverIsBoundToTheAtlas7AndLeavesFocusZoomAndTheKeyboard()
+    public void Atlas7HealthMaskDiscoversBothFansWithTheirRpmIndexes()
+    {
+        var fans = AcerFanService.Discover(0x00CC);
+        Assert.Equal(["Left", "Right"], fans.Select(fan => fan.Name));
+        Assert.Equal(new byte?[] { 4, 8 }, fans.Select(fan => fan.RpmIndex));
+    }
+
+    [Fact]
+    public void PredatorSenseTakeoverMatchesTheAtlas8OnItsOwnKeyboardLeaf()
     {
         var takeover = HandheldDevice.ManagerApps.Single(app => app.DefinitionId == AcerModels.Atlas7.Definition.Id);
+        var atlas8 = HandheldDevice.ManagerApps.Single(app => app.DefinitionId == AcerModels.Atlas8.Definition.Id);
         Assert.Equal("acer-predator-handheld-atlas-7", takeover.Id);
-        Assert.Contains("AcerHandheld.Service", takeover.Services);
-        Assert.Contains("PredatorHandheldLauncher", takeover.Tasks);
-        Assert.Equal(["Handheld.Widget"], takeover.Processes);
-        Assert.Equal(["ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"], takeover.PackageFamilies);
-        Assert.DoesNotContain("AFZsvc", takeover.Services);
-        Assert.DoesNotContain("FocusZoomUserService", takeover.Services);
-        Assert.Null(takeover.DedicatedKeyboardDeviceId);
+        Assert.Equal(atlas8.Services, takeover.Services);
+        Assert.Equal(atlas8.Tasks, takeover.Tasks);
+        Assert.Equal(atlas8.Processes, takeover.Processes);
+        Assert.Equal(atlas8.PackageFamilies, takeover.PackageFamilies);
+        Assert.Equal(@"HID\VID_0502&PID_F310&MI_02&COL01", takeover.DedicatedKeyboardDeviceId);
     }
 
     [Fact]

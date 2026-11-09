@@ -72,7 +72,8 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
             var reply = _ec.Exchange([0, 0xA0, 8, 0, 1, 0], token);
             var health = BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(5));
             _fans = Discover(health);
-            _cpuTemperature = (health & 1) != 0;
+            // The Atlas 7's mask omits bit 0, but its health index 1 reads the same CPU temperature.
+            _cpuTemperature = (health & 1) != 0 || health == Atlas7HealthMask;
             _topologyDecided = true;
             _descriptors = _fans.SelectMany<AcerFan, CapabilityDescriptor>(fan =>
             [
@@ -177,6 +178,9 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
         }
     }
 
+    /// <summary>The health-support mask the Atlas 7 PA07-I51 reports: the same two system fans as the Atlas 8.</summary>
+    private const ushort Atlas7HealthMask = 0x00CC;
+
     /// <summary>Translates the health-support mask to fan command selectors without assuming a fixed fan count.</summary>
     /// <param name="healthMask">Command 0008/operation 1 reply uint16 at payload offset 5.</param>
     /// <returns>CPU from bit 1; System count from bits 3/7; GPU count from bits 5/8.</returns>
@@ -196,7 +200,7 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
         var gpus = ((healthMask >> 5) & 1) + ((healthMask >> 8) & 1);
         for (var index = 0; index < systems; index++)
         {
-            var name = healthMask == 0x02CD
+            var name = healthMask is 0x02CD or Atlas7HealthMask
                 ? index == 0 ? "Left" : "Right"
                 : index == 0 ? "System" : "System 2";
             fans.Add(new AcerFan(index == 0 ? "sys" : "sys2", name,

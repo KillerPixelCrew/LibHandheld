@@ -68,15 +68,16 @@ internal static class AcerModels
             DedicatedKeyboardDeviceId = @"HID\VID_0502&PID_F901&MI_02&COL01",
             DefinitionId = AtlasDefinitionId
         },
-        // The same Acer stack on the Atlas 7. Focus Zoom and the controller's keyboard leaf stay enabled:
-        // neither is measured on this model, and a tester reported a controller dependency on Focus Zoom.
+        // The same Acer stack on the Atlas 7, with its own controller's keyboard leaf.
         new("acer-predator-handheld-atlas-7", "Predator Sense for Handheld",
-            ["Handheld.Widget"],
+            ["Handheld.Widget", "FocusZoom", "FocusZoomUserService"],
             ["AASHHSvc", "AcerCCAgentSvis", "AcerDeviceEnablingServiceV2", "AcerHandheld.Service",
-                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "ALSSvc", "UEIPSvc"],
+                "AcerLightingServiceHH", "AcerORDService", "AcerServiceSvc", "AFZsvc", "FocusZoomUserService",
+                "ALSSvc", "UEIPSvc"],
             ["PredatorHandheldLauncher", "UEIPInvitation", "UbtFrameworkService"])
         {
             PackageFamilies = ["ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"],
+            DedicatedKeyboardDeviceId = @"HID\VID_0502&PID_F310&MI_02&COL01",
             DefinitionId = Atlas7DefinitionId
         }
     ];
@@ -152,21 +153,20 @@ internal static class AcerModels
         OemControls = AcerButtonSource.Controls
     };
 
-    /// <summary>The Atlas 7 PA07-I51, which shares the Atlas 8's protocols but not its calibration.</summary>
+    /// <summary>The Atlas 7 PA07-I51, composed like the Atlas 8 over its own controller and firmware table.</summary>
     /// <remarks>
     ///     Its EC endpoint, command lane, OEM collections, BIOS V1.03 and Acer service binaries match the
-    ///     measured Atlas 8; "PA07-I51 read-only evidence" in PROVENANCE.md records the comparison. Only
-    ///     services whose limits come from this unit's own firmware are composed. Fan curves, the charge
-    ///     ceiling, the lighting layout and the panel's VRR range are Atlas 8 measurements, so they stay with
-    ///     Acer's firmware here. Predator Sense is taken over as on the Atlas 8, because every Atlas 8 acceptance
-    ///     ran with Acer's software off, minus Focus Zoom and the keyboard leaf. Unverified until an attended pass.
+    ///     measured Atlas 8; "PA07-I51 evidence" in PROVENANCE.md records the comparison. Extended VRR is absent
+    ///     because that override needs a 256-byte EDID with a DisplayID block, and this panel's is 128 bytes.
+    ///     Unverified until an attended pass accepts every control.
     /// </remarks>
     internal static ProfiledDeviceModel Atlas7 { get; } = new()
     {
         Definition = new HandheldDefinition(Atlas7DefinitionId, FamilyId,
             "Acer Predator Atlas 7 (PA07-I51)", "acer-predator-atlas-8")
         {
-            HardwareVerified = false
+            HardwareVerified = false,
+            FanCurvePresets = AtlasFanCurvePresets
         },
         SourceFamilyId = "PredatorAtlas7",
         IdentitySource = ProfileIdentitySource.System,
@@ -175,7 +175,11 @@ internal static class AcerModels
         Cpu = CpuPowerKind.Intel,
         UseStandardServices = false,
         NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
-            CapabilityRole.PowerBackend],
+            CapabilityRole.PowerBackend,
+            CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,
+            CapabilityRole.ChargeProtectionMode, CapabilityRole.ChargeLimit, CapabilityRole.LightingBrightness,
+            CapabilityRole.LightingEffect,
+            CapabilityRole.LightingEffectSpeed, CapabilityRole.LightingZoneColor, CapabilityRole.Telemetry],
         // Generic bounds are unused: AcerPowerService discovers PL1/PL2 bounds from the EC itself.
         MinimumWatts = 0,
         MaximumWatts = 0,
@@ -191,7 +195,9 @@ internal static class AcerModels
             Haptics = new HapticCapabilities
             {
                 LowFrequency = OutputChannelSupport.Native,
-                HighFrequency = OutputChannelSupport.Native
+                HighFrequency = OutputChannelSupport.Native,
+                MinimumStartIntensity = 0.02f,
+                MinimumPulse = TimeSpan.FromMilliseconds(5)
             }
         },
         Motion = new StandardMotionProfile(new MotionAxisMap(0, 2, 1, 1, 1, -1),
@@ -242,10 +248,12 @@ internal static class AcerModels
         {
             return new ProfiledDeviceEngine(Atlas7 with
             {
-                // Mode owner first, as on the Atlas 8. The power floor is this firmware's own: 8 W is unattended here.
+                // The Atlas 8's services in its order; only the firmware's mode table differs.
                 ServiceFactories = [context => new AcerControllerModeService(context, controller),
-                    context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open, attendedMinimumWatts: null,
-                        AcerPowerTable.Atlas7),
+                    context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open, AcerPowerTable.Atlas7),
+                    context => new AcerFanService(context, ec),
+                    context => new AcerBatteryService(context, ec), context => new AcerLightingService(context, controller),
+                    _ => new AcerLogoLightingService(),
                     context => new IntelPdcPowerButtonService(context)]
             });
         }

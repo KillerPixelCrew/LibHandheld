@@ -362,8 +362,7 @@ public sealed class AcerPowerTests
 
     private static AcerPowerService Atlas7Service(ProfiledFeatureContext context, FixtureEc ec)
     {
-        return new AcerPowerService(context, new AcerLease<IAcerEcTransport>(() => ec), attendedMinimumWatts: null,
-            table: AcerPowerTable.Atlas7);
+        return new AcerPowerService(context, new AcerLease<IAcerEcTransport>(() => ec), table: AcerPowerTable.Atlas7);
     }
 
     [Theory]
@@ -424,20 +423,6 @@ public sealed class AcerPowerTests
         var result = await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None);
         Assert.NotEqual(CommandOutcome.Applied, result.Outcome);
         Assert.Empty(ec.Writes);
-        await service.ReleaseAsync(cycle, CancellationToken.None);
-    }
-
-    [Fact]
-    public async Task AModelWithoutAnAttendedFloorKeepsTheFirmwareMinimum()
-    {
-        using var directory = new TemporaryDirectory();
-        var ec = new FixtureEc();
-        var context = Context(directory.Root);
-        var service = new AcerPowerService(context, new AcerLease<IAcerEcTransport>(() => ec), attendedMinimumWatts: null);
-        var cycle = Cycle(context);
-        await service.AcquireAsync(cycle, CancellationToken.None);
-        Assert.Equal(10, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Minimum);
-        Assert.Equal(10, service.Descriptors.Single(item => item.CapabilityId == "power.boost-limit").Minimum);
         await service.ReleaseAsync(cycle, CancellationToken.None);
     }
 

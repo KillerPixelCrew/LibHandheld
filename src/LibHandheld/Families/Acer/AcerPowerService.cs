@@ -28,7 +28,6 @@ internal sealed class AcerPowerService(
     ProfiledFeatureContext context,
     IAcerLease<IAcerEcTransport> ec,
     Func<ICpuPowerTransport>? openCpu = null,
-    int? attendedMinimumWatts = AcerPowerService.AttendedMinimumWatts,
     AcerPowerTable? table = null)
     : ProfiledFeatureService("acer-power")
 {
@@ -297,9 +296,7 @@ internal sealed class AcerPowerService(
         // Maxima are firmware capabilities, not desktop fallback values or guessed CPU limits.
         try
         {
-            // A model with no attended floor (null) keeps the minimum its own firmware advertises.
-            var firmwareMinimum = ReadLimit(selector: 1, token);
-            var minimum = attendedMinimumWatts is { } attended ? Math.Min(firmwareMinimum, attended) : firmwareMinimum;
+            var minimum = Math.Min(ReadLimit(selector: 1, token), AttendedMinimumWatts);
             var maximum = ReadLimit(selector: 2, token);
             var boostMaximum = ReadLimit(selector: 4, token);
             if (minimum > 0 && maximum >= minimum && boostMaximum >= maximum && boostMaximum <= 200)

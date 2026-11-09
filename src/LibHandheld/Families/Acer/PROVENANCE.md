@@ -1,6 +1,6 @@
 # Acer Predator Atlas 8
 
-## PA07-I51 read-only evidence, 2026-11-09
+## PA07-I51 evidence, 2026-11-09
 
 Unit: Acer Predator PA07-I51 (Atlas 7), board PTL / G310_PTG, BIOS V1.03, Predator Sense 1.0.1563.0.
 A standalone probe held Acer's EC mutex and sent only documented read queries, plus controller query
@@ -35,18 +35,22 @@ and the writer stores it at payload offset 5 (`14001AFB4`). Writes therefore add
 
 Other differences: health mask 00CC against 02CD, about 4450 RPM on health indices 4 and 8 under
 load, and panel BOE0C33 NS070FH0-MX1. The DInput product is unmeasured, so every controller mode
-except XInput is refused before dispatch. Fan curves, charge limits, lighting and extended VRR are not
-composed. The firmware's 10 W floor applies, not the Atlas 8's attended 8 W.
+except XInput is refused before dispatch. Extended VRR is not offered: the panel's EDID is 128 bytes with
+no DisplayID block, and `ExtendedVrrPanel` is built for the Atlas 8's 256-byte layout.
 
-The Predator Sense takeover is bound to this definition and uses the Atlas 8's services, tasks and
-widget package, because every Atlas 8 acceptance ran with Acer's software off and coexistence was never
-tested. `AFZsvc`, `FocusZoomUserService` and the controller keyboard leaf stay enabled: they are
-unmeasured here, and a tester reported a controller dependency on Focus Zoom.
+## PA07-I51 attended run, 2026-11-09
 
-Attended acceptance still needs: Manual/IPF/MSR limit writes with readback and restoration, rear-mode
-writes and M1/M2/Guide/QAM reports, hiding the four auxiliary leaves with the keyboard checked after
-each, motion axes, haptics, suspend/resume, and firmware fan behaviour, lighting and charging with
-Acer's services off.
+The first definition composed the controller, OEM input, motion and power only, and left Acer's software
+running beside it for one build before the takeover was added. On that build, with Acer's services off,
+WSGM reported every service Owned and created the managed Steam Deck target. IPF limit writes of 20/45,
+10/45 and 40/45 W read back exactly. Selecting Balanced set EC mode 1, confirming the mode table with a
+real write. Crimson Desert ran through Steam Input with no GPU hang.
+
+Opening Manual to 40/65 W raised the two fans to about 6700 RPM, against about 3700 RPM in Quiet and about
+4200 RPM in Balanced. The Atlas 8 measured about 3600 RPM in Manual, so this firmware's Manual is much
+more aggressive. Fan control, charging, lighting, the 8 W floor and the full takeover are composed from
+the Atlas 8 for parity and have not been attended on this model. Attended acceptance still needs those,
+plus M1/M2/Guide/QAM reports, motion axes, haptics and suspend/resume.
 
 ## Controller firmware 1.05, 2026-11-08
 
