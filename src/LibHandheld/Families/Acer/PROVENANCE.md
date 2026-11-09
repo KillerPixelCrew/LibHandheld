@@ -55,14 +55,31 @@ completed with every service Owned again, and the saved limit re-applied on wake
 to Manual. Touch in Big Picture's main view failed while Focus Zoom ran and worked after it was disabled
 and the unit restarted. Later it stopped intermittently with Focus Zoom off; the cause is unknown.
 
-Known gaps: ring and logo lighting commands report Applied but the LEDs did not change, although the
-lighting section reads back in the Atlas 8 layout and the write matches Predator Sense's controller path.
-Predator Sense uses that path only as a fallback; its primary route is the Agent and lighting service,
-which load `AcerHIDStickController.dll` and use HID feature reports, so this model may need that transport.
-EC command 0B03 is not acknowledged, so no custom charge limit is offered. Optimized charging reported
-Applied, with no charging measurement. LEDs stay on during suspend. Motion axes, haptics, the QAM report and
-fan RPM during commands have not been individually confirmed. The 8 W power floor comes from the Atlas 8's attended trials;
+Known gaps: EC command 0B03 is not acknowledged, so no custom charge limit is offered. Optimized charging
+reported Applied, with no charging measurement. LEDs stay on during suspend. Motion axes, haptics, the QAM report and fan RPM during
+commands have not been individually confirmed. The 8 W power floor comes from the Atlas 8's attended trials;
 the lowest limit attended on this unit is 10 W.
+
+## PA07-I51 ring lighting, 2026-11-09
+
+Ring commands first reported Applied while the rings did not change, although the 883-byte section reads
+back in the Atlas 8 layout and the RAM write matches Predator Sense's controller path. Predator Sense uses
+that path only as a fallback. Static inspection of the installed `AcerHIDStickController.dll`, SHA-256
+`3836B8A5C200308EB9A47210BCAD89AFD1051DC3EBF51C83AFC32448E80E36EE`, shows its stick LED target fixed at
+`45` on an `FF5A` collection, using the rear logo's A1..A4 reports with the same A4 field order. It takes
+the LED count from the capability reply with a minimum of one. Steady color is one A4 per LED with a one-bit
+mask, 20 ms apart; an animated effect is one A4 with mask 0.
+
+WSGM opened `0502:F310` release `0100`, `FF5A:0001`, 11-byte features. A1 returned
+`A101450000000000000000` and A3 for target 45 returned `A345010E017F0001000000`: one LED and effect mask
+`0001007F`. The runtime keeps the section write and, on this model only, sends the A4 report after each
+edit. At takeover an effect other than solid or breathing is written back as solid in its first color, because
+this output cannot draw the others. Each time the collection opens it shows the retained section, one write on
+this model, instead of relying on the host's restore.
+
+On the first build of this output the tester confirmed visible ring changes and whole-ring color changes.
+Per-zone colors had no visible effect, as expected with one LED in the capability reply, so this
+model publishes only the whole-ring color. The rear logo was not reported separately.
 
 ## Controller firmware 1.05, 2026-11-08
 

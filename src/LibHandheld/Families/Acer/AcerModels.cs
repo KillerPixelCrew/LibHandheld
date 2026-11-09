@@ -246,13 +246,14 @@ internal static class AcerModels
         var controller = new AcerLease<AcerControllerTransport>(AcerControllerTransport.Open);
         if (definition.Id == Atlas7DefinitionId)
         {
+            var rings = new AcerRingLights();
             return new ProfiledDeviceEngine(Atlas7 with
             {
-                // The Atlas 8's services in its order; only the firmware's mode table differs.
+                // The Atlas 8's services in its order. The firmware's mode table and the ring output differ.
                 ServiceFactories = [context => new AcerControllerModeService(context, controller),
                     context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open, AcerPowerTable.Atlas7),
                     context => new AcerFanService(context, ec),
-                    context => new AcerBatteryService(context, ec), context => new AcerLightingService(context, controller),
+                    context => new AcerBatteryService(context, ec), context => new AcerLightingService(context, controller, rings),
                     _ => new AcerLogoLightingService(),
                     context => new IntelPdcPowerButtonService(context)]
             });

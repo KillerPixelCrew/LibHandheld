@@ -14,8 +14,8 @@ namespace LibHandheld.Families.Acer;
 ///     unrelated keyframes/animations/trailing bytes are preserved. Edits are left on the controller
 ///     when WSGM releases it; firmware returns to its stored lighting after power loss.
 /// </remarks>
-internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerLease<AcerControllerTransport> lane)
-    : ProfiledFeatureService("acer-lighting")
+internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerLease<AcerControllerTransport> lane,
+    AcerRingLights? rings = null) : ProfiledFeatureService("acer-lighting")
 {
     // Confirmed one at a time in white on controller release 0100, screen facing the user.
     // The ninth wire slot produced no visible light and is retained without exposing a zone.
@@ -47,12 +47,17 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
         .. Zones.Select(zone => CapabilityDescriptors.Color(CapabilityIds.LightingColor, zone.Id,
             CapabilityDescriptors.Label(zone.Name), read: true, CapabilityPersistence.Volatile))
     ];
+    // The Atlas 7's FF5A output reports one LED, so its ring segments cannot take separate colors.
+    private static readonly IReadOnlyList<CapabilityDescriptor> WholeRingControls = Controls
+        .Where(item => item.CapabilityId != CapabilityIds.LightingColor || item.InstanceId == "main").ToArray();
     private readonly ObservedValues _observed = new();
     private AcerControllerTransport? _controller;
     private byte[]? _lighting;
 
-    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Controls;
-    internal override IReadOnlyList<CapabilityState> States => Controls.Select(item =>
+    private IReadOnlyList<CapabilityDescriptor> Offered => rings is null ? Controls : WholeRingControls;
+
+    internal override IReadOnlyList<CapabilityDescriptor> Descriptors => Offered;
+    internal override IReadOnlyList<CapabilityState> States => Offered.Select(item =>
         ProviderControls.State(item.CapabilityId, State == DeviceServiceState.Owned,
             _observed.Value(item.CapabilityId, item.InstanceId), _observed.Time(item.CapabilityId, item.InstanceId),
             Reason) with { InstanceId = item.InstanceId }).ToArray();
@@ -75,10 +80,58 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
         // OEM rainbow on every exit undid it. Earlier builds journaled an original, so drop it unrestored.
         await context.Journal.RetireAsync(ServiceId, "lighting edits are kept after release", token)
             .ConfigureAwait(false);
-        _lighting = await _controller.ReadLightingAsync(token).ConfigureAwait(false);
-        Observe(_lighting, written: false);
-        return Set(DeviceServiceState.Owned);
+        var stored = await _controller.ReadLightingAsync(token).ConfigureAwait(false);
+        _lighting = rings is null ? stored : NormalizeForRings(stored);
+        var normalized = !ReferenceEquals(_lighting, stored);
+        if (normalized)
+        {
+            await _controller.WriteLightingAsync(_lighting, token, previous: stored).ConfigureAwait(false);
+        }
+
+        Observe(_lighting, written: normalized);
+        return await OpenRingsAsync(_lighting, token).ConfigureAwait(false)
+            ? Set(DeviceServiceState.Owned)
+            : Set(DeviceServiceState.Degraded, Missing("The Atlas 7 ring lighting collection is unavailable."));
     }
+
+    /// <summary>Opens the Atlas 7's ring output and shows the retained section on it.</summary>
+    /// <remarks>
+    ///     Showing it on every open costs one write on this model and does not rely on the host's restore, which
+    ///     has its own admission rules.
+    /// </remarks>
+    /// <returns>False when the output is missing, so commands are refused before the RAM write.</returns>
+    private async ValueTask<bool> OpenRingsAsync(byte[] lighting, CancellationToken token)
+    {
+        if (rings is null)
+        {
+            return true;
+        }
+
+        try
+        {
+            if (!rings.Open())
+            {
+                return false;
+            }
+        }
+        catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+        {
+            DeviceTrace.Failure(ServiceId, "Atlas 7 ring lighting could not be opened", exception);
+            return false;
+        }
+
+        try
+        {
+            await rings.ShowAsync(lighting, token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+        {
+            DeviceTrace.Failure(ServiceId, "Atlas 7 rings could not be lit", exception);
+        }
+
+        return true;
+    }
+
 
     /// <summary>Validates the selected animation and returns its offset inside the lighting section.</summary>
     /// <remarks>
@@ -101,6 +154,27 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
         }
 
         return offset;
+    }
+
+    /// <summary>Returns the section with an effect the ring output cannot draw replaced by solid in its first color.</summary>
+    /// <returns>The same array when the effect is already solid or breathing, so there is nothing to write.</returns>
+    internal static byte[] NormalizeForRings(byte[] lighting)
+    {
+        var offset = AnimationOffset(lighting);
+        if (lighting[offset] is 1 or 2)
+        {
+            return lighting;
+        }
+
+        var normalized = (byte[])lighting.Clone();
+        normalized[offset] = 1;
+        var first = lighting.AsSpan(offset + 4, 3);
+        foreach (var zone in Zones)
+        {
+            first.CopyTo(normalized.AsSpan(offset + 4 + zone.Index * 3));
+        }
+
+        return normalized;
     }
 
     /// <summary>Projects the current animation's header and first keyframe into shared and spatial controls.</summary>
@@ -222,6 +296,11 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
             _lighting ??= await _controller.ReadLightingAsync(token).ConfigureAwait(false);
             var changed = Edit(_lighting, command);
             await _controller.WriteLightingAsync(changed, token, () => dispatched = true, _lighting).ConfigureAwait(false);
+            if (rings is not null)
+            {
+                await rings.ShowAsync(changed, token).ConfigureAwait(false);
+            }
+
             _lighting = changed;
             Observe(changed, written: true);
             return CommandResults.Applied(command);
@@ -255,6 +334,7 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
             await lane.ReleaseAsync().ConfigureAwait(false);
         }
 
+        rings?.Close();
         _lighting = null;
     }
 }

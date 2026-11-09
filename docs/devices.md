@@ -21,7 +21,8 @@ attended hardware evidence. Atlas 8 also has the autonomous on-device results de
 
 Acer Predator Atlas 7 PA07-I51 (board PTL/G310_PTG) is hardware unverified. It uses the Atlas 8's
 controller, Guide/QAM/M1/M2, EC power and performance modes, fans, charging, lighting, Windows motion
-and Predator Sense takeover, over its own controller product and firmware mode order. Extended VRR is
+and Predator Sense takeover, over its own controller product and firmware mode order. Its ring LEDs are
+driven through the controller's `FF5A` collection. Extended VRR is
 Atlas 8 only: that override needs a 256-byte EDID and this panel's is 128 bytes. See the "PA07-I51 evidence" section
 of the [Acer provenance](../src/LibHandheld/Families/Acer/PROVENANCE.md).
 
