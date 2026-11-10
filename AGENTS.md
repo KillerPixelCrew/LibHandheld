@@ -16,3 +16,8 @@ These instructions apply to the whole library. A family's own `AGENTS.md` adds i
   or an untested one as verified.
 - A definition built only from reference sources (for example Handheld Companion) or tested only
   through fixtures stays unverified until an attended run accepts it.
+
+## Contributor skill
+
+Use `.agents/skills/libhandheld/SKILL.md` for implementation and review here, including code
+conventions, dispatch outcomes and lifecycle checks. Read nearer family/domain guidance as well.
