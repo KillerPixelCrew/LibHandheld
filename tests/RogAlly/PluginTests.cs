@@ -581,6 +581,25 @@ public sealed class PluginTests
     }
 
     [Fact]
+    public async Task ThePadReaderSamplesTheGyroWithEachPoll()
+    {
+        using var directory = new TemporaryDirectory();
+        var hardware = new AllyFakeHardware();
+        var host = new TestPluginHostAdapter(1);
+        await using var plugin = hardware.CreatePlugin();
+        _ = await plugin.StartAsync(Start(host, directory, "rc72la"), CancellationToken.None);
+        await AsyncConditions.WaitForAsync(() => hardware.Controller.Running);
+
+        // A gyro-only movement must be part of what the reader polls: the XInput reader skips a poll
+        // whose packet, buttons and motion are unchanged, so motion attached after it went out only
+        // on the 250 ms heartbeat.
+        hardware.Motion.Raise(new MotionSample { GyroX = 12.5f, HasGyro = true });
+        await hardware.Controller.EmitAsync(CanonicalButtons.None);
+
+        Assert.Equal(12.5f, host.ControllerSamples.Last().Motion?.GyroX);
+    }
+
+    [Fact]
     public async Task VendorEventsLatchAndPublishOemEvents()
     {
         using var directory = new TemporaryDirectory();

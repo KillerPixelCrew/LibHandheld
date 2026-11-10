@@ -396,7 +396,11 @@ internal sealed class ControllerService(
     /// <summary>Starts the reader and hands the pad's identities, and so the hiding, to the host.</summary>
     private async ValueTask StartReadingAsync(AllyControllerTopology topology, CancellationToken cancellationToken)
     {
-        await source.StartAsync(topology, PublishSampleAsync, OnReaderFault, cancellationToken).ConfigureAwait(false);
+        // The gyro is sampled by the pad reader on its own thread, beside the sticks and buttons. Attached
+        // after the reader, it was invisible to the reader's unchanged-poll check, so with the sticks and
+        // buttons still a gyro movement went out only on the 250 ms heartbeat.
+        await source.StartAsync(topology, () => motion.Current(DateTimeOffset.UtcNow), PublishSampleAsync,
+            OnReaderFault, cancellationToken).ConfigureAwait(false);
         await host.PublishPhysicalDevicesAsync(topology.PhysicalDevices, OutputCapabilities, cancellationToken)
             .ConfigureAwait(false);
     }
@@ -435,8 +439,7 @@ internal sealed class ControllerService(
 
     private ValueTask PublishSampleAsync(CanonicalControllerSample sample, CancellationToken cancellationToken)
     {
-        return host.PublishControllerSampleAsync(sample with { Motion = motion.Current(sample.Timestamp) },
-            cancellationToken);
+        return host.PublishControllerSampleAsync(sample, cancellationToken);
     }
 
     private void OnReaderFault(Exception exception)

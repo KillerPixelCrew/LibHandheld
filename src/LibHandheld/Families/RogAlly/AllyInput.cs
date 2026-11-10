@@ -194,8 +194,19 @@ internal interface IAllyControllerSource : IAsyncDisposable
 {
     ValueTask<AllyControllerTopology?> DiscoverAsync(CancellationToken cancellationToken);
 
+    /// <summary>Starts reading the pad.</summary>
+    /// <param name="topology">The discovered pad.</param>
+    /// <param name="motion">
+    ///     The motion for the poll being read, sampled on the reader's own thread. It must be part of the
+    ///     sample the reader compares, or a gyro-only movement reads as an unchanged pad and is skipped.
+    /// </param>
+    /// <param name="publish">Takes each sample.</param>
+    /// <param name="fault">Takes the failure that ended the reader.</param>
+    /// <param name="cancellationToken">Cancels the start.</param>
+    /// <returns>Completion once the reader runs.</returns>
     ValueTask StartAsync(
         AllyControllerTopology topology,
+        Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish,
         Action<Exception> fault,
         CancellationToken cancellationToken);
@@ -228,13 +239,13 @@ internal sealed class WindowsAllyControllerSource : IAllyControllerSource
                 topology.Devices, $"xinput {topology.Slot}; {topology.Devices.Count} physical interfaces"));
     }
 
-    public ValueTask StartAsync(AllyControllerTopology topology,
+    public ValueTask StartAsync(AllyControllerTopology topology, Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         _source.Start(new StandardControllerTopology(topology.XInputSlot, topology.PhysicalDevices),
-            () => _oem.Current(DateTimeOffset.UtcNow), () => null, publish, fault);
+            () => _oem.Current(DateTimeOffset.UtcNow), motion, publish, fault);
         return ValueTask.CompletedTask;
     }
 

@@ -252,6 +252,7 @@ internal sealed class FakeAuraHid : IAllyAuraHid
 internal sealed class FakeControllerSource : IAllyControllerSource
 {
     private Action<Exception>? _fault;
+    private Func<MotionSample?>? _motion;
     private Func<CanonicalControllerSample, CancellationToken, ValueTask>? _publish;
 
     /// <summary>How many times the reader was started.</summary>
@@ -287,7 +288,7 @@ internal sealed class FakeControllerSource : IAllyControllerSource
             : null);
     }
 
-    public ValueTask StartAsync(AllyControllerTopology topology,
+    public ValueTask StartAsync(AllyControllerTopology topology, Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
         CancellationToken cancellationToken)
     {
@@ -296,6 +297,7 @@ internal sealed class FakeControllerSource : IAllyControllerSource
             throw new InvalidOperationException("The Ally controller reader is already active.");
         }
 
+        _motion = motion;
         _publish = publish;
         _fault = fault;
         Running = true;
@@ -354,18 +356,29 @@ internal sealed class FakeControllerSource : IAllyControllerSource
         return _publish?.Invoke(new CanonicalControllerSample
         {
             Timestamp = now,
-            Buttons = buttons | (Buttons?.Current(now) ?? CanonicalButtons.None)
+            Buttons = buttons | (Buttons?.Current(now) ?? CanonicalButtons.None),
+            // As the real reader: the motion is sampled with the poll, not attached afterwards.
+            Motion = _motion?.Invoke()
         }, CancellationToken.None) ?? ValueTask.CompletedTask;
     }
 }
 
 internal sealed class FakeMotionSource : IAllyMotionSource
 {
+    private Action<MotionSample>? _publish;
+
     public bool Present { get; set; } = true;
 
     public ValueTask<bool> StartAsync(Action<MotionSample> publish, CancellationToken cancellationToken)
     {
+        _publish = publish;
         return ValueTask.FromResult(Present);
+    }
+
+    /// <summary>Delivers one sensor reading, as the Windows sensor callback does.</summary>
+    public void Raise(MotionSample sample)
+    {
+        _publish?.Invoke(sample);
     }
 
     public ValueTask StopAsync(CancellationToken cancellationToken)
