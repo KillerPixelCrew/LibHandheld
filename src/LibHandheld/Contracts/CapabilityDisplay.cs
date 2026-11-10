@@ -152,5 +152,8 @@ public enum DisplayKey
     Rumble,
 
     /// <summary>"Variable refresh rate".</summary>
-    VariableRefreshRate
+    VariableRefreshRate,
+
+    /// <summary>"Firmware fan mode": a scenario mode that only chooses the firmware's fan table.</summary>
+    FirmwareFanMode
 }

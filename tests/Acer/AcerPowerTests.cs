@@ -412,6 +412,168 @@ public sealed class AcerPowerTests
     }
 
     [Fact]
+    public async Task Atlas7OffersFirmwareFanModesWithEachModesCeiling()
+    {
+        using var directory = new TemporaryDirectory();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, Atlas7Ec());
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var mode = service.Descriptors.Single(item => item.CapabilityId == "power.scenario");
+        Assert.Equal(DisplayKey.FirmwareFanMode, mode.Display.Key);
+        Assert.Equal(new[] { "auto", "quiet", "balanced", "turbo", "manual" }, mode.Choices.Select(choice => choice.Value));
+        Assert.Equal("Quiet up to 25 W, Balanced up to 30 W, Turbo up to 35 W. Above 35 W the fans use Manual, the loudest.",
+            mode.Display.Description);
+        Assert.All(service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").PowerPresets,
+            preset => Assert.Null(preset.ScenarioOnAc));
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(20, 2)]
+    [InlineData(25, 2)]
+    [InlineData(30, 1)]
+    [InlineData(35, 0)]
+    [InlineData(40, 3)]
+    public Task Atlas7AutoRunsTheQuietestModeThatCarriesTheLimit(int watts, int mode) => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal("auto", ScenarioOf(service));
+
+        var result = await service.ExecuteAsync(Limit(watts, 45), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(mode, ec.Mode);
+        Assert.Equal("auto", ScenarioOf(service));
+        Assert.Equal((watts, 45), Assert.Single(sessions).Writes[^1]);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7HandPickedFanModeLeavesTheLimitAndRisesOnlyWhileTheLimitNeedsIt() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(2, ec.Mode);
+
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+        Assert.Equal("turbo", ScenarioOf(service));
+        Assert.Equal(20, service.States.Single(state => state.CapabilityId == "power.primary-limit").ObservedValue?.IntegerValue);
+        Assert.Equal((20, 40), Assert.Single(sessions).Writes[^1]);
+
+        await service.ExecuteAsync(FanMode("quiet"), context.Firmware, CancellationToken.None);
+        await service.ExecuteAsync(Limit(30, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(1, ec.Mode);
+        Assert.Equal("quiet", ScenarioOf(service));
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(2, ec.Mode);
+
+        await service.ExecuteAsync(FanMode("auto"), context.Firmware, CancellationToken.None);
+        Assert.Equal("auto", ScenarioOf(service));
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7ModeTheFirmwareMovedItselfIsCorrectedByTheNextLimit() => WithIpfAsync(async _ =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+
+        ec.Mode = 0;
+        await service.ExecuteAsync(Limit(21, 40), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(2, ec.Mode);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7StandbyKeepsTheModeAndEveryExitLeavesBalanced() => WithIpfAsync(async _ =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+
+        await service.SuspendAsync(cycle, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Equal(1, ec.Mode);
+        Assert.Empty(context.Journal.OutstandingEntries);
+    });
+
+    private static async Task WithIpfAsync(Func<List<RecordingIpf>, Task> body)
+    {
+        var policy = IntelPowerPaths.PolicyControl;
+        var present = IntelPowerPaths.IpfPresent;
+        var open = IntelPowerPaths.OpenIpf;
+        List<RecordingIpf> sessions = [];
+        IntelPowerPaths.PolicyControl = new RunningPolicy();
+        IntelPowerPaths.IpfPresent = () => true;
+        IntelPowerPaths.OpenIpf = _ =>
+        {
+            RecordingIpf session = new();
+            sessions.Add(session);
+            return session;
+        };
+        try
+        {
+            await body(sessions);
+        }
+        finally
+        {
+            IntelPowerPaths.PolicyControl = policy;
+            IntelPowerPaths.IpfPresent = present;
+            IntelPowerPaths.OpenIpf = open;
+        }
+    }
+
+    private static string? ScenarioOf(AcerPowerService service)
+    {
+        return service.States.Single(state => state.CapabilityId == "power.scenario").ObservedValue?.ChoiceValue;
+    }
+
+    private static CapabilityCommand Limit(int sustained, int boost)
+    {
+        return new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "power.primary-limit",
+            RequestedValue = CapabilityValue.Integer(sustained), PairedPowerLimitWatts = boost, Deadline = Deadline.Never
+        };
+    }
+
+    private static CapabilityCommand FanMode(string name)
+    {
+        return new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "power.scenario",
+            RequestedValue = CapabilityValue.Choice(name), Deadline = Deadline.Never
+        };
+    }
+
+    [Fact]
     public async Task TheAtlas8TableStillRefusesAnUnexpectedSlotIdentifier()
     {
         using var directory = new TemporaryDirectory();

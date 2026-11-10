@@ -23,6 +23,9 @@ namespace LibHandheld.Families.Acer;
 ///     like the EC path, and the EC never changed the register (POWER_LIMIT_TESTS.md). Every limit write
 ///     on every path selects Manual again, because the firmware needs the mode switch. Intel's IPF stays
 ///     off on every path. Stock modes stay EC-owned.
+///     The PA07-I51 on the IPF path is the exception to selecting Manual: each limit runs on the quietest
+///     stock mode that can carry it, or on a mode the user chose for its fan table, because Manual's fan
+///     table is the loudest and software fan control stalls every core (PROVENANCE.md, 2026-11-10).
 /// </remarks>
 internal sealed class AcerPowerService(
     ProfiledFeatureContext context,
@@ -37,6 +40,15 @@ internal sealed class AcerPowerService(
     private const string ModeRecoveryId = "acer.operating-mode";
     private const string CpuRecoveryId = "acer.cpu-power";
     private const int ManualMode = 3;
+
+    /// <summary>On the Atlas 7 a limit its firmware mode can honor is applied on top of that mode, whose fan table stays.</summary>
+    private bool LimitsKeepFirmwareMode => ReferenceEquals(_table, AcerPowerTable.Atlas7);
+
+    /// <summary>The scenario a preset selects first: none on the Atlas 7, where the limit decides the firmware mode.</summary>
+    private string? PresetScenario => LimitsKeepFirmwareMode ? null : "manual";
+
+    /// <summary>The Atlas 7 choice that lets the sustained limit decide the firmware mode.</summary>
+    private const string AutoChoice = "auto";
 
     // Selector 1 advertises 10 W, but Manual stores 8 W and the maintainer confirmed it runs on the
     // PA08-I51. Intel's Arc G3 configurable TDP also starts at 8 W.
@@ -62,6 +74,7 @@ internal sealed class AcerPowerService(
     private IAcerEcTransport? _ec;
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private int? _mode;
+    private int? _chosenMode;
     private bool _unknownOriginalChanged;
     private ICpuPowerTransport? _cpu;
     private CpuPowerLimits? _cpuWritten;
@@ -287,11 +300,16 @@ internal sealed class AcerPowerService(
             DeviceTrace.Warn(ServiceId, $"EC data version unavailable: {exception.Message}");
         }
 
+        string[] modes = LimitsKeepFirmwareMode
+            ? [AutoChoice, "quiet", "balanced", "turbo", "manual"]
+            : ["turbo", "balanced", "quiet", "manual"];
         List<CapabilityDescriptor> descriptors =
         [
             CapabilityDescriptors.Choice(ModeId, CapabilityRole.ScenarioMode,
-                new CapabilityDisplay { Key = DisplayKey.PerformanceProfile },
-                CapabilityDescriptors.Choices(["turbo", "balanced", "quiet", "manual"]), read: true, write: true)
+                LimitsKeepFirmwareMode
+                    ? new CapabilityDisplay { Key = DisplayKey.FirmwareFanMode, Description = FanModeNote(token) }
+                    : new CapabilityDisplay { Key = DisplayKey.PerformanceProfile },
+                CapabilityDescriptors.Choices(modes), read: true, write: true)
         ];
         // Maxima are firmware capabilities, not desktop fallback values or guessed CPU limits.
         try
@@ -325,7 +343,7 @@ internal sealed class AcerPowerService(
                         new DevicePowerPreset("full-power", "Full Power", maximum, boostMaximum,
                             DevicePowerMode.BestPerformance)
                         {
-                            ScenarioOnAc = "manual", ScenarioOnDc = "manual"
+                            ScenarioOnAc = PresetScenario, ScenarioOnDc = PresetScenario
                         }
                     ]
                 });
@@ -343,6 +361,7 @@ internal sealed class AcerPowerService(
             descriptors.Insert(0, path);
         }
 
+
         return descriptors;
     }
 
@@ -350,14 +369,71 @@ internal sealed class AcerPowerService(
     // limits, so presets write explicit PL1/PL2 through Manual. Quiet, Balanced and Turbo are
     // HandheldCompanion's Arc G3 (ClawCG3EM) table after the Claw's 20 W floor, which the Atlas
     // lacks; the lower tiers reach its 8 W floor. Full Power keeps the firmware maximum.
-    private static DevicePowerPreset ManualPreset(string id, string name, int sustained, int slow,
+    private DevicePowerPreset ManualPreset(string id, string name, int sustained, int slow,
         DevicePowerMode windowsMode, int minimum, int maximum, int boostMaximum)
     {
         var pl1 = Math.Clamp(sustained, minimum, maximum);
         return new DevicePowerPreset(id, name, pl1, Math.Clamp(slow, pl1, boostMaximum), windowsMode)
         {
-            ScenarioOnAc = "manual", ScenarioOnDc = "manual"
+            ScenarioOnAc = PresetScenario, ScenarioOnDc = PresetScenario
         };
+    }
+
+    /// <summary>States how much sustained power each stock fan table can carry, from the firmware's own limits.</summary>
+    private string? FanModeNote(CancellationToken token)
+    {
+        try
+        {
+            var stock = Enumerable.Range(start: 0, count: ManualMode).Select(mode => (
+                    Name: CapabilityDescriptors.ChoiceLabel(ModeName(mode)),
+                    Watts: (int)BinaryPrimitives.ReadUInt16LittleEndian(ReadProfile((byte)mode, token).AsSpan(6))))
+                .OrderBy(item => item.Watts).ToArray();
+            return string.Join(", ", stock.Select(item => $"{item.Name} up to {item.Watts} W"))
+                   + $". Above {stock[^1].Watts} W the fans use Manual, the loudest.";
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
+        {
+            DeviceTrace.Warn(ServiceId, $"Firmware mode limits unavailable: {exception.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The stock firmware mode to run this sustained limit in, and that mode's boost limit, or null for Manual.</summary>
+    /// <remarks>
+    ///     The quietest stock mode that allows the limit and is no quieter than a mode chosen by hand. Auto
+    ///     therefore replaces Manual's loud fan table whenever it can, and a chosen mode rises only while
+    ///     the limit needs it.
+    /// </remarks>
+    private (int Mode, int Boost)? ModeForLimit(int sustained, CancellationToken token)
+    {
+        if (_chosenMode == ManualMode)
+        {
+            return null;
+        }
+
+        try
+        {
+            var stock = Enumerable.Range(start: 0, count: ManualMode).Select(mode =>
+            {
+                var profile = ReadProfile((byte)mode, token);
+                return (Mode: mode, Sustained: (int)BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(6)),
+                    Boost: (int)BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(10)));
+            }).ToArray();
+            var floor = _chosenMode is { } chosen ? stock[chosen].Sustained : 0;
+            var fitting = stock.Where(item => item.Sustained >= Math.Max(sustained, floor)).ToArray();
+            if (fitting.Length == 0)
+            {
+                return null;
+            }
+
+            var pick = fitting.MinBy(item => item.Sustained);
+            return (pick.Mode, pick.Boost);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
+        {
+            DeviceTrace.Warn(ServiceId, $"Firmware mode limits unavailable: {exception.Message}");
+            return null;
+        }
     }
 
     /// <summary>Queries Manual/profile 3 limit selector 1=PL1 min, 2=PL1 max, 4=PL2 max, in whole watts.</summary>
@@ -389,7 +465,7 @@ internal sealed class AcerPowerService(
         try
         {
             _mode = ReadMode(token);
-            _observed.Read(ModeId, _mode is { } mode ? CapabilityValue.Choice(ModeName(mode)) : null);
+            _observed.Read(ModeId, _mode is { } mode ? ModeValue(mode) : null);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
         {
@@ -476,6 +552,20 @@ internal sealed class AcerPowerService(
             return await SelectPathAsync(command, firmware, token).ConfigureAwait(false);
         }
 
+        if (command.CapabilityId == ModeId && LimitsKeepFirmwareMode)
+        {
+            if (_paths.ViaIpf)
+            {
+                return await SelectFanModeAsync(command, firmware, token).ConfigureAwait(false);
+            }
+
+            if (command.RequestedValue?.ChoiceValue == AutoChoice)
+            {
+                return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
+                    "Auto needs the IPF power-limit path.");
+            }
+        }
+
         var dispatched = false;
         int? writtenSustained = null;
         int? writtenBoost = null;
@@ -487,6 +577,7 @@ internal sealed class AcerPowerService(
             if (command.CapabilityId == ModeId)
             {
                 selected = _table.ModeNumber(command.RequestedValue?.ChoiceValue);
+                _chosenMode = selected;
                 // A stock mode changes its limits without a PL1/PL2 write. Capture the selected
                 // profile independently so its accepted selection can publish those limits at once.
                 // Missing observation never prevents the mode command.
@@ -568,7 +659,7 @@ internal sealed class AcerPowerService(
 
             StartHold(startHold);
             _mode = selected;
-            _observed.Written(ModeId, CapabilityValue.Choice(ModeName(selected)));
+            _observed.Written(ModeId, ModeValue(selected));
             if (selected != ManualMode)
             {
                 // A stock mode's own limits must govern, so the registers return to their originals.
@@ -630,6 +721,31 @@ internal sealed class AcerPowerService(
                 return CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                     "The IPF session could not be opened: " + exception.Message);
             }
+
+            if (LimitsKeepFirmwareMode && ModeForLimit(sustained, token) is { } target)
+            {
+                // Only the sustained limit decides; a higher boost simply stops at what the mode allows.
+                var heldBoost = Math.Max(sustained, Math.Min(boost, target.Boost));
+                // Read fresh: the firmware can move its own mode, as on a change of power source.
+                if (target.Mode != ReadModeOrNull(token))
+                {
+                    await CaptureModeAsync(token).ConfigureAwait(false);
+                    token.ThrowIfCancellationRequested();
+                    SelectMode(target.Mode, token, dispatched);
+                    _mode = target.Mode;
+                    _observed.Written(ModeId, ModeValue(target.Mode));
+                }
+
+                token.ThrowIfCancellationRequested();
+                dispatched();
+                await _paths.WriteIpfAsync(sustained, heldBoost, token).ConfigureAwait(false);
+                ConfirmLimits("IPF", _paths.ReadIpf, sustained, heldBoost);
+                _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
+                _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(heldBoost));
+                DeviceTrace.Change(ServiceId, "cpu-power",
+                    $"Kept firmware mode {(_mode is { } active ? ModeName(active) : "unknown")}; IPF applies {sustained}/{heldBoost} W.");
+                return CommandResults.Applied(command);
+            }
         }
 
         if (!_manualOpened)
@@ -667,7 +783,7 @@ internal sealed class AcerPowerService(
         token.ThrowIfCancellationRequested();
         SelectMode(ManualMode, token, dispatched);
         _mode = ManualMode;
-        _observed.Written(ModeId, CapabilityValue.Choice(ModeName(ManualMode)));
+        _observed.Written(ModeId, ModeValue(ManualMode));
 
         if (_paths.ViaIpf)
         {
@@ -755,7 +871,7 @@ internal sealed class AcerPowerService(
                 : CommandResults.TransportFailure(command, true, exception);
         }
 
-        if (_mode == ManualMode && sustained is { } pl1 && boost is { } pl2)
+        if ((_mode == ManualMode || LimitsKeepFirmwareMode) && sustained is { } pl1 && boost is { } pl2)
         {
             var reapply = await ExecuteAsync(command with
             {
@@ -769,6 +885,45 @@ internal sealed class AcerPowerService(
         }
 
         return CommandResults.Applied(command);
+    }
+
+    /// <summary>Changes which firmware fan table runs and leaves the power limits in force as they are.</summary>
+    /// <remarks>
+    ///     A stock mode carries its own limits, so selecting one alone would replace the limit the user
+    ///     set. Writing the current limits again selects the mode by the same rule as any limit write.
+    /// </remarks>
+    private async ValueTask<CapabilityCommandResult> SelectFanModeAsync(CapabilityCommand command, string firmware,
+        CancellationToken token)
+    {
+        var choice = command.RequestedValue?.ChoiceValue;
+        if (choice is null || (choice != AutoChoice && !_table.ModeNames.Contains(choice)))
+        {
+            return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, "Unknown firmware fan mode.");
+        }
+
+        var previous = _chosenMode;
+        _chosenMode = choice == AutoChoice ? null : _table.ModeNumber(choice);
+        var result = CommandResults.Applied(command);
+        if (_observed.Value(CapabilityIds.PowerSustained)?.IntegerValue is { } sustained
+            && _observed.Value(CapabilityIds.PowerBoost)?.IntegerValue is { } boost)
+        {
+            result = await ExecuteAsync(command with
+            {
+                CapabilityId = CapabilityIds.PowerSustained, RequestedValue = CapabilityValue.Integer(sustained),
+                PairedPowerLimitWatts = boost
+            }, firmware, token).ConfigureAwait(false);
+        }
+
+        if (result.Outcome == CommandOutcome.Applied)
+        {
+            _observed.Written(ModeId, CapabilityValue.Choice(choice));
+        }
+        else
+        {
+            _chosenMode = previous;
+        }
+
+        return result;
     }
 
     private async ValueTask CaptureCpuAsync(CancellationToken token)
@@ -802,6 +957,13 @@ internal sealed class AcerPowerService(
     /// <remarks>Unknown-original changes remain ReleasedUnverified because no restoration value can be invented.</remarks>
     private async ValueTask CaptureModeAsync(CancellationToken token)
     {
+        // Where the limit picks the mode, WSGM ends on Balanced: with Acer's own software removed, nothing
+        // else could change a mode restored from before WSGM started.
+        if (LimitsKeepFirmwareMode && _paths.ViaIpf)
+        {
+            return;
+        }
+
         await context.Journal.BeginAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
             () =>
             {
@@ -899,6 +1061,10 @@ internal sealed class AcerPowerService(
                     RestoreProfileAsync, token).ConfigureAwait(false);
                 await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
                     RestoreModeAsync, token).ConfigureAwait(false);
+                if (!keepIpf)
+                {
+                    SettleOnBalanced(token);
+                }
             }
 
             return Set(_unknownOriginalChanged || context.Journal.HasUnrestoredMutation(ProfileRecoveryId)
@@ -910,6 +1076,26 @@ internal sealed class AcerPowerService(
         finally
         {
             await CloseAsync(keepIpf).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Leaves the firmware on Balanced when WSGM ends, because nothing would be left to change the mode.</summary>
+    /// <remarks>Failure changes nothing and never blocks the release.</remarks>
+    private void SettleOnBalanced(CancellationToken token)
+    {
+        if (!LimitsKeepFirmwareMode || !_paths.ViaIpf)
+        {
+            return;
+        }
+
+        try
+        {
+            SelectMode(_table.ModeNumber("balanced"), token);
+            DeviceTrace.Change(ServiceId, "exit-mode", "WSGM ended; the firmware is left on balanced.");
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            DeviceTrace.Warn(ServiceId, $"Balanced could not be set on exit: {exception.Message}");
         }
     }
 
@@ -946,6 +1132,13 @@ internal sealed class AcerPowerService(
     private string ModeName(int mode)
     {
         return _table.ModeName(mode);
+    }
+
+    /// <summary>What the mode control shows: the user's fan-mode choice where the limit picks the mode, otherwise the mode.</summary>
+    private CapabilityValue ModeValue(int mode)
+    {
+        return CapabilityValue.Choice(!LimitsKeepFirmwareMode || !_paths.ViaIpf ? ModeName(mode)
+            : _chosenMode is { } chosen ? ModeName(chosen) : AutoChoice);
     }
 }
 
