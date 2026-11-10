@@ -8,6 +8,9 @@ internal interface ICpuPowerTransport : IDisposable
     CpuPowerLimits ReadLimits();
     void WriteLimits(CpuPowerLimits limits);
 
+    /// <summary>Whether the CPU is at its thermal limit right now, or null where this transport cannot tell.</summary>
+    bool? ReadThermalThrottle() => null;
+
     void WriteLimit(CpuPowerLimit limit, double watts)
     {
         throw new NotSupportedException("This transport writes coordinated package power limits.");

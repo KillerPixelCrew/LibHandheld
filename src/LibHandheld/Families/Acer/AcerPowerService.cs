@@ -75,6 +75,7 @@ internal sealed class AcerPowerService(
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private int? _mode;
     private int? _chosenMode;
+    private bool _thermalStatus;
     private bool _unknownOriginalChanged;
     private ICpuPowerTransport? _cpu;
     private CpuPowerLimits? _cpuWritten;
@@ -361,8 +362,41 @@ internal sealed class AcerPowerService(
             descriptors.Insert(0, path);
         }
 
+        if (ThermalThrottle() is not null)
+        {
+            _thermalStatus = true;
+            descriptors.Add(CapabilityDescriptors.Boolean(CapabilityIds.ThermalThrottle, CapabilityRole.Telemetry,
+                CapabilityDescriptors.Label("CPU at heat limit"), read: true, write: false));
+        }
 
         return descriptors;
+    }
+
+    /// <summary>Whether the CPU is at its thermal limit now, or null when that cannot be read.</summary>
+    private bool? ThermalThrottle()
+    {
+        try
+        {
+            return _cpu?.ReadThermalThrottle();
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            DeviceTrace.Change(ServiceId, "thermal-status", $"CPU thermal status unavailable: {exception.Message}",
+                DeviceTraceLevel.Warn);
+            return null;
+        }
+    }
+
+    /// <summary>Samples the one live reading here, Intel's flag for the CPU being held at its thermal limit.</summary>
+    internal override ValueTask RefreshTelemetryAsync(CancellationToken token)
+    {
+        if (_thermalStatus && State == DeviceServiceState.Owned)
+        {
+            _observed.Read(CapabilityIds.ThermalThrottle,
+                ThermalThrottle() is { } limited ? CapabilityValue.Boolean(limited) : null);
+        }
+
+        return ValueTask.CompletedTask;
     }
 
     // The stock EC profiles all keep PL2 at 65 W and their readouts did not match the platform's

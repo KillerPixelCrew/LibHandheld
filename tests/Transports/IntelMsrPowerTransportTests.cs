@@ -33,6 +33,17 @@ public sealed class IntelMsrPowerTransportTests
         Assert.Equal(2, module.Calls.Count(call => call.Function == "ioctl_read_msr"));
     }
 
+    [Theory]
+    [InlineData(0x88470000L, false)]
+    [InlineData(0x88470002L, false)]
+    [InlineData(0x88470001L, true)]
+    [InlineData(0x88470003L, true)]
+    public void ThermalLimitIsTheLiveBitOfPackageThermalStatus(long raw, bool limited)
+    {
+        using var transport = new IntelMsrPowerTransport(new Module(0x00438168_00DD8078UL, raw));
+        Assert.Equal(limited, transport.ReadThermalThrottle());
+    }
+
     [Fact]
     public void LockedRegisterRefusesTheTransportAtStart()
     {
@@ -64,7 +75,7 @@ public sealed class IntelMsrPowerTransportTests
         Assert.Throws<ObjectDisposedException>(() => transport.ReadLimits());
     }
 
-    private sealed class Module(ulong packagePowerLimit) : IPawnIoModule
+    private sealed class Module(ulong packagePowerLimit, long packageThermalStatus = 0) : IPawnIoModule
     {
         internal List<(string Function, long[] Input)> Calls { get; } = [];
         internal bool Disposed { get; private set; }
@@ -79,6 +90,7 @@ public sealed class IntelMsrPowerTransportTests
                 {
                     0x606 => [0xA0E03],
                     0x610 => [unchecked((long)packagePowerLimit)],
+                    0x1B1 => [packageThermalStatus],
                     _ => throw new InvalidOperationException($"Unexpected MSR 0x{input[0]:X}.")
                 };
             }
