@@ -125,6 +125,40 @@ public sealed class AcerRingLightsTests
         await Assert.ThrowsAsync<IOException>(async () => await rings.DarkenAsync(CancellationToken.None));
     }
 
+    [Fact]
+    public async Task ARingWriteIsMarkedDispatchedBeforeItsFirstReport()
+    {
+        var port = new FakePort { FailingWrites = 1 };
+        var rings = new AcerRingLights(() => port);
+        Assert.True(rings.Open());
+        var dispatched = false;
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await rings.ShowAsync(Lighting(effect: 2), CancellationToken.None, () => dispatched = true));
+
+        Assert.True(dispatched);
+    }
+
+    [Fact]
+    public async Task AFailedFirstOutputAfterOpeningIsUncertainAndKeepsTheRingsForTheUser()
+    {
+        var port = new FakePort { FailingWrites = 1 };
+        var rings = new AcerRingLights(() => port);
+        var service = new AcerLightingService(null!, null!, rings);
+
+        var outcome = await service.OpenRingsAsync(Lighting(effect: 1), CancellationToken.None);
+
+        Assert.Equal(AcerLightingService.RingOutput.Uncertain, outcome);
+        Assert.False(port.Disposed);
+        Assert.Single(port.Writes, report => report[0] == 0xA4);
+
+        // Nothing resends it; the user's next lighting command writes the rings again.
+        var dispatched = false;
+        await rings.ShowAsync(Lighting(effect: 1), CancellationToken.None, () => dispatched = true);
+        Assert.True(dispatched);
+        Assert.Equal(2, port.Writes.Count(report => report[0] == 0xA4));
+    }
+
     [Theory]
     [InlineData(3)]
     [InlineData(8)]
@@ -172,5 +206,44 @@ public sealed class AcerRingLightsTests
         }
 
         return bytes;
+    }
+
+    /// <summary>One target with one LED, as the Atlas 7 lists; the first writes of A4 can be made to fail.</summary>
+    private sealed class FakePort : IAcerRingPort
+    {
+        internal List<byte[]> Writes { get; } = [];
+        internal int FailingWrites { get; set; }
+        internal bool Disposed { get; private set; }
+        public string Name => "fixture FF5A:0001";
+
+        public void Get(byte[] report)
+        {
+            if (report[0] == 0xA1)
+            {
+                report[1] = 1;
+                report[2] = 0x45;
+            }
+            else
+            {
+                report[1] = 0x45;
+                report[3] = 14;
+                report[4] = 1;
+            }
+        }
+
+        public void Set(byte[] report)
+        {
+            Writes.Add((byte[])report.Clone());
+            if (report[0] == 0xA4 && FailingWrites > 0)
+            {
+                FailingWrites--;
+                throw new IOException("The A4 write failed.");
+            }
+        }
+
+        public void Dispose()
+        {
+            Disposed = true;
+        }
     }
 }

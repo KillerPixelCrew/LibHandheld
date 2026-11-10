@@ -89,47 +89,68 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
         }
 
         Observe(_lighting, written: normalized);
-        return await OpenRingsAsync(_lighting, token).ConfigureAwait(false)
-            ? Set(DeviceServiceState.Owned)
-            : Set(DeviceServiceState.Degraded, Missing("The Atlas 7 ring lighting collection is unavailable."));
+        return await OpenRingsAsync(_lighting, token).ConfigureAwait(false) switch
+        {
+            RingOutput.Missing => Set(DeviceServiceState.Degraded,
+                Missing("The Atlas 7 ring lighting collection is unavailable.")),
+            RingOutput.Uncertain => Set(DeviceServiceState.Owned, RingsUncertain),
+            _ => Set(DeviceServiceState.Owned)
+        };
     }
+
+    /// <summary>What opening the Atlas 7's ring output left on the rings.</summary>
+    internal enum RingOutput
+    {
+        /// <summary>The retained section is showing, or the model has no separate ring output.</summary>
+        Shown,
+
+        /// <summary>The output is missing, so commands are refused before the RAM write.</summary>
+        Missing,
+
+        /// <summary>The output is open but its first write failed, so what the rings show is unknown.</summary>
+        Uncertain
+    }
+
+    private static readonly CapabilityReason RingsUncertain = new(CapabilityReasonCode.TransportFaulted,
+        "The rings may not be showing this lighting. Choose a lighting setting to send it again.");
 
     /// <summary>Opens the Atlas 7's ring output and shows the retained section on it.</summary>
     /// <remarks>
     ///     Showing it on every open costs one write on this model and does not rely on the host's restore, which
-    ///     has its own admission rules.
+    ///     has its own admission rules. A failed first write is not repeated: the handles stay open, the
+    ///     observations are dropped, and the user's next lighting command sends the output again.
     /// </remarks>
-    /// <returns>False when the output is missing, so commands are refused before the RAM write.</returns>
-    private async ValueTask<bool> OpenRingsAsync(byte[] lighting, CancellationToken token)
+    internal async ValueTask<RingOutput> OpenRingsAsync(byte[] lighting, CancellationToken token)
     {
         if (rings is null)
         {
-            return true;
+            return RingOutput.Shown;
         }
 
         try
         {
             if (!rings.Open())
             {
-                return false;
+                return RingOutput.Missing;
             }
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
         {
             DeviceTrace.Failure(ServiceId, "Atlas 7 ring lighting could not be opened", exception);
-            return false;
+            return RingOutput.Missing;
         }
 
         try
         {
             await rings.ShowAsync(lighting, token).ConfigureAwait(false);
+            return RingOutput.Shown;
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
         {
             DeviceTrace.Failure(ServiceId, "Atlas 7 rings could not be lit", exception);
+            _observed.Clear();
+            return RingOutput.Uncertain;
         }
-
-        return true;
     }
 
     /// <summary>Blacks out the Atlas 7's rings before the cycle stops; the Atlas 8 path is a plain release.</summary>
@@ -316,11 +337,17 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
             await _controller.WriteLightingAsync(changed, token, () => dispatched = true, _lighting).ConfigureAwait(false);
             if (rings is not null)
             {
-                await rings.ShowAsync(changed, token).ConfigureAwait(false);
+                // Marked on its own: an unchanged RAM range writes nothing, but the rings are still written.
+                await rings.ShowAsync(changed, token, () => dispatched = true).ConfigureAwait(false);
             }
 
             _lighting = changed;
             Observe(changed, written: true);
+            if (Reason == RingsUncertain)
+            {
+                _ = Set(DeviceServiceState.Owned);
+            }
+
             return CommandResults.Applied(command);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)

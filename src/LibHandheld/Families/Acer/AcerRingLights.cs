@@ -12,6 +12,17 @@ namespace LibHandheld.Families.Acer;
 /// <param name="MaxSpeed">The top effect speed the target declares.</param>
 internal readonly record struct AcerRingTarget(byte Id, int LedCount, int MaxSpeed);
 
+/// <summary>The FF5A collection's feature reports; the test assembly supplies its own.</summary>
+internal interface IAcerRingPort : IDisposable
+{
+    /// <summary>The collection as the log names it.</summary>
+    string Name { get; }
+
+    void Get(byte[] report);
+
+    void Set(byte[] report);
+}
+
 /// <summary>The Atlas 7's ring LEDs, which answer on the controller's FF5A collection and not to RAM profile writes.</summary>
 /// <remarks>
 ///     Uses the A1..A4 feature reports of the ENE rear logo, on <c>0502:F310</c>. A steady color is one A4
@@ -19,7 +30,8 @@ internal readonly record struct AcerRingTarget(byte Id, int LedCount, int MaxSpe
 ///     Both follow Predator Sense's <c>AcerHIDStickController.dll</c>. A4 is write-only, so the colors and
 ///     brightness come from the controller section <see cref="AcerLightingService" /> retains.
 /// </remarks>
-internal sealed class AcerRingLights
+/// <param name="openPort">Opens the collection, or returns null when it is absent; the HID collection when omitted.</param>
+internal sealed class AcerRingLights(Func<IAcerRingPort?>? openPort = null)
 {
     internal const int ReportLength = 11;
     private const byte ListReport = 0xA1;
@@ -35,7 +47,7 @@ internal sealed class AcerRingLights
     private const string Scope = "acer-lighting";
     private static readonly TimeSpan WriteGap = TimeSpan.FromMilliseconds(20);
 
-    private SafeFileHandle? _handle;
+    private IAcerRingPort? _port;
     private IReadOnlyList<AcerRingTarget> _targets = [];
 
     internal static bool IsCollection(HidCollection item)
@@ -80,7 +92,7 @@ internal sealed class AcerRingLights
         var offset = AcerLightingService.AnimationOffset(lighting);
         var brightness = lighting[offset + 3];
         var colors = lighting.AsSpan(offset + 4, NinthSlotCount * 3);
-        List<byte[]> frames = [];
+        var frames = new List<byte[]>();
         if (lighting[offset] == 2)
         {
             var uiSpeed = UiSpeedRange - lighting[offset + 2];
@@ -109,7 +121,7 @@ internal sealed class AcerRingLights
     /// <summary>The writes that black out every LED of every target.</summary>
     internal static IReadOnlyList<byte[]> DarkFrames(IReadOnlyList<AcerRingTarget> targets)
     {
-        List<byte[]> frames = [];
+        var frames = new List<byte[]>();
         foreach (var target in targets)
         {
             for (var bit = 0; bit < target.LedCount; bit++)
@@ -131,24 +143,24 @@ internal sealed class AcerRingLights
     internal bool Open()
     {
         Close();
-        var collection = HidDevices.Unique(HidDevices.Enumerate(0x0502, [AcerControllerTransport.Atlas7ProductId]), IsCollection);
-        if (collection is null)
+        var port = (openPort ?? OpenHid)();
+        if (port is null)
         {
             DeviceTrace.Warn(Scope, "The Atlas 7 ring lighting collection FF5A:0001 is unavailable.");
             return false;
         }
 
-        _handle = HidDevices.Open(collection, overlapped: false);
+        _port = port;
         try
         {
             var list = new byte[ReportLength];
             list[0] = ListReport;
-            Get(list);
-            DeviceTrace.Info(Scope, $"Ring lighting {collection.Describe()} A1 {Convert.ToHexString(list)}");
-            List<AcerRingTarget> targets = [];
+            port.Get(list);
+            DeviceTrace.Info(Scope, $"Ring lighting {port.Name} A1 {Convert.ToHexString(list)}");
+            var targets = new List<AcerRingTarget>();
             foreach (var id in ParseTargets(list))
             {
-                targets.Add(Query(id));
+                targets.Add(Query(port, id));
             }
 
             _targets = targets;
@@ -161,70 +173,93 @@ internal sealed class AcerRingLights
         }
     }
 
-    private AcerRingTarget Query(byte id)
+    private static HidRingPort? OpenHid()
+    {
+        var collection = HidDevices.Unique(HidDevices.Enumerate(0x0502, [AcerControllerTransport.Atlas7ProductId]), IsCollection);
+        return collection is null
+            ? null
+            : new HidRingPort(HidDevices.Open(collection, overlapped: false), collection.Describe());
+    }
+
+    private static AcerRingTarget Query(IAcerRingPort port, byte id)
     {
         var select = new byte[ReportLength];
         select[0] = SelectReport;
         select[1] = id;
-        Set(select);
+        port.Set(select);
         Thread.Sleep(WriteGap);
         var capability = new byte[ReportLength];
         capability[0] = CapabilityReport;
-        Get(capability);
+        port.Get(capability);
         var target = ParseCapability(id, capability);
         DeviceTrace.Info(Scope, $"Ring lighting target {id:X2} A3 {Convert.ToHexString(capability)} leds {target.LedCount}");
         return target;
     }
 
     /// <summary>Shows the section's selected animation on the rings.</summary>
-    internal ValueTask ShowAsync(byte[] lighting, CancellationToken token)
+    /// <param name="lighting">The retained section.</param>
+    /// <param name="token">Cancels before the next report.</param>
+    /// <param name="dispatched">Called immediately before the first report is written.</param>
+    internal ValueTask ShowAsync(byte[] lighting, CancellationToken token, Action? dispatched = null)
     {
-        return WriteAsync(Frames(RequireTargets(), lighting), token);
+        return WriteAsync(Frames(RequireTargets(), lighting), token, dispatched);
     }
 
     /// <summary>Blacks out the rings for sleep.</summary>
     internal ValueTask DarkenAsync(CancellationToken token)
     {
-        return WriteAsync(DarkFrames(RequireTargets()), token);
+        return WriteAsync(DarkFrames(RequireTargets()), token, dispatched: null);
     }
 
     private IReadOnlyList<AcerRingTarget> RequireTargets()
     {
-        return _handle is not null && _targets.Count > 0
+        return _port is not null && _targets.Count > 0
             ? _targets
             : throw new IOException("The Atlas 7 ring lighting interface is unavailable.");
     }
 
-    private async ValueTask WriteAsync(IReadOnlyList<byte[]> frames, CancellationToken token)
+    private async ValueTask WriteAsync(IReadOnlyList<byte[]> frames, CancellationToken token, Action? dispatched)
     {
+        var port = _port ?? throw new IOException("The Atlas 7 ring lighting interface is unavailable.");
         foreach (var frame in frames)
         {
             token.ThrowIfCancellationRequested();
-            Set(frame);
+            dispatched?.Invoke();
+            port.Set(frame);
             await Task.Delay(WriteGap, token).ConfigureAwait(false);
-        }
-    }
-
-    private void Get(byte[] report)
-    {
-        if (!NativeHid.HidD_GetFeature(_handle!, report, report.Length))
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError(), $"Reading ring lighting report {report[0]:X2} failed.");
-        }
-    }
-
-    private void Set(byte[] report)
-    {
-        if (!NativeHid.HidD_SetFeature(_handle!, report, report.Length))
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError(), $"Writing ring lighting report {report[0]:X2} failed.");
         }
     }
 
     internal void Close()
     {
-        _handle?.Dispose();
-        _handle = null;
+        _port?.Dispose();
+        _port = null;
         _targets = [];
+    }
+
+    private sealed class HidRingPort(SafeFileHandle handle, string name) : IAcerRingPort
+    {
+        public string Name => name;
+
+        public void Get(byte[] report)
+        {
+            if (!NativeHid.HidD_GetFeature(handle, report, report.Length))
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), $"Reading ring lighting report {report[0]:X2} failed.");
+            }
+        }
+
+        public void Set(byte[] report)
+        {
+            if (!NativeHid.HidD_SetFeature(handle, report, report.Length))
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), $"Writing ring lighting report {report[0]:X2} failed.");
+            }
+        }
+
+        public void Dispose()
+        {
+            handle.Dispose();
+        }
     }
 }
