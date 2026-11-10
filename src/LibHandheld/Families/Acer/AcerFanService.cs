@@ -500,7 +500,9 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
     {
         // Unknown prior behavior returns cooling to firmware control. It is never an exact restore.
         var exact = original.Behavior is 1 or 2 || original.Behavior == 3 && original.Speed is >= 0 and <= 100;
-        var behavior = exact ? original.Behavior!.Value : 1;
+        // Full Speed is never handed back: nothing would be left running to lower it, and the next
+        // start would record it as the original once more.
+        var behavior = exact && original.Behavior != 2 ? original.Behavior!.Value : 1;
         _inexactRestore |= !exact;
 
         // A restored manual original is the firmware's own meaning of manual, so it is not held.
