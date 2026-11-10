@@ -83,6 +83,45 @@ On the first build of this output the tester confirmed visible ring changes, who
 LEDs during sleep and relit LEDs after wake. Per-zone colors had no visible effect, as expected with one LED in the capability reply, so this
 model publishes only the whole-ring color. The rear logo was not reported separately.
 
+## PA07-I51 fan stall, firmware fan modes and exit state, 2026-11-10
+
+Same unit and firmware as the PA07-I51 sections above. The definition stays `HardwareVerified = false`.
+
+Why Software fans stutter: `SetGamingFanBehavior` took 108 to 120 ms, and on all 15 timed calls every one
+of the 14 CPU cores stopped at the same instant for about 101 ms. `SetGamingFanSpeed` (13 to 18 ms) and the
+getters (10 to 18 ms) did not stop them. The WMI method ends in a software SMI, so the pause is inside the
+firmware and software can only avoid the command. In one minute of World of Warcraft on Software fans, 62
+of 66 frame freezes (average 118 ms) overlapped a behavior command, and all 60 re-arms produced one. With
+both fans on Firmware the tester reported the stutter gone. The 1 Hz re-arm cannot simply be slowed: the
+2026-10-29 calibration shows a 3 s cadence oscillates. Sending one combined re-arm for both fans held them
+on this unit and halved the commands from two to one per second. It is not included, because the Atlas 8
+was not tested with it.
+
+Firmware fan tables: `GetGamingFanTable` byte 1 reports the active table with the EC slot ids, Manual 5,
+Quiet 2, Balanced 0, Turbo 4. The EC mode selects the table along with the mode's limits. Samples: Manual
+6780 RPM at 69 degrees C, Balanced 4203 RPM at 77, Quiet 3692 RPM at 77.
+
+Limits on a stock mode: IPF holds a limit below the mode's own. On firmware Quiet (own limits 25/45 W) at
+15/20 W, an AVX2 load on all 14 threads averaged 17.6 W over the first 15 seconds, peaked at 18.1 W and
+averaged 15.2 W over the last 30 seconds. That is one 90-second run at one limit. The same load cannot reach
+above about 25 W, so a mode's ceiling was not tested by pushing past it; WSGM treats the mode's sustained
+value as the ceiling.
+
+Power source changes: unplugging and plugging in moved the firmware between Quiet and Balanced, each time
+within one 2-second poll of WSGM's write (30/37 W at 08:37:15.16 read Balanced at 08:37:16.74; 20/37 W at
+08:37:38.78 read Quiet at 08:37:39.07). In 148 polls over five minutes the firmware never changed the mode
+by itself.
+
+Behavior chosen with the tester: on the IPF path a limit runs on the quietest stock mode that can carry it
+(Auto, the default), or on a mode the user picked for its fan table, which leaves the limit alone and rises
+only while the limit needs it. A sustained limit above Turbo's uses Manual. Standby leaves the mode alone.
+A full exit leaves Balanced rather than the mode found at start, because the takeover has disabled Acer's
+own software and nothing else could change it. Fan recovery hands a recorded Full Speed back as Auto: on this
+unit Full Speed was restored at every exit and then recorded again as the original at the next start.
+
+Not run on the device: the thermal-limit reading (MSR 0x1B1 bit 0, read only) was added after the last
+attended install, so only fixtures cover it.
+
 ## Controller firmware 1.05, 2026-11-08
 
 The "BIOS 1.05" update Predator Sense offered is controller firmware. On the maintainer's PA08-I51
