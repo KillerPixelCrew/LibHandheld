@@ -1,11 +1,24 @@
 # Acer Predator Atlas 8
 
+## PA07-I51 maintainer acceptance, 2026-11-11
+
+The maintainer accepted the Acer Predator PA07-I51 integration as hardware verified for 3.1.0, based
+on the attended unit and runs recorded below: PTL/G310_PTG, BIOS V1.03, controller release 0100. The
+definition now sets `HardwareVerified = true`; this records maintainer acceptance, not an additional
+automated or attended run by the reviewer.
+
+The accepted integration includes exact detection, controller ownership and OEM input, power and
+firmware fan modes, lighting, takeover and suspend/resume. The historical observations and their
+limits below remain unchanged. Custom charge limits and extended VRR remain unavailable; the 8 W
+floor and software fan presets retain the Atlas 8 fallback evidence. The earlier unconfirmed axes,
+haptics, QAM and load/thermal-limit observations remain proof limits, not new passes.
+
 ## PA07-I51 evidence, 2026-11-09
 
 Unit: Acer Predator PA07-I51 (Atlas 7), board PTL / G310_PTG, BIOS V1.03, Predator Sense 1.0.1563.0.
-A standalone probe held Acer's EC mutex and sent only documented read queries, plus controller query
-26. Nothing in this section came from a write by the probe or by LibHandheld, and the definition stays
-`HardwareVerified = false`.
+A standalone probe held Acer's EC mutex and sent only documented read queries, plus controller
+query 26. Nothing in this section came from a write by the probe or by LibHandheld, and the
+definition stays `HardwareVerified = false`.
 
 Shared with the measured PA08-I51:
 
@@ -26,107 +39,114 @@ Different, and why the Atlas 8 profile cannot be reused directly:
 | 2       | Quiet          | 2                   | 25 / 30 / 45            |
 | 3       | Manual         | 5                   | 40 / 45 / 65            |
 
-The tester selected Quiet, Balanced, Turbo and Manual in Predator Sense while the probe polled; the EC
-reported modes 2, 1, 0, 3. Turbo and Balanced are swapped against the PA08-I51 table, and slot ids do
-not equal selectors, so the existing readback check would refuse every Manual edit. Slot 3 held the
-40/65 W that Predator Sense stores for Manual; the Manual values were not changed during the watch.
-Slot id is informational: `14000EAA1`..`14000EAC2` pass one register to read, write and mode select,
-and the writer stores it at payload offset 5 (`14001AFB4`). Writes therefore address selector 3.
+The tester selected Quiet, Balanced, Turbo and Manual in Predator Sense while the probe polled; the
+EC reported modes 2, 1, 0, 3. Turbo and Balanced are swapped against the PA08-I51 table, and slot
+ids do not equal selectors, so the existing readback check would refuse every Manual edit. Slot 3
+held the 40/65 W that Predator Sense stores for Manual; the Manual values were not changed during
+the watch. Slot id is informational: `14000EAA1`..`14000EAC2` pass one register to read, write and
+mode select, and the writer stores it at payload offset 5 (`14001AFB4`). Writes therefore address
+selector 3.
 
 Other differences: health mask 00CC against 02CD, about 4450 RPM on health indices 4 and 8 under
 load, and panel BOE0C33 NS070FH0-MX1. The DInput product is unmeasured, so every controller mode
-except XInput is refused before dispatch. Extended VRR is not offered: the panel's EDID is 128 bytes with
-no DisplayID block, and `ExtendedVrrPanel` is built for the Atlas 8's 256-byte layout.
+except XInput is refused before dispatch. Extended VRR is not offered: the panel's EDID is 128 bytes
+with no DisplayID block, and `ExtendedVrrPanel` is built for the Atlas 8's 256-byte layout.
 
 ## PA07-I51 attended run, 2026-11-09
 
-The first definition composed the controller, OEM input, motion and power only, and left Acer's software
-running beside it for one build before the takeover was added. On that build, with Acer's services off,
-WSGM reported every service Owned and created the managed Steam Deck target. IPF limit writes of 20/45,
-10/45 and 40/45 W read back exactly. Selecting Balanced set EC mode 1, confirming the mode table with a
-real write. Crimson Desert ran through Steam Input with no GPU hang.
+The first definition composed the controller, OEM input, motion and power only, and left Acer's
+software running beside it for one build before the takeover was added. On that build, with Acer's
+services off, WSGM reported every service Owned and created the managed Steam Deck target. IPF limit
+writes of 20/45, 10/45 and 40/45 W read back exactly. Selecting Balanced set EC mode 1, confirming
+the mode table with a real write. Crimson Desert ran through Steam Input with no GPU hang.
 
-Manual opened to 40/65 W ran the two fans at about 6700 RPM at 69 degrees C shortly after a game and about
-3000 RPM at 58 degrees C idle; Balanced was about 4200 RPM at 75 degrees C.
+Manual opened to 40/65 W ran the two fans at about 6700 RPM at 69 degrees C shortly after a game and
+about 3000 RPM at 58 degrees C idle; Balanced was about 4200 RPM at 75 degrees C.
 
 A second attended run used the parity composition. All services reported Owned, and M2, M1 and Guide
 arrived as `9A04`, `9A02` and `9E 0000 0005`. Fan mode and duty commands applied. Suspend and resume
-completed with every service Owned again, and the saved limit re-applied on wake moved the EC from Balanced
-to Manual. Touch in Big Picture's main view failed while Focus Zoom ran and worked after it was disabled
-and the unit restarted. Later it stopped intermittently with Focus Zoom off; the cause is unknown.
+completed with every service Owned again, and the saved limit re-applied on wake moved the EC from
+Balanced to Manual. Touch in Big Picture's main view failed while Focus Zoom ran and worked after it
+was disabled and the unit restarted. Later it stopped intermittently with Focus Zoom off; the cause
+is unknown.
 
-Known gaps: EC command 0B03 is not acknowledged, so no custom charge limit is offered. Optimized charging
-reported Applied, with no charging measurement. Motion axes, haptics, the QAM report and fan RPM during
-commands have not been individually confirmed. The 8 W power floor comes from the Atlas 8's attended trials;
-the lowest limit attended on this unit is 10 W.
+Known gaps: EC command 0B03 is not acknowledged, so no custom charge limit is offered. Optimized
+charging reported Applied, with no charging measurement. Motion axes, haptics, the QAM report and
+fan RPM during commands have not been individually confirmed. The 8 W power floor comes from the
+Atlas 8's attended trials; the lowest limit attended on this unit is 10 W.
 
 ## PA07-I51 ring lighting, 2026-11-09
 
-Ring commands first reported Applied while the rings did not change, although the 883-byte section reads
-back in the Atlas 8 layout and the RAM write matches Predator Sense's controller path. Predator Sense uses
-that path only as a fallback. Static inspection of the installed `AcerHIDStickController.dll`, SHA-256
-`3836B8A5C200308EB9A47210BCAD89AFD1051DC3EBF51C83AFC32448E80E36EE`, shows its stick LED target fixed at
-`45` on an `FF5A` collection, using the rear logo's A1..A4 reports with the same A4 field order. It takes
-the LED count from the capability reply with a minimum of one. Steady color is one A4 per LED with a one-bit
-mask, 20 ms apart; an animated effect is one A4 with mask 0.
+Ring commands first reported Applied while the rings did not change, although the 883-byte section
+reads back in the Atlas 8 layout and the RAM write matches Predator Sense's controller path.
+Predator Sense uses that path only as a fallback. Static inspection of the installed
+`AcerHIDStickController.dll`, SHA-256
+`3836B8A5C200308EB9A47210BCAD89AFD1051DC3EBF51C83AFC32448E80E36EE`, shows its stick LED target fixed
+at `45` on an `FF5A` collection, using the rear logo's A1..A4 reports with the same A4 field order.
+It takes the LED count from the capability reply with a minimum of one. Steady color is one A4 per
+LED with a one-bit mask, 20 ms apart; an animated effect is one A4 with mask 0.
 
 WSGM opened `0502:F310` release `0100`, `FF5A:0001`, 11-byte features. A1 returned
-`A101450000000000000000` and A3 for target 45 returned `A345010E017F0001000000`: one LED and effect mask
-`0001007F`. The runtime keeps the section write and, on this model only, sends the A4 report after each
-edit. Before a suspend it blacks out the rings. At takeover an effect other than solid or breathing is written
-back as solid in its first color, because this output cannot draw the others. Each time the collection opens it
-shows that section, one write on this model, instead of relying on the host's restore. A rear logo is turned off
-for sleep and relit only if it was commanded in the session, since A4 has no getter and the firmware's own logo
-state could not be brought back.
+`A101450000000000000000` and A3 for target 45 returned `A345010E017F0001000000`: one LED and effect
+mask `0001007F`. The runtime keeps the section write and, on this model only, sends the A4 report
+after each edit. Before a suspend it blacks out the rings. At takeover an effect other than solid or
+breathing is written back as solid in its first color, because this output cannot draw the others.
+Each time the collection opens it shows that section, one write on this model, instead of relying on
+the host's restore. A rear logo is turned off for sleep and relit only if it was commanded in the
+session, since A4 has no getter and the firmware's own logo state could not be brought back.
 
-On the first build of this output the tester confirmed visible ring changes, whole-ring color changes, dark
-LEDs during sleep and relit LEDs after wake. Per-zone colors had no visible effect, as expected with one LED in the capability reply, so this
-model publishes only the whole-ring color. The rear logo was not reported separately.
+On the first build of this output the tester confirmed visible ring changes, whole-ring color
+changes, dark LEDs during sleep and relit LEDs after wake. Per-zone colors had no visible effect, as
+expected with one LED in the capability reply, so this model publishes only the whole-ring color.
+The rear logo was not reported separately.
 
 ## PA07-I51 fan stall, firmware fan modes and exit state, 2026-11-10
 
-Same unit and firmware as the PA07-I51 sections above. The definition stays `HardwareVerified = false`.
+Same unit and firmware as the PA07-I51 sections above. The definition stays
+`HardwareVerified = false`.
 
-Why Software fans stutter: `SetGamingFanBehavior` took 108 to 120 ms, and on all 15 timed calls every one
-of the 14 CPU cores stopped at the same instant for about 101 ms. `SetGamingFanSpeed` (13 to 18 ms) and the
-getters (10 to 18 ms) did not stop them. The WMI method ends in a software SMI, so the pause is inside the
-firmware and software can only avoid the command. In one minute of World of Warcraft on Software fans, 62
-of 66 frame freezes (average 118 ms) overlapped a behavior command, and all 60 re-arms produced one. With
-both fans on Firmware the tester reported the stutter gone. The 1 Hz re-arm cannot simply be slowed: the
-2026-10-29 calibration shows a 3 s cadence oscillates. Sending one combined re-arm for both fans held them
-on this unit and halved the commands from two to one per second. It is not included, because the Atlas 8
-was not tested with it.
+Why Software fans stutter: `SetGamingFanBehavior` took 108 to 120 ms, and on all 15 timed calls
+every one of the 14 CPU cores stopped at the same instant for about 101 ms. `SetGamingFanSpeed` (13
+to 18 ms) and the getters (10 to 18 ms) did not stop them. The WMI method ends in a software SMI, so
+the pause is inside the firmware and software can only avoid the command. In one minute of World of
+Warcraft on Software fans, 62 of 66 frame freezes (average 118 ms) overlapped a behavior command,
+and all 60 re-arms produced one. With both fans on Firmware the tester reported the stutter gone.
+The 1 Hz re-arm cannot simply be slowed: the 2026-10-29 calibration shows a 3 s cadence oscillates.
+Sending one combined re-arm for both fans held them on this unit and halved the commands from two to
+one per second. It is not included, because the Atlas 8 was not tested with it.
 
-Firmware fan tables: `GetGamingFanTable` byte 1 reports the active table with the EC slot ids, Manual 5,
-Quiet 2, Balanced 0, Turbo 4. The EC mode selects the table along with the mode's limits. Samples: Manual
-6780 RPM at 69 degrees C, Balanced 4203 RPM at 77, Quiet 3692 RPM at 77.
+Firmware fan tables: `GetGamingFanTable` byte 1 reports the active table with the EC slot ids,
+Manual 5, Quiet 2, Balanced 0, Turbo 4. The EC mode selects the table along with the mode's limits.
+Samples: Manual 6780 RPM at 69 degrees C, Balanced 4203 RPM at 77, Quiet 3692 RPM at 77.
 
-Limits on a stock mode: IPF holds a limit below the mode's own. On firmware Quiet (own limits 25/45 W) at
-15/20 W, an AVX2 load on all 14 threads averaged 17.6 W over the first 15 seconds, peaked at 18.1 W and
-averaged 15.2 W over the last 30 seconds. That is one 90-second run at one limit. The same load cannot reach
-above about 25 W, so a mode's ceiling was not tested by pushing past it; WSGM treats the mode's sustained
-value as the ceiling.
+Limits on a stock mode: IPF holds a limit below the mode's own. On firmware Quiet (own limits 25/45
+W) at 15/20 W, an AVX2 load on all 14 threads averaged 17.6 W over the first 15 seconds, peaked at
+18.1 W and averaged 15.2 W over the last 30 seconds. That is one 90-second run at one limit. The
+same load cannot reach above about 25 W, so a mode's ceiling was not tested by pushing past it; WSGM
+treats the mode's sustained value as the ceiling.
 
-Power source changes: unplugging and plugging in moved the firmware between Quiet and Balanced, each time
-within one 2-second poll of WSGM's write (30/37 W at 08:37:15.16 read Balanced at 08:37:16.74; 20/37 W at
-08:37:38.78 read Quiet at 08:37:39.07). In 148 polls over five minutes the firmware never changed the mode
-by itself.
+Power source changes: unplugging and plugging in moved the firmware between Quiet and Balanced, each
+time within one 2-second poll of WSGM's write (30/37 W at 08:37:15.16 read Balanced at 08:37:16.74;
+20/37 W at 08:37:38.78 read Quiet at 08:37:39.07). In 148 polls over five minutes the firmware never
+changed the mode by itself.
 
-Behavior chosen with the tester and revised in review: on the IPF path a limit pair runs on the quietest
-stock mode whose own sustained and boost limits both carry it (Auto, the default), or on a mode the user
-picked for its fan table, which rises only while the pair needs it. The pair is applied as requested, never
-clamped, and a pair no stock mode carries uses Manual. A pair becomes WSGM's only once a write for it is
-dispatched, so a refused request is never replayed. Picking a fan mode writes the pair WSGM last set again
-and never adopts a stock mode's own values; with no pair of WSGM's in force it selects the mode as it
-stands, and Auto waits for the next limit. Fan modes are refused on the firmware and PawnIO paths, where a
-stock mode would replace the limit. A full exit leaves Balanced rather than the mode found at start,
-because the takeover has disabled Acer's own software and nothing else could change it. Balanced is
-journaled as the restore target before the first write, so the next start recovers it after a crash, a
-failed restore makes the release unverified, and standby leaves the mode alone. Fan recovery hands a recorded Full Speed back as Auto: on this unit Full Speed was
-restored at every exit and then recorded again as the original at the next start.
+Behavior chosen with the tester and revised in review: on the IPF path a limit pair runs on the
+quietest stock mode whose own sustained and boost limits both carry it (Auto, the default), or on a
+mode the user picked for its fan table, which rises only while the pair needs it. The pair is
+applied as requested, never clamped, and a pair no stock mode carries uses Manual. A pair becomes
+WSGM's only once a write for it is dispatched, so a refused request is never replayed. Picking a fan
+mode writes the pair WSGM last set again and never adopts a stock mode's own values; with no pair of
+WSGM's in force it selects the mode as it stands, and Auto waits for the next limit. Fan modes are
+refused on the firmware and PawnIO paths, where a stock mode would replace the limit. A full exit
+leaves Balanced rather than the mode found at start, because the takeover has disabled Acer's own
+software and nothing else could change it. Balanced is journaled as the restore target before the
+first write, so the next start recovers it after a crash, a failed restore makes the release
+unverified, and standby leaves the mode alone. Fan recovery hands a recorded Full Speed back as
+Auto: on this unit Full Speed was restored at every exit and then recorded again as the original at
+the next start.
 
-Not run on the device: the thermal-limit reading (MSR 0x1B1 bit 0, read only) was added after the last
-attended install, so only fixtures cover it.
+Not run on the device: the thermal-limit reading (MSR 0x1B1 bit 0, read only) was added after the
+last attended install, so only fixtures cover it.
 
 ## Controller firmware 1.05, 2026-11-08
 
@@ -138,28 +158,28 @@ controller over HID DFU at 03:12. Its `core-20261108.log` shows `acer_fw_1.05.uf
 release was 0100 until this flash. The remote tester, whose BIOS also stayed 1.04, matches.
 
 After the flash the USB device is still 0502:F901 in XInput mode, now release 0105 (`REV_0105` on
-the composite, MI_00..02 and every MI_01/MI_02 collection). The interfaces and every collection shape
-are unchanged from 0100: MI_00 Xbox 360 (`xusb22`) with IG_00 gamepad 0001:0005, input 15;
+the composite, MI_00..02 and every MI_01/MI_02 collection). The interfaces and every collection
+shape are unchanged from 0100: MI_00 Xbox 360 (`xusb22`) with IG_00 gamepad 0001:0005, input 15;
 MI_01 FFA0:0001 in/out 64 and FFF1:00F5 in 15; MI_02 keyboard 0001:0006, mouse 0001:0002 in 8,
 consumer 000C:0001 in 5, QAM 0088:0001 in 3 and FF5A:0001. WSGM's start then logged
 `acer-controller-mode=Passive(PrerequisiteMissing)` and `acer-lighting=Passive` because the lane
 admitted 0100 only. The rear/QAM button source refused the same collections, so the rear keys stayed
-in Predator Sense's Macro mode and neither the back buttons nor the QAM key reached the virtual
-pad. The virtual Steam Deck pad itself was created.
+in Predator Sense's Macro mode and neither the back buttons nor the QAM key reached the virtual pad.
+The virtual Steam Deck pad itself was created.
 
-An attended gyro trial on 1.05 (WSGM stopped) repeated the 2026-10-27 method. In XInput the
-command lane answered mode query 26 (`01 00 00 01 00`), read SensorModule `E0 01 00 04 00 19 32 FF FF
-00`, accepted MotionEnable bit 0 with readback, and took 2F 01/2F 00. Switching with 24 02 00
+An attended gyro trial on 1.05 (WSGM stopped) repeated the 2026-10-27 method. In XInput the command
+lane answered mode query 26 (`01 00 00 01 00`), read SensorModule `E0 01 00 04 00 19 32 FF FF 00`,
+accepted MotionEnable bit 0 with readback, and took 2F 01/2F 00. Switching with 24 02 00
 re-enumerated F90A release 0105 with the 0100 DInput shapes: gamepad 0001:0005 in 64/out 32/feature
 48, vendor FFF0:0040 in/out/feature 64, keyboard 0001:0006 in 9/out 2, mouse 0001:0002 in 8,
-consumer 000C:0001 in 5. Its command lane read and gated the module the same way. Both modules,
-then the original mode, were restored and read back exactly.
+consumer 000C:0001 in 5. Its command lane read and gated the module the same way. Both modules, then
+the original mode, were restored and read back exactly.
 
-Gyro result: no raw controller gyro on 1.05 either. FFA0/FFF0 delivered no 0x30 motion packets
-in either mode during a 5 s rest and 15 s rotation (Windows reference peaks 250/161/107 and
-381/193/134 degrees/s). The DInput report ran at 125 Hz and only left-stick bytes 1 and 2 changed;
-offsets 13..24 stayed zero with the fixed 0x10 at 22. The XInput HID gamepad (IG_00, release 0000)
-changed only stick bytes. The Windows LSM6DSO source remains the motion source. Evidence: ignored
+Gyro result: no raw controller gyro on 1.05 either. FFA0/FFF0 delivered no 0x30 motion packets in
+either mode during a 5 s rest and 15 s rotation (Windows reference peaks 250/161/107 and 381/193/134
+degrees/s). The DInput report ran at 125 Hz and only left-stick bytes 1 and 2 changed; offsets
+13..24 stayed zero with the fixed 0x10 at 22. The XInput HID gamepad (IG_00, release 0000) changed
+only stick bytes. The Windows LSM6DSO source remains the motion source. Evidence: ignored
 `artifacts/acer-fw105-gyro/` (trial log, results.json, raw report and Windows sample captures) and
 the probe in `artifacts/acer-fw105-probe/`.
 
@@ -171,57 +191,62 @@ restored, lighting reads its 883 bytes, rear keys produce report 9A, and DInput 
 
 ## BIOS delivery sources and BIOS 1.05, 2026-11-08
 
-Read-only research into whether Atlas 8 BIOS 1.05 changes the controller; nothing was run or flashed.
-Predator Sense 1.0.1563.0 Live Update asks its local XSense service (`localhost:15152`,
+Read-only research into whether Atlas 8 BIOS 1.05 changes the controller; nothing was run or
+flashed. Predator Sense 1.0.1563.0 Live Update asks its local XSense service (`localhost:15152`,
 `driver/getUpdateList`), which is `AcerService.exe` in the Predator Sense package, a bundled Node
-service. It fetches `GET https://backend-prd-imub2p4wyq-uc.a.run.app/xsense/api/getDriverList3/{model}/{serial}`
-(or `getDriverList2/{model}`) with an HS256 bearer token built from a constant in the service. The model
+service. It fetches
+`GET https://backend-prd-imub2p4wyq-uc.a.run.app/xsense/api/getDriverList3/{model}/{serial}` (or
+`getDriverList2/{model}`) with an HS256 bearer token built from a constant in the service. The model
 is SMBIOS `SystemProductName` (`Predator PA08-I51`). The response is `{"driver":[...],"bios":[...]}`
 with `global-download.acer.com` file paths, and a BIOS item is shown only when it is an INF capsule
-package. On 2026-11-08 the backend returned 31 drivers and an empty BIOS list for the PA08-I51 without
-a real serial, so a serial- or version-targeted rollout cannot be excluded.
+package. On 2026-11-08 the backend returned 31 drivers and an empty BIOS list for the PA08-I51
+without a real serial, so a serial- or version-targeted rollout cannot be excluded.
 
 Acer's website (`POST https://www.acer.com/us-en/DynamicContent/GetDriversAndManuals`,
-`{"ModelName":"Predator PA08-I51","Local":"en-us"}`) lists only BIOS 1.04 (2026-10-30, "Updates Insyde
-patches"); only the us-en site has the model. Winhanced reads that same website response through a
-browser and downloads from `global-download.acer.com`, so it offers nothing beyond it. A 1.05 file
-cannot be fetched without its per-file `acerid`, and the Microsoft Update Catalog lists no Atlas BIOS
-capsule or the 1.0.1000.4 component. The 1.04 package is an Insyde wrapper (`F7V_V1_04.exe`) whose
-packed payload was not decoded; no controller firmware identity was found in it.
+`{"ModelName":"Predator PA08-I51","Local":"en-us"}`) lists only BIOS 1.04 (2026-10-30, "Updates
+Insyde patches"); only the us-en site has the model. Winhanced reads that same website response
+through a browser and downloads from `global-download.acer.com`, so it offers nothing beyond it. A
+1.05 file cannot be fetched without its per-file `acerid`, and the Microsoft Update Catalog lists no
+Atlas BIOS capsule or the 1.0.1000.4 component. The 1.04 package is an Insyde wrapper
+(`F7V_V1_04.exe`) whose packed payload was not decoded; no controller firmware identity was found in
+it.
 
 Result: BIOS 1.05 was not obtainable, so its effect on the controller's USB product ID, release 0100
-or default mode is unknown, and no change to the release-0100 admission is proposed. Next evidence: the
-serial of a unit that was offered 1.05, or a tester's wsgm.log with the `acer-controller-mode`
+or default mode is unknown, and no change to the release-0100 admission is proposed. Next evidence:
+the serial of a unit that was offered 1.05, or a tester's wsgm.log with the `acer-controller-mode`
 collection line. Local responses and hashes are in ignored `artifacts/acer-bios/`.
 
 ## IPF session across Modern Standby, 2026-11-08
 
-The maintainer's log (build 3.0.2.2012) showed IPF lost after a wake. `AcerPowerService` closed the IPF
-session on suspend and reconnected on resume. `IntelIpfTransport.Connect` blocks for up to 10 s waiting
-for the server's AppCreate callback; after the wake the callback never came. That wait outran the 5 s
-resume deadline (TaskCanceled, "starting a fresh cycle"), and when it expired the fallback selected
-firmware and disabled and stopped `ipfsvc`. The same reconnect failed again across the next standby.
+The maintainer's log (build 3.0.2.2012) showed IPF lost after a wake. `AcerPowerService` closed the
+IPF session on suspend and reconnected on resume. `IntelIpfTransport.Connect` blocks for up to 10 s
+waiting for the server's AppCreate callback; after the wake the callback never came. That wait
+outran the 5 s resume deadline (TaskCanceled, "starting a fresh cycle"), and when it expired the
+fallback selected firmware and disabled and stopped `ipfsvc`. The same reconnect failed again across
+the next standby.
 
-The session now stays open across a standby, since IPF signals a connected client itself (AppSuspend,
-AppResume). Acquisition no longer opens it: a dead or missing session is opened by the next limit write
-before anything is dispatched, a failed open refuses that write, and the path never leaves IPF or stops
-`ipfsvc`. A refused write closes the session so the following one starts fresh. The write path logs what
-IPF or MSR 0x610 reports afterwards. Why the server withholds AppCreate after a standby was not
-established, and survival of a connected session across standby awaits an attended run.
+The session now stays open across a standby, since IPF signals a connected client itself
+(AppSuspend, AppResume). Acquisition no longer opens it: a dead or missing session is opened by the
+next limit write before anything is dispatched, a failed open refuses that write, and the path never
+leaves IPF or stops `ipfsvc`. A refused write closes the session so the following one starts fresh.
+The write path logs what IPF or MSR 0x610 reports afterwards. Why the server withholds AppCreate
+after a standby was not established, and survival of a connected session across standby awaits an
+attended run.
 
-The next log (build 3.0.3.2015) showed the kept session alive but refused after a wake: the first write
-failed with ESIF error 0x3EC, `ESIF_E_INVALID_HANDLE`. A reconnect then again never got AppCreate. Intel's
-archived source (github.com/intel/dptf) gives one explanation for each. ESIF hands out a new domain handle
-each time it creates a domain (`esif_uf_app.c`), and the transport kept the first one it saw, so it now
-follows ParticipantCreate/Destroy and DomainCreate/Destroy. And `ipfsrv_iface_cli.c` states that an app name
-must be unique or the connection is terminated; every connection used "WSGM" and a closing session stops
-asynchronously, so each connection now has its own name. A first request refused as invalid applied
-nothing, so it is the one write sent again, through a new session. The transport logs AppSuspend, AppResume
-and handle changes, and a failed connect says whether IPF asked the name and whether the session closed.
-This is the Linux archive, not the Windows 2.3 build, and no attended run has confirmed either cause yet.
-The controller re-enumerates just after a wake, so a handle opened moments earlier fails
-`HidD_FlushQueue` with error 1167. Before anything is sent, the command lane now reopens the same
-collection on its physical port, for up to 3 s, instead of faulting lighting for the session.
+The next log (build 3.0.3.2015) showed the kept session alive but refused after a wake: the first
+write failed with ESIF error 0x3EC, `ESIF_E_INVALID_HANDLE`. A reconnect then again never got
+AppCreate. Intel's archived source (github.com/intel/dptf) gives one explanation for each. ESIF
+hands out a new domain handle each time it creates a domain (`esif_uf_app.c`), and the transport
+kept the first one it saw, so it now follows ParticipantCreate/Destroy and DomainCreate/Destroy. And
+`ipfsrv_iface_cli.c` states that an app name must be unique or the connection is terminated; every
+connection used "WSGM" and a closing session stops asynchronously, so each connection now has its
+own name. A first request refused as invalid applied nothing, so it is the one write sent again,
+through a new session. The transport logs AppSuspend, AppResume and handle changes, and a failed
+connect says whether IPF asked the name and whether the session closed. This is the Linux archive,
+not the Windows 2.3 build, and no attended run has confirmed either cause yet. The controller
+re-enumerates just after a wake, so a handle opened moments earlier fails `HidD_FlushQueue` with
+error 1167. Before anything is sent, the command lane now reopens the same collection on its
+physical port, for up to 3 s, instead of faulting lighting for the session.
 
 ## Focus Zoom disabled by maintainer decision, 2026-11-08
 
@@ -235,15 +260,13 @@ recorded start types. No driver package or binary is removed.
 
 Attended read-only evidence on the maintainer's PA08-I51, PTL F900_PTG:
 
-- AFZsvc was Automatic/Running, PID 4424, under
-  `focuszoomservice.inf_amd64_88fac5f6103aea02`. Its INF declares DriverVer
-  `07/17/2026,1.0.1000.3`, software component
+- AFZsvc was Automatic/Running, PID 4424, under `focuszoomservice.inf_amd64_88fac5f6103aea02`. Its
+  INF declares DriverVer `07/17/2026,1.0.1000.3`, software component
   `SWC\VEN_1025&DEV_165F&11&SWComp_AcerFocusZoomDriver` and `AddService=AFZsvc`.
-- Process ancestry was AFZsvc -> FocusZoomUserService (PID 13068) -> FocusZoomUserService
-  `launch` (13076) -> FocusZoom (13448). No FocusZoomUserService Windows service/template, Focus
-  Zoom Run entry or scheduled task was installed. Missing optional services are skipped.
-- SHA256: FocusZoomService.exe
-  `2CACBFDFAAA870B9956BD518D0A8270153D39DC649D8DB06581DDF00BD588DD8`,
+- Process ancestry was AFZsvc -> FocusZoomUserService (PID 13068) -> FocusZoomUserService `launch`
+  (13076) -> FocusZoom (13448). No FocusZoomUserService Windows service/template, Focus Zoom Run
+  entry or scheduled task was installed. Missing optional services are skipped.
+- SHA256: FocusZoomService.exe `2CACBFDFAAA870B9956BD518D0A8270153D39DC649D8DB06581DDF00BD588DD8`,
   FocusZoomUserService.exe `FC538AE8DE7172DF9677F830771FDD3497FE5CEE27D265770BA4EDDDC90431BE`,
   FocusZoom.exe `DB4D8FD67D143A6B681BECBBB7761310D0136B4DD978E217DFE9EAE47FE0B1EF`.
 - Static Ghidra 12.1.4 inspection of FocusZoom.exe: `0x1400171f0` opens the first HID with usage
@@ -251,22 +274,22 @@ Attended read-only evidence on the maintainer's PA08-I51, PTL F900_PTG:
   ReadFile, interprets 9A zoom events and 9B stick reports, and has 500 ms open-failure / 1500 ms
   read-failure backoff. It drives Windows.Graphics.Capture and D3D11. That is controller-related
   input, but does not establish that the base controller requires the service.
-- A 20 s snapshot measured 0 CPU seconds for all four processes, 0% sampled GPU engine use and
-  zero sampled I/O. A longer 10 s sampler caught FocusZoom.exe at 1.15625 CPU seconds in
-  10.3513 s. This is activity, not a reproduced extreme-power fault or a demonstrated busy loop.
-- SRUM export attributed raw CPU-energy sums of 720267 to FocusZoomUserService (Nov 6-8),
-  153565 to FocusZoom.exe (Nov 8 14:35-15:29) and 2356 to FocusZoomService (same hour).
-  These are unconverted SRUM values with different aggregation windows, not watts. SleepStudy
-  also lists the user service. No Focus Zoom event provider/channel was registered; Application
-  Error 1000 records a FocusZoom.exe fail-fast crash at 10:42:13, exception C0000409, offset 28CED.
-  Text logging is conditional on `HKLM\SOFTWARE\OEM\FocusZoom\Log`; that key was absent.
+- A 20 s snapshot measured 0 CPU seconds for all four processes, 0% sampled GPU engine use and zero
+  sampled I/O. A longer 10 s sampler caught FocusZoom.exe at 1.15625 CPU seconds in 10.3513 s. This
+  is activity, not a reproduced extreme-power fault or a demonstrated busy loop.
+- SRUM export attributed raw CPU-energy sums of 720267 to FocusZoomUserService (Nov 6-8), 153565 to
+  FocusZoom.exe (Nov 8 14:35-15:29) and 2356 to FocusZoomService (same hour). These are unconverted
+  SRUM values with different aggregation windows, not watts. SleepStudy also lists the user service.
+  No Focus Zoom event provider/channel was registered; Application Error 1000 records a
+  FocusZoom.exe fail-fast crash at 10:42:13, exception C0000409, offset 28CED. Text logging is
+  conditional on `HKLM\SOFTWARE\OEM\FocusZoom\Log`; that key was absent.
 
-Live disable recorded AFZsvc's original start type 2 in WSGM's takeover journal before changing
-SCM, then stopped/disabled it and ended the authorized Focus Zoom children. The driver package
-remains installed. XInputGetState from an unallowlisted diagnostic process returned 1167 for every
-slot while WSGM's HidHide cloak was active, so this does not prove a controller failure or pass.
-Attended button acceptance and uninstall recovery remain to be exercised. Raw local evidence is
-under WSGM `artifacts/focuszoom-2026-11-08`; it is not library build input.
+Live disable recorded AFZsvc's original start type 2 in WSGM's takeover journal before changing SCM,
+then stopped/disabled it and ended the authorized Focus Zoom children. The driver package remains
+installed. XInputGetState from an unallowlisted diagnostic process returned 1167 for every slot
+while WSGM's HidHide cloak was active, so this does not prove a controller failure or pass. Attended
+button acceptance and uninstall recovery remain to be exercised. Raw local evidence is under WSGM
+`artifacts/focuszoom-2026-11-08`; it is not library build input.
 
 ## AFZsvc left startable, 2026-11-08 (superseded)
 
@@ -649,8 +672,8 @@ lists every target, proof limit and restoration step.
 
 The subsequent WSGM `OtherManagers` integration adds exact-Atlas Full-mode takeover of those ten
 services, three tasks, two MSIX families and the dedicated controller keyboard (since 2026-11-07 the
-desktop family is left out; see the section above). Those identities are
-recorded in `AcerModels.ManagerApps`, bound to the PA08-I51 definition, and reach the host through
+desktop family is left out; see the section above). Those identities are recorded in
+`AcerModels.ManagerApps`, bound to the PA08-I51 definition, and reach the host through
 `HandheldDevice.ManagerApps`. It records changes before dispatch, propagates restart requirements to
 setup, rechecks accepted policy at startup and every five minutes, and restores recorded changes on
 uninstall. This is host application policy; LibHandheld continues to own rear-button mode and

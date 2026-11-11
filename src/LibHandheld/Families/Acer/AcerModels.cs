@@ -22,7 +22,7 @@ internal static class AcerModels
 
     /// <summary>The Atlas fan presets, from the 2026-10-29 calibration in PROVENANCE.md.</summary>
     /// <remarks>
-    ///     Near-inaudible shapes up to 60 °C with slow, averaged smoothing against the noisy EC package
+    ///     Near-inaudible shapes up to 60 Â°C with slow, averaged smoothing against the noisy EC package
     ///     temperature; "Fan curve presets (2026-10-29)" in PROVENANCE.md derives every value.
     /// </remarks>
     private static FanCurvePresetDuties AtlasFanCurvePresets { get; } = new()
@@ -158,14 +158,14 @@ internal static class AcerModels
     ///     Its EC endpoint, command lane, OEM collections, BIOS V1.03 and Acer service binaries match the
     ///     measured Atlas 8; "PA07-I51 evidence" in PROVENANCE.md records the comparison. Extended VRR is absent
     ///     because that override needs a 256-byte EDID with a DisplayID block, and this panel's is 128 bytes.
-    ///     Unverified until an attended pass accepts every control.
+    ///     Hardware accepted by the maintainer on 2026-11-11; remaining fallbacks are recorded in provenance.
     /// </remarks>
     internal static ProfiledDeviceModel Atlas7 { get; } = new()
     {
         Definition = new HandheldDefinition(Atlas7DefinitionId, FamilyId,
             "Acer Predator Atlas 7 (PA07-I51)", "acer-predator-atlas-8")
         {
-            HardwareVerified = false,
+            HardwareVerified = true,
             FanCurvePresets = AtlasFanCurvePresets
         },
         SourceFamilyId = "PredatorAtlas7",

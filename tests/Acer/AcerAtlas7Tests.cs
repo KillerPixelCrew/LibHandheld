@@ -4,8 +4,8 @@ using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Tests.Acer;
 
-/// These pin what the PA07-I51 definition admits from its read-only evidence. They do not establish
-/// hardware acceptance; the definition stays unverified until an attended pass.
+/// Pins the PA07-I51 definition and the maintainer-accepted hardware flag. Fixtures do not establish
+/// hardware acceptance; the attended evidence and acceptance are recorded in family provenance.
 public sealed class AcerAtlas7Tests
 {
     private static DeviceIdentitySnapshot Identity => new()
@@ -21,12 +21,12 @@ public sealed class AcerAtlas7Tests
     };
 
     [Fact]
-    public void ExactSystemAndBoardSelectTheUnverifiedAtlas7()
+    public void ExactSystemAndBoardSelectTheHardwareVerifiedAtlas7()
     {
         var definition = DeviceFamilies.Detect(Identity);
         Assert.NotNull(definition);
         Assert.Equal(AcerModels.Atlas7.Definition.Id, definition.Id);
-        Assert.False(definition.HardwareVerified);
+        Assert.True(definition.HardwareVerified);
         Assert.True(definition.HasController);
         Assert.True(definition.HardwareAccess.HasFlag(DeviceHardwareAccess.PawnIo));
         Assert.Equal(AcerModels.Atlas8.Definition.Id, DeviceFamilies.Detect(Atlas8Identity)?.Id);
