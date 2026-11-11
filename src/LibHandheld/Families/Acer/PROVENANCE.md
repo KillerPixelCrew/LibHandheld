@@ -115,12 +115,14 @@ by itself.
 Behavior chosen with the tester and revised in review: on the IPF path a limit pair runs on the quietest
 stock mode whose own sustained and boost limits both carry it (Auto, the default), or on a mode the user
 picked for its fan table, which rises only while the pair needs it. The pair is applied as requested, never
-clamped, and a pair no stock mode carries uses Manual. Picking a fan mode writes the pair WSGM last set
-again and never adopts a stock mode's own values; with no pair of WSGM's in force it selects the mode as it
-stands. Fan modes are refused on the firmware and PawnIO paths, where a stock mode would replace the limit.
-Standby leaves the mode alone. A full exit leaves Balanced rather than the mode found at start, because the
-takeover has disabled Acer's own software and nothing else could change it; a failed exit write makes the
-release unverified. Fan recovery hands a recorded Full Speed back as Auto: on this unit Full Speed was
+clamped, and a pair no stock mode carries uses Manual. A pair becomes WSGM's only once a write for it is
+dispatched, so a refused request is never replayed. Picking a fan mode writes the pair WSGM last set again
+and never adopts a stock mode's own values; with no pair of WSGM's in force it selects the mode as it
+stands, and Auto waits for the next limit. Fan modes are refused on the firmware and PawnIO paths, where a
+stock mode would replace the limit. A full exit leaves Balanced rather than the mode found at start,
+because the takeover has disabled Acer's own software and nothing else could change it. Balanced is
+journaled as the restore target before the first write, so the next start recovers it after a crash, a
+failed restore makes the release unverified, and standby leaves the mode alone. Fan recovery hands a recorded Full Speed back as Auto: on this unit Full Speed was
 restored at every exit and then recorded again as the original at the next start.
 
 Not run on the device: the thermal-limit reading (MSR 0x1B1 bit 0, read only) was added after the last

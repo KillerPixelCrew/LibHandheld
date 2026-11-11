@@ -77,7 +77,7 @@ internal sealed class AcerPowerService(
     private int? _chosenMode;
     // The pair WSGM last asked for, kept apart from a stock mode's own values so only it is ever re-applied.
     private (int Sustained, int Boost)? _ownedLimits;
-    private bool _exitUnverified;
+    private bool _standby;
     private bool _thermalStatus;
     private bool _unknownOriginalChanged;
     private ICpuPowerTransport? _cpu;
@@ -116,7 +116,8 @@ internal sealed class AcerPowerService(
     {
         token.ThrowIfCancellationRequested();
         _observed.Clear();
-        _exitUnverified = false;
+        var wake = _standby;
+        _standby = false;
         _ec = ec.Acquire();
         if (_ec is null)
         {
@@ -132,8 +133,13 @@ internal sealed class AcerPowerService(
 
         await context.Journal.ReconcileAsync<AcerProfileOriginal>(ProfileRecoveryId, context.Firmware,
             RestoreProfileAsync, token).ConfigureAwait(false);
-        await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
-            RestoreModeAsync, token).ConfigureAwait(false);
+        // The Atlas 7 keeps its mode across a standby; any other start recovers the journaled Balanced target.
+        if (!(wake && LimitsKeepFirmwareMode))
+        {
+            await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
+                RestoreModeAsync, token).ConfigureAwait(false);
+        }
+
         await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
             RestoreCpuAsync, token).ConfigureAwait(false);
         await _paths.ResumeAsync(context.Firmware, token).ConfigureAwait(false);
@@ -417,17 +423,23 @@ internal sealed class AcerPowerService(
         };
     }
 
-    /// <summary>States how much sustained power each stock fan table can carry, from the firmware's own limits.</summary>
+    /// <summary>States what Auto does and the limits each stock fan table carries, from the firmware's own values.</summary>
+    /// <remarks>Auto is a preference: with no limit of WSGM's in force it writes nothing until the next one.</remarks>
     private string? FanModeNote(CancellationToken token)
     {
         try
         {
-            var stock = Enumerable.Range(start: 0, count: ManualMode).Select(mode => (
-                    Name: CapabilityDescriptors.ChoiceLabel(_table.ModeName(mode)),
-                    Watts: (int)BinaryPrimitives.ReadUInt16LittleEndian(ReadProfile((byte)mode, token).AsSpan(6))))
+            var stock = Enumerable.Range(start: 0, count: ManualMode).Select(mode =>
+                {
+                    var profile = ReadProfile((byte)mode, token);
+                    return (Name: CapabilityDescriptors.ChoiceLabel(_table.ModeName(mode)),
+                        Watts: (int)BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(6)),
+                        Boost: (int)BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(10)));
+                })
                 .OrderBy(item => item.Watts).ToArray();
-            return string.Join(", ", stock.Select(item => $"{item.Name} up to {item.Watts} W"))
-                   + $". Above {stock[^1].Watts} W the fans use Manual, the loudest.";
+            return "Auto picks the quietest mode that carries the power limit WSGM sets, from its next one. "
+                   + string.Join(", ", stock.Select(item => $"{item.Name} up to {item.Watts}/{item.Boost} W"))
+                   + ". Above that the fans use Manual, the loudest.";
         }
         catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
         {
@@ -596,10 +608,23 @@ internal sealed class AcerPowerService(
         }
 
         var dispatched = false;
+        (int Sustained, int Boost)? requested = null;
         int? writtenSustained = null;
         int? writtenBoost = null;
         byte[]? edited = null;
         byte[]? manualProfile = null;
+
+        // A pair becomes WSGM's once a write for it is dispatched, and stays so after an uncertain outcome.
+        // A refusal or cancellation before that keeps the previous pair.
+        void Dispatched()
+        {
+            dispatched = true;
+            if (requested is { } pair)
+            {
+                _ownedLimits = pair;
+            }
+        }
+
         try
         {
             int selected;
@@ -633,12 +658,10 @@ internal sealed class AcerPowerService(
                     return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange, error!);
                 }
 
-                // Recorded before dispatch: after an uncertain write this is still the pair WSGM asked for.
-                _ownedLimits = (sustained, boost);
+                requested = (sustained, boost);
                 if (DirectCpuPower || (_maximum > 0 && _paths.ViaIpf))
                 {
-                    return await WriteCpuAsync(command, sustained, boost, () => dispatched = true, token)
-                        .ConfigureAwait(false);
+                    return await WriteCpuAsync(command, sustained, boost, Dispatched, token).ConfigureAwait(false);
                 }
 
                 // These bytes carry unrelated firmware fields, so never synthesize a blank profile, and
@@ -679,10 +702,10 @@ internal sealed class AcerPowerService(
                 // The hold rewrites the same profile and mode, so it never runs between these two writes.
                 if (edited is not null)
                 {
-                    WriteProfile(edited, token, () => dispatched = true);
+                    WriteProfile(edited, token, Dispatched);
                 }
 
-                SelectMode(selected, token, () => dispatched = true);
+                SelectMode(selected, token, Dispatched);
                 _held = selected == ManualMode && !DirectCpuPower ? manualProfile : null;
                 startHold = ClaimHoldLoop();
             }
@@ -754,10 +777,11 @@ internal sealed class AcerPowerService(
 
             if (LimitsKeepFirmwareMode && ModeForLimit(sustained, boost, token) is { } target)
             {
+                // Journaled before any write, so even a limit on the mode already running ends on Balanced.
+                await CaptureModeAsync(token).ConfigureAwait(false);
                 // Read fresh: the firmware can move its own mode, as on a change of power source.
                 if (target != ReadModeOrNull(token))
                 {
-                    await CaptureModeAsync(token).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
                     SelectMode(target, token, dispatched);
                     _mode = target;
@@ -945,7 +969,7 @@ internal sealed class AcerPowerService(
         }
         else if (_chosenMode is { } mode)
         {
-            result = SelectStockMode(command, mode, token);
+            result = await SelectStockModeAsync(command, mode, token).ConfigureAwait(false);
         }
         else
         {
@@ -965,12 +989,14 @@ internal sealed class AcerPowerService(
     }
 
     /// <summary>Selects a stock mode with its own limits, for a fan-mode choice made while WSGM owns no limit.</summary>
-    private CapabilityCommandResult SelectStockMode(CapabilityCommand command, int mode, CancellationToken token)
+    private async ValueTask<CapabilityCommandResult> SelectStockModeAsync(CapabilityCommand command, int mode,
+        CancellationToken token)
     {
         var dispatched = false;
         try
         {
             ClearHold();
+            await CaptureModeAsync(token).ConfigureAwait(false);
             SelectMode(mode, token, () => dispatched = true);
             ReadCurrent(token);
             return CommandResults.Applied(command);
@@ -1015,13 +1041,18 @@ internal sealed class AcerPowerService(
     }
 
     /// <summary>Retains the first readable original mode; an unreadable original does not prohibit a mode write.</summary>
-    /// <remarks>Unknown-original changes remain ReleasedUnverified because no restoration value can be invented.</remarks>
+    /// <remarks>
+    ///     Unknown-original changes remain ReleasedUnverified because no restoration value can be invented. The
+    ///     Atlas 7 journals Balanced instead of the original, on every path: with Acer's own software disabled by
+    ///     the takeover, nothing else could change a mode restored from before WSGM started. The full release,
+    ///     or the next start after a crash, restores it like any original; a standby leaves it pending.
+    /// </remarks>
     private async ValueTask CaptureModeAsync(CancellationToken token)
     {
-        // Where the limit picks the mode, WSGM ends on Balanced: with Acer's own software removed, nothing
-        // else could change a mode restored from before WSGM started.
-        if (LimitsKeepFirmwareMode && _paths.ViaIpf)
+        if (LimitsKeepFirmwareMode)
         {
+            await context.Journal.BeginAsync(ModeRecoveryId, context.Firmware,
+                new AcerModeOriginal { Mode = _table.ModeNumber("balanced") }, token).ConfigureAwait(false);
             return;
         }
 
@@ -1099,6 +1130,7 @@ internal sealed class AcerPowerService(
     public override ValueTask<DeviceServiceResult> SuspendAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
+        _standby = true;
         return ReleaseCoreAsync(keepIpf: true, token);
     }
 
@@ -1120,15 +1152,15 @@ internal sealed class AcerPowerService(
             {
                 await context.Journal.ReconcileAsync<AcerProfileOriginal>(ProfileRecoveryId, context.Firmware,
                     RestoreProfileAsync, token).ConfigureAwait(false);
-                await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
-                    RestoreModeAsync, token).ConfigureAwait(false);
-                if (!keepIpf)
+                // The Atlas 7's mode stays across a standby; its Balanced target waits for the full release.
+                if (!(keepIpf && LimitsKeepFirmwareMode))
                 {
-                    SettleOnBalanced(token);
+                    await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
+                        RestoreModeAsync, token).ConfigureAwait(false);
                 }
             }
 
-            return Set(_unknownOriginalChanged || _exitUnverified || context.Journal.HasUnrestoredMutation(ProfileRecoveryId)
+            return Set(_unknownOriginalChanged || context.Journal.HasUnrestoredMutation(ProfileRecoveryId)
                                               || context.Journal.HasUnrestoredMutation(ModeRecoveryId)
                                               || context.Journal.HasUnrestoredMutation(CpuRecoveryId)
                                               || _paths.HasUnrestored
@@ -1137,30 +1169,6 @@ internal sealed class AcerPowerService(
         finally
         {
             await CloseAsync(keepIpf).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>Leaves the firmware on Balanced when WSGM ends, because nothing would be left to change the mode.</summary>
-    /// <remarks>
-    ///     The mode is not journaled on this path, so a failure, even after dispatch, makes the release unverified
-    ///     instead of clean. It is never retried and never blocks the release.
-    /// </remarks>
-    private void SettleOnBalanced(CancellationToken token)
-    {
-        if (!LimitsKeepFirmwareMode || !_paths.ViaIpf)
-        {
-            return;
-        }
-
-        try
-        {
-            SelectMode(_table.ModeNumber("balanced"), token);
-            DeviceTrace.Change(ServiceId, "exit-mode", "WSGM ended; the firmware is left on balanced.");
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            _exitUnverified = true;
-            DeviceTrace.Warn(ServiceId, $"Balanced could not be set on exit: {exception.Message}");
         }
     }
 

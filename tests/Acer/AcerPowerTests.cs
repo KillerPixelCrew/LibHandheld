@@ -533,6 +533,7 @@ public sealed class AcerPowerTests
         Assert.Equal("turbo", ScenarioOf(service));
         Assert.Equal((15, 20), sessions[^1].Writes[^1]);
         await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Equal(1, ec.Mode);
     });
 
     [Fact]
@@ -551,6 +552,77 @@ public sealed class AcerPowerTests
 
         Assert.Equal(DeviceServiceState.ReleasedUnverified, release.State);
         Assert.Equal(2, ec.Mode);
+        Assert.DoesNotContain("mode:1", ec.Writes);
+
+        // Nothing retried it during that release; the next start recovers the pending target once.
+        ec.FailModeWrite = false;
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal(1, ec.Mode);
+        Assert.Single(ec.Writes, write => write == "mode:1");
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7ACrashBeforeExitIsRecoveredToBalancedAtTheNextStart() => WithIpfAsync(async _ =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var crashed = Atlas7Service(context, ec);
+        await crashed.AcquireAsync(Cycle(context), CancellationToken.None);
+        await crashed.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+        await crashed.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+
+        // No release: a new process reads the journal the first one left.
+        var restarted = Context(directory.Root);
+        var service = Atlas7Service(restarted, ec);
+        await service.AcquireAsync(Cycle(restarted), CancellationToken.None);
+
+        Assert.Equal(1, ec.Mode);
+        Assert.DoesNotContain(restarted.Journal.OutstandingEntries, entry => entry.ServiceId == "acer.operating-mode");
+        await service.ReleaseAsync(Cycle(restarted), CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7ARefusedLimitIsNeverReplayedByAFanModePick() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        var refused = await service.ExecuteAsync(Limit(20, 60), context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Rejected, refused.Outcome);
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(0, ec.Mode);
+        Assert.Empty(sessions);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }, failFirstOpen: true);
+
+    [Fact]
+    public Task Atlas7ACancelledLimitKeepsThePreviousPair() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        var result = await service.ExecuteAsync(Limit(25, 45), context.Firmware, cancelled.Token);
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+
+        Assert.Equal((20, 40), Assert.Single(sessions).Writes[^1]);
+        Assert.DoesNotContain((25, 45), sessions[0].Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
     });
 
     private static CapabilityCommand Path(string path)
@@ -581,7 +653,8 @@ public sealed class AcerPowerTests
         Assert.Equal(40, BinaryPrimitives.ReadUInt16LittleEndian(ec.Profile.AsSpan(10)));
         await service.ReleaseAsync(cycle, CancellationToken.None);
         Assert.Equal(original, ec.Profile);
-        Assert.Equal(0, ec.Mode);
+        // The Atlas 7 leaves Balanced, its journaled exit target, rather than the mode found at start.
+        Assert.Equal(1, ec.Mode);
     }
 
     [Fact]
@@ -595,7 +668,8 @@ public sealed class AcerPowerTests
         var mode = service.Descriptors.Single(item => item.CapabilityId == "power.scenario");
         Assert.Equal(DisplayKey.FirmwareFanMode, mode.Display.Key);
         Assert.Equal(new[] { "auto", "quiet", "balanced", "turbo", "manual" }, mode.Choices.Select(choice => choice.Value));
-        Assert.Equal("Quiet up to 25 W, Balanced up to 30 W, Turbo up to 35 W. Above 35 W the fans use Manual, the loudest.",
+        Assert.Equal("Auto picks the quietest mode that carries the power limit WSGM sets, from its next one. "
+                     + "Quiet up to 25/45 W, Balanced up to 30/65 W, Turbo up to 35/65 W. Above that the fans use Manual, the loudest.",
             mode.Display.Description);
         Assert.All(service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").PowerPresets,
             preset => Assert.Null(preset.ScenarioOnAc));
@@ -697,16 +771,23 @@ public sealed class AcerPowerTests
         Assert.Empty(context.Journal.OutstandingEntries);
     });
 
-    private static async Task WithIpfAsync(Func<List<RecordingIpf>, Task> body, bool failFirstWrite = false)
+    private static async Task WithIpfAsync(Func<List<RecordingIpf>, Task> body, bool failFirstWrite = false,
+        bool failFirstOpen = false)
     {
         var policy = IntelPowerPaths.PolicyControl;
         var present = IntelPowerPaths.IpfPresent;
         var open = IntelPowerPaths.OpenIpf;
         var sessions = new List<RecordingIpf>();
+        var opens = 0;
         IntelPowerPaths.PolicyControl = new RunningPolicy();
         IntelPowerPaths.IpfPresent = () => true;
         IntelPowerPaths.OpenIpf = _ =>
         {
+            if (failFirstOpen && opens++ == 0)
+            {
+                throw new IOException("The IPF server refused the session.");
+            }
+
             var session = new RecordingIpf { FailNextWrite = failFirstWrite && sessions.Count == 0 };
             sessions.Add(session);
             return session;
