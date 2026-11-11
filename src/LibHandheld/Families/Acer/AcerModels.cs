@@ -252,7 +252,7 @@ internal static class AcerModels
                 // The Atlas 8's services in its order. The firmware's mode table and the ring output differ.
                 ServiceFactories = [context => new AcerControllerModeService(context, controller),
                     context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open, AcerPowerTable.Atlas7),
-                    context => new AcerFanService(context, ec),
+                    context => new AcerFanService(context, ec, fullSpeedRestoresAuto: true),
                     context => new AcerBatteryService(context, ec), context => new AcerLightingService(context, controller, rings),
                     _ => new AcerLogoLightingService(darkenForSleep: true),
                     context => new IntelPdcPowerButtonService(context)]

@@ -372,7 +372,8 @@ internal sealed class AcerPowerService(
             descriptors.Insert(0, path);
         }
 
-        if (ThermalThrottle() is not null)
+        // Scoped to the model it was built for; the Atlas 8 reads the same register but was not tested with it.
+        if (LimitsKeepFirmwareMode && ThermalThrottle() is not null)
         {
             _thermalStatus = true;
             descriptors.Add(CapabilityDescriptors.Boolean(CapabilityIds.ThermalThrottle, CapabilityRole.Telemetry,
