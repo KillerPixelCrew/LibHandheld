@@ -89,7 +89,18 @@ internal sealed class AcerLightingService(ProfiledFeatureContext context, IAcerL
         }
 
         Observe(_lighting, written: normalized);
-        return await OpenRingsAsync(_lighting, token).ConfigureAwait(false) switch
+        return ResultFor(await OpenRingsAsync(_lighting, token).ConfigureAwait(false));
+    }
+
+    /// <summary>The service result an opened ring output leaves.</summary>
+    /// <remarks>
+    ///     An uncertain output stays Owned so the user can send lighting again, and carries a TransportFaulted
+    ///     reason on every control: WSGM's automatic desired-state restore skips an available control whose
+    ///     owner reports that, so nothing resends the output on its own.
+    /// </remarks>
+    internal DeviceServiceResult ResultFor(RingOutput output)
+    {
+        return output switch
         {
             RingOutput.Missing => Set(DeviceServiceState.Degraded,
                 Missing("The Atlas 7 ring lighting collection is unavailable.")),

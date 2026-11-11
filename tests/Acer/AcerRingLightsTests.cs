@@ -1,4 +1,5 @@
 using LibHandheld.Families.Acer;
+using LibHandheld.Internal.Services;
 
 namespace LibHandheld.Tests.Acer;
 
@@ -151,6 +152,15 @@ public sealed class AcerRingLightsTests
         Assert.Equal(AcerLightingService.RingOutput.Uncertain, outcome);
         Assert.False(port.Disposed);
         Assert.Single(port.Writes, report => report[0] == 0xA4);
+
+        // Every control stays usable for the user and carries the reason WSGM's automatic restore skips.
+        Assert.Equal(DeviceServiceState.Owned, service.ResultFor(outcome).State);
+        Assert.All(service.States, state =>
+        {
+            Assert.True(state.Available);
+            Assert.Null(state.ObservedValue);
+            Assert.Equal(CapabilityReasonCode.TransportFaulted, state.Reason?.Code);
+        });
 
         // Nothing resends it; the user's next lighting command writes the rings again.
         var dispatched = false;
