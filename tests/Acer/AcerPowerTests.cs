@@ -348,13 +348,498 @@ public sealed class AcerPowerTests
     {
         internal List<(int, int)> Writes { get; } = [];
         internal bool Disposed { get; private set; }
+        internal bool FailNextWrite { get; set; }
         public bool Alive => !Disposed;
 
         public CpuPowerLimits ReadLimits() => new(20, 40, 40);
 
-        public void WriteLimits(int sustainedWatts, int boostWatts) => Writes.Add((sustainedWatts, boostWatts));
+        public void WriteLimits(int sustainedWatts, int boostWatts)
+        {
+            Writes.Add((sustainedWatts, boostWatts));
+            if (FailNextWrite)
+            {
+                FailNextWrite = false;
+                throw new IOException("IPF dropped the reply.");
+            }
+        }
 
         public void Dispose() => Disposed = true;
+    }
+
+    // Selectors 0..3 of the PA07-I51 V1.03 EC, read 2026-11-09.
+    private static FixtureEc Atlas7Ec() => new() { SlotIds = [4, 0, 2, 5], SlotWatts = [35, 30, 25], SlotBoost = [65, 65, 45] };
+
+    private static AcerPowerService Atlas7Service(ProfiledFeatureContext context, FixtureEc ec)
+    {
+        return new AcerPowerService(context, new AcerLease<IAcerEcTransport>(() => ec), table: AcerPowerTable.Atlas7);
+    }
+
+    [Theory]
+    [InlineData("turbo", 0, 35)]
+    [InlineData("balanced", 1, 30)]
+    [InlineData("quiet", 2, 25)]
+    public Task Atlas7StockNamesSelectItsOwnFirmwareOrder(string name, int mode, int watts) => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        // With no limit of WSGM's in force, the mode is selected as it stands, with its own limits.
+        var result = await service.ExecuteAsync(FanMode(name), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(mode, ec.Mode);
+        Assert.Equal(name, ScenarioOf(service));
+        Assert.Equal(watts, service.States.Single(state => state.CapabilityId == "power.primary-limit").ObservedValue?.IntegerValue);
+        Assert.Empty(sessions);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7FanModeBeforeAnyLimitOfWsgmsWritesNoLimit() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        // A saved fan mode restored at start, before any limit is reasserted: the mode alone is written.
+        Assert.Equal(CommandOutcome.Applied,
+            (await service.ExecuteAsync(FanMode("quiet"), context.Firmware, CancellationToken.None)).Outcome);
+        Assert.Equal(CommandOutcome.Applied,
+            (await service.ExecuteAsync(FanMode("auto"), context.Firmware, CancellationToken.None)).Outcome);
+
+        Assert.Equal(["mode:2"], ec.Writes);
+        Assert.Equal("auto", ScenarioOf(service));
+        Assert.Empty(sessions);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7FanModeWithMissingReadingsStillWritesOnlyWhatItReports() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc { SlotIds = [4, 0, 2, 5], SlotWatts = [35, 30, 25], FailProfileRead = true };
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        var result = await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(["mode:0"], ec.Writes);
+        Assert.Empty(sessions);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7FanModeAfterAnUncertainLimitSendsWsgmsLimitAgain() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        var uncertain = await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Indeterminate, uncertain.Outcome);
+
+        var result = await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(0, ec.Mode);
+        Assert.Equal((20, 40), sessions[^1].Writes[^1]);
+        Assert.Equal(2, sessions.Count);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }, failFirstWrite: true);
+
+    [Fact]
+    public Task Atlas7IntegrationReEnableForgetsWsgmsLimit() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(0, ec.Mode);
+        Assert.Equal([(20, 40)], Assert.Single(sessions).Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7BoostAboveAModesOwnRunsOnAModeThatCarriesIt() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        // 20 W fits Quiet, but Quiet's own boost is 45 W, so 20/60 runs on Balanced as requested.
+        var result = await service.ExecuteAsync(Limit(20, 60), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(1, ec.Mode);
+        Assert.Equal((20, 60), Assert.Single(sessions).Writes[^1]);
+        // Preset matching compares the published pair, so a 20/60 preset still matches after the write.
+        Assert.Equal(20, service.States.Single(state => state.CapabilityId == "power.primary-limit").ObservedValue?.IntegerValue);
+        Assert.Equal(60, service.States.Single(state => state.CapabilityId == "power.boost-limit").ObservedValue?.IntegerValue);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7FanModesAreRefusedOffIpfAndLimitsCarryAcrossPathChanges() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+
+        Assert.Equal(CommandOutcome.Applied,
+            (await service.ExecuteAsync(Path("firmware"), context.Firmware, CancellationToken.None)).Outcome);
+        Assert.Equal(3, ec.Mode);
+        var writes = ec.Writes.Count;
+        var refused = await service.ExecuteAsync(FanMode("quiet"), context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Rejected, refused.Outcome);
+        Assert.Equal(writes, ec.Writes.Count);
+
+        // An AutoTDP step on the firmware path runs on Manual, as on the Atlas 8.
+        await service.ExecuteAsync(Limit(15, 20), context.Firmware, CancellationToken.None);
+        Assert.Equal(3, ec.Mode);
+
+        Assert.Equal(CommandOutcome.Applied,
+            (await service.ExecuteAsync(Path("ipf"), context.Firmware, CancellationToken.None)).Outcome);
+        Assert.Equal(0, ec.Mode);
+        Assert.Equal("turbo", ScenarioOf(service));
+        Assert.Equal((15, 20), sessions[^1].Writes[^1]);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Equal(1, ec.Mode);
+    });
+
+    [Fact]
+    public Task Atlas7AFailedBalancedExitIsReleasedUnverified() => WithIpfAsync(async _ =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+
+        ec.FailModeWrite = true;
+        var release = await service.ReleaseAsync(cycle, CancellationToken.None);
+
+        Assert.Equal(DeviceServiceState.ReleasedUnverified, release.State);
+        Assert.Equal(2, ec.Mode);
+        Assert.DoesNotContain("mode:1", ec.Writes);
+
+        // Nothing retried it during that release; the next start recovers the pending target once.
+        ec.FailModeWrite = false;
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal(1, ec.Mode);
+        Assert.Single(ec.Writes, write => write == "mode:1");
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7ACrashBeforeExitIsRecoveredToBalancedAtTheNextStart() => WithIpfAsync(async _ =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var crashed = Atlas7Service(context, ec);
+        await crashed.AcquireAsync(Cycle(context), CancellationToken.None);
+        await crashed.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+        await crashed.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+
+        // No release: a new process reads the journal the first one left.
+        var restarted = Context(directory.Root);
+        var service = Atlas7Service(restarted, ec);
+        await service.AcquireAsync(Cycle(restarted), CancellationToken.None);
+
+        Assert.Equal(1, ec.Mode);
+        Assert.DoesNotContain(restarted.Journal.OutstandingEntries, entry => entry.ServiceId == "acer.operating-mode");
+        await service.ReleaseAsync(Cycle(restarted), CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7ARefusedLimitIsNeverReplayedByAFanModePick() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        var refused = await service.ExecuteAsync(Limit(20, 60), context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Rejected, refused.Outcome);
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(0, ec.Mode);
+        Assert.Empty(sessions);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }, failFirstOpen: true);
+
+    [Fact]
+    public Task Atlas7ACancelledLimitKeepsThePreviousPair() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        var result = await service.ExecuteAsync(Limit(25, 45), context.Firmware, cancelled.Token);
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+
+        Assert.Equal((20, 40), Assert.Single(sessions).Writes[^1]);
+        Assert.DoesNotContain((25, 45), sessions[0].Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    private static CapabilityCommand Path(string path)
+    {
+        return new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "power.backend",
+            RequestedValue = CapabilityValue.Choice(path), Deadline = Deadline.Never
+        };
+    }
+
+    [Fact]
+    public async Task Atlas7ManualEditAddressesSlotThreeAndRestoresItsRetainedBytes()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var original = (byte[])ec.Profile.Clone();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var result = await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None);
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(["profile", "mode:3"], ec.Writes.Take(2));
+        // The write carries the selector, not the identifier 5 that the slot reports on readback.
+        Assert.Equal(3, ec.Profile[5]);
+        Assert.Equal(20, BinaryPrimitives.ReadUInt16LittleEndian(ec.Profile.AsSpan(6)));
+        Assert.Equal(40, BinaryPrimitives.ReadUInt16LittleEndian(ec.Profile.AsSpan(10)));
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Equal(original, ec.Profile);
+        // The Atlas 7 leaves Balanced, its journaled exit target, rather than the mode found at start.
+        Assert.Equal(1, ec.Mode);
+    }
+
+    [Fact]
+    public async Task Atlas7OffersFirmwareFanModesWithEachModesCeiling()
+    {
+        using var directory = new TemporaryDirectory();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, Atlas7Ec());
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var mode = service.Descriptors.Single(item => item.CapabilityId == "power.scenario");
+        Assert.Equal(DisplayKey.FirmwareFanMode, mode.Display.Key);
+        Assert.Equal(new[] { "auto", "quiet", "balanced", "turbo", "manual" }, mode.Choices.Select(choice => choice.Value));
+        Assert.Equal("Auto picks the quietest mode that carries the power limit WSGM sets, from its next one. "
+                     + "Quiet up to 25/45 W, Balanced up to 30/65 W, Turbo up to 35/65 W. Above that the fans use Manual, the loudest.",
+            mode.Display.Description);
+        Assert.All(service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").PowerPresets,
+            preset => Assert.Null(preset.ScenarioOnAc));
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(20, 2)]
+    [InlineData(25, 2)]
+    [InlineData(30, 1)]
+    [InlineData(35, 0)]
+    [InlineData(40, 3)]
+    public Task Atlas7AutoRunsTheQuietestModeThatCarriesTheLimit(int watts, int mode) => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal("auto", ScenarioOf(service));
+
+        var result = await service.ExecuteAsync(Limit(watts, 45), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(CommandOutcome.Applied, result.Outcome);
+        Assert.Equal(mode, ec.Mode);
+        Assert.Equal("auto", ScenarioOf(service));
+        Assert.Equal((watts, 45), Assert.Single(sessions).Writes[^1]);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7HandPickedFanModeLeavesTheLimitAndRisesOnlyWhileTheLimitNeedsIt() => WithIpfAsync(async sessions =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(2, ec.Mode);
+
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+        Assert.Equal("turbo", ScenarioOf(service));
+        Assert.Equal(20, service.States.Single(state => state.CapabilityId == "power.primary-limit").ObservedValue?.IntegerValue);
+        Assert.Equal((20, 40), Assert.Single(sessions).Writes[^1]);
+
+        await service.ExecuteAsync(FanMode("quiet"), context.Firmware, CancellationToken.None);
+        await service.ExecuteAsync(Limit(30, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(1, ec.Mode);
+        Assert.Equal("quiet", ScenarioOf(service));
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(2, ec.Mode);
+
+        await service.ExecuteAsync(FanMode("auto"), context.Firmware, CancellationToken.None);
+        Assert.Equal("auto", ScenarioOf(service));
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7ModeTheFirmwareMovedItselfIsCorrectedByTheNextLimit() => WithIpfAsync(async _ =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+
+        ec.Mode = 0;
+        await service.ExecuteAsync(Limit(21, 40), context.Firmware, CancellationToken.None);
+
+        Assert.Equal(2, ec.Mode);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    });
+
+    [Fact]
+    public Task Atlas7StandbyKeepsTheModeAndEveryExitLeavesBalanced() => WithIpfAsync(async _ =>
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = Atlas7Service(context, ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(FanMode("turbo"), context.Firmware, CancellationToken.None);
+        await service.ExecuteAsync(Limit(20, 40), context.Firmware, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+
+        await service.SuspendAsync(cycle, CancellationToken.None);
+        Assert.Equal(0, ec.Mode);
+
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Equal(1, ec.Mode);
+        Assert.Empty(context.Journal.OutstandingEntries);
+    });
+
+    private static async Task WithIpfAsync(Func<List<RecordingIpf>, Task> body, bool failFirstWrite = false,
+        bool failFirstOpen = false)
+    {
+        var policy = IntelPowerPaths.PolicyControl;
+        var present = IntelPowerPaths.IpfPresent;
+        var open = IntelPowerPaths.OpenIpf;
+        var sessions = new List<RecordingIpf>();
+        var opens = 0;
+        IntelPowerPaths.PolicyControl = new RunningPolicy();
+        IntelPowerPaths.IpfPresent = () => true;
+        IntelPowerPaths.OpenIpf = _ =>
+        {
+            if (failFirstOpen && opens++ == 0)
+            {
+                throw new IOException("The IPF server refused the session.");
+            }
+
+            var session = new RecordingIpf { FailNextWrite = failFirstWrite && sessions.Count == 0 };
+            sessions.Add(session);
+            return session;
+        };
+        try
+        {
+            await body(sessions);
+        }
+        finally
+        {
+            IntelPowerPaths.PolicyControl = policy;
+            IntelPowerPaths.IpfPresent = present;
+            IntelPowerPaths.OpenIpf = open;
+        }
+    }
+
+    private static string? ScenarioOf(AcerPowerService service)
+    {
+        return service.States.Single(state => state.CapabilityId == "power.scenario").ObservedValue?.ChoiceValue;
+    }
+
+    private static CapabilityCommand Limit(int sustained, int boost)
+    {
+        return new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "power.primary-limit",
+            RequestedValue = CapabilityValue.Integer(sustained), PairedPowerLimitWatts = boost, Deadline = Deadline.Never
+        };
+    }
+
+    private static CapabilityCommand FanMode(string name)
+    {
+        return new CapabilityCommand
+        {
+            CommandId = Guid.NewGuid(), CapabilityId = "power.scenario",
+            RequestedValue = CapabilityValue.Choice(name), Deadline = Deadline.Never
+        };
+    }
+
+    [Fact]
+    public async Task TheAtlas8TableStillRefusesAnUnexpectedSlotIdentifier()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = Atlas7Ec();
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        var result = await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None);
+        Assert.NotEqual(CommandOutcome.Applied, result.Outcome);
+        Assert.Empty(ec.Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
     }
 
     private static ProfiledFeatureContext Context(string directory)
@@ -388,6 +873,10 @@ public sealed class AcerPowerTests
         public bool IgnoreProfileWrite { get; set; }
         public bool FailModeRead { get; init; }
         public bool FailProfileRead { get; init; }
+        public byte[]? SlotIds { get; init; }
+        public int[]? SlotWatts { get; init; }
+        public int[]? SlotBoost { get; init; }
+        public bool FailModeWrite { get; set; }
         public List<string> Writes { get; } = [];
         public List<int> ProfileReads { get; } = [];
 
@@ -420,14 +909,15 @@ public sealed class AcerPowerTests
                     throw new IOException("Profile getter unavailable.");
                 }
                 Profile.CopyTo(reply, index: 0);
-                reply[5] = payload[5];
+                reply[5] = SlotIds?[payload[5]] ?? payload[5];
                 if (payload[5] < 3)
                 {
-                    BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(6), payload[5] switch
+                    BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(6), checked((ushort)(SlotWatts?[payload[5]] ?? payload[5] switch
                     {
                         0 => 35, 1 => 40, _ => 30
-                    });
-                    BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(10), 65);
+                    })));
+                    BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(10),
+                        checked((ushort)(SlotBoost?[payload[5]] ?? 65)));
                 }
             }
             else if (payload[2] == 1 && payload[4] == 2)
@@ -459,6 +949,11 @@ public sealed class AcerPowerTests
             else if (payload[2] == 1 && payload[4] == 1)
             {
                 dispatched?.Invoke();
+                if (FailModeWrite)
+                {
+                    throw new IOException("Lost reply after the mode was sent.");
+                }
+
                 Mode = payload[5];
                 Writes.Add($"mode:{Mode}");
             }

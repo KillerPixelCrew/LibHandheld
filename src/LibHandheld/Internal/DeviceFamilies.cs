@@ -64,7 +64,7 @@ internal static class DeviceFamilies
             SteamDeckModels.Match, SteamDeckModels.CreateEngine),
         new DeviceFamily(AcerModels.FamilyId, AcerModels.Definitions, AcerModels.Match, AcerModels.CreateEngine)
         {
-            PadsToHide = static (_, _) => AcerModels.Atlas8.Controller is { } controller ? StandardPads(controller) : []
+            PadsToHide = static (definition, _) => AcerModels.Profile(definition).Controller is { } controller ? StandardPads(controller) : []
         },
         Profiled(GenericModels.FamilyId, GenericModels.All, identity => GenericModels.Match(identity)?.Definition.Id)
     ]).Select(family => family with

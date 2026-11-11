@@ -15,14 +15,17 @@ namespace LibHandheld.Families.Acer;
 /// <remarks>
 ///     A1 lists targets, A2 selects one for the A3 capability query, and A4 sets the selected target's
 ///     effect, brightness, speed, RGB and LED mask. There is no current-lighting getter. Values start
-///     unknown and are published only after an explicit complete write. Nothing is sent on stop.
+///     unknown and are published only after an explicit complete write. Nothing is sent on stop. The Atlas 7
+///     also turns a logo commanded this session off for sleep.
 /// </remarks>
-internal sealed class AcerLogoLightingService() : ProfiledFeatureService("acer-logo-lighting")
+internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : ProfiledFeatureService("acer-logo-lighting")
 {
     private const string Instance = "logo";
     private readonly ObservedValues _observed = new();
     private IReadOnlyList<CapabilityDescriptor> _controls = [];
     private SafeFileHandle? _handle;
+    private bool _commanded;
+    private bool _darkened;
     private string _effect = "solid";
     private int _brightness = 100;
     private int _speed = 5;
@@ -95,6 +98,7 @@ internal sealed class AcerLogoLightingService() : ProfiledFeatureService("acer-l
                 CapabilityDescriptors.Color(CapabilityIds.LightingColor, Instance,
                     CapabilityDescriptors.Label("Rear logo color"), read: false, CapabilityPersistence.Volatile)
             ];
+            RelightAfterSleep();
             return ValueTask.FromResult(Set(DeviceServiceState.Owned));
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
@@ -104,6 +108,40 @@ internal sealed class AcerLogoLightingService() : ProfiledFeatureService("acer-l
             _controls = [];
             return ValueTask.FromResult(Set(DeviceServiceState.Passive, Missing(exception.Message)));
         }
+    }
+
+    /// <summary>Relights a logo blacked out for sleep with the values last commanded.</summary>
+    private void RelightAfterSleep()
+    {
+        if (!_darkened)
+        {
+            return;
+        }
+
+        _darkened = false;
+        var report = Packet(_effect, _brightness, _speed, _color);
+        if (!NativeHid.HidD_SetFeature(_handle!, report, report.Length))
+        {
+            DeviceTrace.Warn(ServiceId, "The rear logo could not be relit after sleep.");
+        }
+    }
+
+    /// <summary>Blacks out the Atlas 7's logo before the cycle stops; the Atlas 8 path is a plain release.</summary>
+    /// <remarks>A4 has no getter, so only a logo commanded this session has values to bring back.</remarks>
+    public override ValueTask<DeviceServiceResult> SuspendAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+        CancellationToken token)
+    {
+        if (darkenForSleep && _commanded && _handle is not null && State == DeviceServiceState.Owned)
+        {
+            var report = Packet("off", 0, 0, 0);
+            _darkened = NativeHid.HidD_SetFeature(_handle, report, report.Length);
+            if (!_darkened)
+            {
+                DeviceTrace.Warn(ServiceId, "The rear logo could not be blacked out for sleep.");
+            }
+        }
+
+        return ReleaseAsync(cycle, token);
     }
 
     private void ReadFeature(byte[] report)
@@ -173,6 +211,7 @@ internal sealed class AcerLogoLightingService() : ProfiledFeatureService("acer-l
             _brightness = brightness;
             _speed = speed;
             _color = color;
+            _commanded = true;
             _observed.Written(CapabilityIds.LightingEffect, CapabilityValue.Choice(effect), Instance);
             _observed.Written(CapabilityIds.LightingBrightness, CapabilityValue.Integer(brightness), Instance);
             _observed.Written(CapabilityIds.LightingSpeed, CapabilityValue.Integer(speed), Instance);

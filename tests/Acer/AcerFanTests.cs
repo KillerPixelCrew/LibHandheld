@@ -44,6 +44,42 @@ public sealed class AcerFanTests
     }
 
     [Fact]
+    public async Task AFullSpeedOriginalIsHandedBackAsFirmwareAuto()
+    {
+        using var directory = new TemporaryDirectory();
+        var wmi = new FixtureFanWmi();
+        wmi.Behavior[1] = 2;
+        var context = Context(directory.Root);
+        var service = new AcerFanService(context, new FixtureLease(new FixtureHealthEc()), () => wmi,
+            fullSpeedRestoresAuto: true);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Duty("sys", 40), context.Firmware, CancellationToken.None);
+
+        var release = await service.ReleaseAsync(cycle, CancellationToken.None);
+
+        Assert.Equal(DeviceServiceState.Idle, release.State);
+        Assert.Equal(1, wmi.Behavior[1]);
+    }
+
+    [Fact]
+    public async Task OtherModelsStillHandBackARecordedFullSpeed()
+    {
+        using var directory = new TemporaryDirectory();
+        var wmi = new FixtureFanWmi();
+        wmi.Behavior[1] = 2;
+        var context = Context(directory.Root);
+        var service = new AcerFanService(context, new FixtureLease(new FixtureHealthEc()), () => wmi);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        await service.ExecuteAsync(Duty("sys", 40), context.Firmware, CancellationToken.None);
+
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+
+        Assert.Equal(2, wmi.Behavior[1]);
+    }
+
+    [Fact]
     public async Task DutyBelowTheStableFloorIsRejectedWithoutAWrite()
     {
         using var directory = new TemporaryDirectory();

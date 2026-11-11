@@ -55,7 +55,7 @@ internal sealed class AcerButtonSource : IProfiledOemSource, IHidButtonObserver
             _dinput = true;
             return true;
         }
-        var collections = HidDevices.Enumerate(0x0502, [0xF901]).ToArray();
+        var collections = HidDevices.Enumerate(0x0502, [0xF901, AcerControllerTransport.Atlas7ProductId]).ToArray();
         var vendor = HidDevices.Unique(collections, AcerInputProtocol.IsVendorCollection);
         var qam = HidDevices.Unique(collections, AcerInputProtocol.IsQamCollection);
         if (vendor is null || qam is null

@@ -12,6 +12,7 @@ internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
 {
     internal const long PowerUnitMsr = 0x606;
     internal const long PackagePowerLimitMsr = 0x610;
+    internal const long PackageThermalStatusMsr = 0x1B1;
     private const ulong Pl1Power = 0x7FFFUL;
     private const ulong Pl2Power = 0x7FFFUL << 32;
     private const ulong Locked = 1UL << 63;
@@ -40,6 +41,16 @@ internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             return Decode(ReadMsr(_module, PackagePowerLimitMsr), _unitWatts);
+        }
+    }
+
+    /// <summary>IA32_PACKAGE_THERM_STATUS bit 0: the package's thermal monitor is active now.</summary>
+    public bool? ReadThermalThrottle()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return (ReadMsr(_module, PackageThermalStatusMsr) & 1) != 0;
         }
     }
 

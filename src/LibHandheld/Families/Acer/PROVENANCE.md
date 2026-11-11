@@ -1,5 +1,133 @@
 # Acer Predator Atlas 8
 
+## PA07-I51 evidence, 2026-11-09
+
+Unit: Acer Predator PA07-I51 (Atlas 7), board PTL / G310_PTG, BIOS V1.03, Predator Sense 1.0.1563.0.
+A standalone probe held Acer's EC mutex and sent only documented read queries, plus controller query
+26. Nothing in this section came from a write by the probe or by LibHandheld, and the definition stays
+`HardwareVerified = false`.
+
+Shared with the measured PA08-I51:
+
+- `AcerHardwareService.exe` and `AcerAgentService.exe` have the SHA-256 values in
+  POWER_FAN_PROTOCOL.md, so the vendor's EC code is byte-identical.
+- EC 1025:174B FF05:0001 with 65-byte feature reports, data version 0800, limit selectors 1/2/4
+  returning 10/40/65 W.
+- Controller 0502:F310 release 0100 has the F901 layout: MI_01 COL01 FFA0:0001 (64/64) and COL02
+  FFF1:00F5 (15); MI_02 COL01 keyboard, COL02 mouse, COL03 consumer, COL04 0088:0001 (3), COL05
+  FF5A:0001. Query 26 returned reply 27 with XInput 1 and rear Macro 0.
+
+Different, and why the Atlas 8 profile cannot be reused directly:
+
+| EC mode | Predator Sense | Slot id on readback | PL1 / field 8 / PL2 (W) |
+| ------- | -------------- | ------------------- | ----------------------- |
+| 0       | Turbo          | 4                   | 35 / 40 / 65            |
+| 1       | Balanced       | 0                   | 30 / 35 / 65            |
+| 2       | Quiet          | 2                   | 25 / 30 / 45            |
+| 3       | Manual         | 5                   | 40 / 45 / 65            |
+
+The tester selected Quiet, Balanced, Turbo and Manual in Predator Sense while the probe polled; the EC
+reported modes 2, 1, 0, 3. Turbo and Balanced are swapped against the PA08-I51 table, and slot ids do
+not equal selectors, so the existing readback check would refuse every Manual edit. Slot 3 held the
+40/65 W that Predator Sense stores for Manual; the Manual values were not changed during the watch.
+Slot id is informational: `14000EAA1`..`14000EAC2` pass one register to read, write and mode select,
+and the writer stores it at payload offset 5 (`14001AFB4`). Writes therefore address selector 3.
+
+Other differences: health mask 00CC against 02CD, about 4450 RPM on health indices 4 and 8 under
+load, and panel BOE0C33 NS070FH0-MX1. The DInput product is unmeasured, so every controller mode
+except XInput is refused before dispatch. Extended VRR is not offered: the panel's EDID is 128 bytes with
+no DisplayID block, and `ExtendedVrrPanel` is built for the Atlas 8's 256-byte layout.
+
+## PA07-I51 attended run, 2026-11-09
+
+The first definition composed the controller, OEM input, motion and power only, and left Acer's software
+running beside it for one build before the takeover was added. On that build, with Acer's services off,
+WSGM reported every service Owned and created the managed Steam Deck target. IPF limit writes of 20/45,
+10/45 and 40/45 W read back exactly. Selecting Balanced set EC mode 1, confirming the mode table with a
+real write. Crimson Desert ran through Steam Input with no GPU hang.
+
+Manual opened to 40/65 W ran the two fans at about 6700 RPM at 69 degrees C shortly after a game and about
+3000 RPM at 58 degrees C idle; Balanced was about 4200 RPM at 75 degrees C.
+
+A second attended run used the parity composition. All services reported Owned, and M2, M1 and Guide
+arrived as `9A04`, `9A02` and `9E 0000 0005`. Fan mode and duty commands applied. Suspend and resume
+completed with every service Owned again, and the saved limit re-applied on wake moved the EC from Balanced
+to Manual. Touch in Big Picture's main view failed while Focus Zoom ran and worked after it was disabled
+and the unit restarted. Later it stopped intermittently with Focus Zoom off; the cause is unknown.
+
+Known gaps: EC command 0B03 is not acknowledged, so no custom charge limit is offered. Optimized charging
+reported Applied, with no charging measurement. Motion axes, haptics, the QAM report and fan RPM during
+commands have not been individually confirmed. The 8 W power floor comes from the Atlas 8's attended trials;
+the lowest limit attended on this unit is 10 W.
+
+## PA07-I51 ring lighting, 2026-11-09
+
+Ring commands first reported Applied while the rings did not change, although the 883-byte section reads
+back in the Atlas 8 layout and the RAM write matches Predator Sense's controller path. Predator Sense uses
+that path only as a fallback. Static inspection of the installed `AcerHIDStickController.dll`, SHA-256
+`3836B8A5C200308EB9A47210BCAD89AFD1051DC3EBF51C83AFC32448E80E36EE`, shows its stick LED target fixed at
+`45` on an `FF5A` collection, using the rear logo's A1..A4 reports with the same A4 field order. It takes
+the LED count from the capability reply with a minimum of one. Steady color is one A4 per LED with a one-bit
+mask, 20 ms apart; an animated effect is one A4 with mask 0.
+
+WSGM opened `0502:F310` release `0100`, `FF5A:0001`, 11-byte features. A1 returned
+`A101450000000000000000` and A3 for target 45 returned `A345010E017F0001000000`: one LED and effect mask
+`0001007F`. The runtime keeps the section write and, on this model only, sends the A4 report after each
+edit. Before a suspend it blacks out the rings. At takeover an effect other than solid or breathing is written
+back as solid in its first color, because this output cannot draw the others. Each time the collection opens it
+shows that section, one write on this model, instead of relying on the host's restore. A rear logo is turned off
+for sleep and relit only if it was commanded in the session, since A4 has no getter and the firmware's own logo
+state could not be brought back.
+
+On the first build of this output the tester confirmed visible ring changes, whole-ring color changes, dark
+LEDs during sleep and relit LEDs after wake. Per-zone colors had no visible effect, as expected with one LED in the capability reply, so this
+model publishes only the whole-ring color. The rear logo was not reported separately.
+
+## PA07-I51 fan stall, firmware fan modes and exit state, 2026-11-10
+
+Same unit and firmware as the PA07-I51 sections above. The definition stays `HardwareVerified = false`.
+
+Why Software fans stutter: `SetGamingFanBehavior` took 108 to 120 ms, and on all 15 timed calls every one
+of the 14 CPU cores stopped at the same instant for about 101 ms. `SetGamingFanSpeed` (13 to 18 ms) and the
+getters (10 to 18 ms) did not stop them. The WMI method ends in a software SMI, so the pause is inside the
+firmware and software can only avoid the command. In one minute of World of Warcraft on Software fans, 62
+of 66 frame freezes (average 118 ms) overlapped a behavior command, and all 60 re-arms produced one. With
+both fans on Firmware the tester reported the stutter gone. The 1 Hz re-arm cannot simply be slowed: the
+2026-10-29 calibration shows a 3 s cadence oscillates. Sending one combined re-arm for both fans held them
+on this unit and halved the commands from two to one per second. It is not included, because the Atlas 8
+was not tested with it.
+
+Firmware fan tables: `GetGamingFanTable` byte 1 reports the active table with the EC slot ids, Manual 5,
+Quiet 2, Balanced 0, Turbo 4. The EC mode selects the table along with the mode's limits. Samples: Manual
+6780 RPM at 69 degrees C, Balanced 4203 RPM at 77, Quiet 3692 RPM at 77.
+
+Limits on a stock mode: IPF holds a limit below the mode's own. On firmware Quiet (own limits 25/45 W) at
+15/20 W, an AVX2 load on all 14 threads averaged 17.6 W over the first 15 seconds, peaked at 18.1 W and
+averaged 15.2 W over the last 30 seconds. That is one 90-second run at one limit. The same load cannot reach
+above about 25 W, so a mode's ceiling was not tested by pushing past it; WSGM treats the mode's sustained
+value as the ceiling.
+
+Power source changes: unplugging and plugging in moved the firmware between Quiet and Balanced, each time
+within one 2-second poll of WSGM's write (30/37 W at 08:37:15.16 read Balanced at 08:37:16.74; 20/37 W at
+08:37:38.78 read Quiet at 08:37:39.07). In 148 polls over five minutes the firmware never changed the mode
+by itself.
+
+Behavior chosen with the tester and revised in review: on the IPF path a limit pair runs on the quietest
+stock mode whose own sustained and boost limits both carry it (Auto, the default), or on a mode the user
+picked for its fan table, which rises only while the pair needs it. The pair is applied as requested, never
+clamped, and a pair no stock mode carries uses Manual. A pair becomes WSGM's only once a write for it is
+dispatched, so a refused request is never replayed. Picking a fan mode writes the pair WSGM last set again
+and never adopts a stock mode's own values; with no pair of WSGM's in force it selects the mode as it
+stands, and Auto waits for the next limit. Fan modes are refused on the firmware and PawnIO paths, where a
+stock mode would replace the limit. A full exit leaves Balanced rather than the mode found at start,
+because the takeover has disabled Acer's own software and nothing else could change it. Balanced is
+journaled as the restore target before the first write, so the next start recovers it after a crash, a
+failed restore makes the release unverified, and standby leaves the mode alone. Fan recovery hands a recorded Full Speed back as Auto: on this unit Full Speed was
+restored at every exit and then recorded again as the original at the next start.
+
+Not run on the device: the thermal-limit reading (MSR 0x1B1 bit 0, read only) was added after the last
+attended install, so only fixtures cover it.
+
 ## Controller firmware 1.05, 2026-11-08
 
 The "BIOS 1.05" update Predator Sense offered is controller firmware. On the maintainer's PA08-I51

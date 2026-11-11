@@ -26,7 +26,8 @@ public sealed class AcerCatalogTests
                 presets.AverageSamples));
         Assert.Same(presets, HandheldDevice.Definitions.Single(item => item.Id == AcerModels.Atlas8.Definition.Id)
             .FanCurvePresets);
-        Assert.All(HandheldDevice.Definitions.Where(item => item.Id != AcerModels.Atlas8.Definition.Id),
+        Assert.All(HandheldDevice.Definitions.Where(item => item.Id != AcerModels.Atlas8.Definition.Id
+                                                            && item.Id != AcerModels.Atlas7.Definition.Id),
             item => Assert.Null(item.FanCurvePresets));
     }
 
@@ -34,9 +35,11 @@ public sealed class AcerCatalogTests
     [Fact]
     public void ManagerAppsListEachFamilysOwnAppInFamilyOrderAndBindPredatorSenseToTheAtlas()
     {
-        Assert.Equal(["msi-center-m", "armoury-crate", "legion-space", "zotac-launcher", "acer-predator-handheld"],
+        Assert.Equal(["msi-center-m", "armoury-crate", "legion-space", "zotac-launcher", "acer-predator-handheld",
+                "acer-predator-handheld-atlas-7"],
             HandheldDevice.ManagerApps.Select(app => app.Id));
         var predator = HandheldDevice.ManagerApps.Single(app => app.Id == "acer-predator-handheld");
+        var atlas7 = HandheldDevice.ManagerApps.Single(app => app.Id == "acer-predator-handheld-atlas-7");
         Assert.Equal(AcerModels.Atlas8.Definition.Id, predator.DefinitionId);
         // Maintainer decision, 2026-11-08: disable Focus Zoom despite the reported controller risk.
         Assert.Equal(11, predator.Services.Count);
@@ -48,7 +51,7 @@ public sealed class AcerCatalogTests
         Assert.Equal(["ULICTekInc.PredatorSenseforHandHeldWidget_nt9dgb7efx6bt"], predator.PackageFamilies);
         Assert.Contains("PredatorHandheldLauncher", predator.Tasks);
         Assert.Equal(@"HID\VID_0502&PID_F901&MI_02&COL01", predator.DedicatedKeyboardDeviceId);
-        Assert.All(HandheldDevice.ManagerApps.Where(app => app != predator), app =>
+        Assert.All(HandheldDevice.ManagerApps.Where(app => app != predator && app != atlas7), app =>
         {
             Assert.Null(app.DefinitionId);
             Assert.Empty(app.PackageFamilies);

@@ -33,7 +33,7 @@ metadata rather than assuming every handheld has the same hardware or firmware f
 
 ## Device support
 
-The library contains **113 exact model definitions** across Acer, AYANEO, AYN, GPD, Legion Go, MSI
+The library contains **114 exact model definitions** across Acer, AYANEO, AYN, GPD, Legion Go, MSI
 Claw, ONEXPLAYER/AOKZOE, ROG Ally, Valve, Zotac and other supported models, with **107 glyph
 profiles**.
 

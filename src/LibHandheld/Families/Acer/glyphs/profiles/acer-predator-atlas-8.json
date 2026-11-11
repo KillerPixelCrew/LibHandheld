@@ -2,9 +2,10 @@
   "schemaVersion": 1,
   "profileId": "acer-predator-atlas-8",
   "displayName": "Acer Predator Atlas 8 (PA08-I51)",
-  "revision": 3,
+  "revision": 4,
   "exactDeviceIds": [
-    "acer-predator-atlas-8-pa08-i51"
+    "acer-predator-atlas-8-pa08-i51",
+    "acer-predator-atlas-7-pa07-i51"
   ],
   "sourceRevision": "hc-a250b19a4b7e-promptfont-b190b52ef647",
   "noticePath": "THIRD_PARTY_NOTICES.md",
