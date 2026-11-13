@@ -1,5 +1,25 @@
 # Acer Predator Atlas 8
 
+## PA08-I51 fresh-install Unknown values, 2026-11-13
+
+The maintainer supplied a fresh-install WSGM 3.1.0.2052 log from an Atlas 8 on BIOS V1.04 and
+reported Unknown for charge limit, fan control mode, current TDP mode and rear-logo speed. Every
+native service reached Owned, and subsequent lighting, power, fan and charging commands were
+accepted. The log does not contain the initial raw replies, so it does not establish their bytes.
+
+Source inspection showed that an unset `0B03` charge boundary, an unrecognized fan behavior or power
+mode, and the logo's absent value getter could leave these values unpublished indefinitely. The
+maintainer directed conservative initialization, specifically the firmware curve for fans. The Atlas
+8 composition now initializes missing fan modes to Auto, missing power mode to Balanced, and an
+unset native ceiling to disabled/100%. Readable optimized charging is retained; otherwise it is set
+Off. The logo receives one complete Off/brightness-100/speed-5/white report. Values are published
+only after accepted writes. An uncertain initialization is not automatically repeated on refresh or
+reacquisition. Atlas 7 retains its existing startup behavior.
+
+Fixtures cover missing and known values, accepted and failed writes, and reacquisition. The new
+startup writes have not received an attended hardware acceptance run. Earlier device acceptance and
+protocol evidence below are unchanged.
+
 ## PA07-I51 maintainer acceptance, 2026-11-11
 
 The maintainer accepted the Acer Predator PA07-I51 integration as hardware verified for 3.1.0, based

@@ -1,13 +1,9 @@
 using System.Buffers.Binary;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Windows;
-using Microsoft.Win32.SafeHandles;
 
 namespace LibHandheld.Families.Acer;
 
@@ -15,15 +11,19 @@ namespace LibHandheld.Families.Acer;
 /// <remarks>
 ///     A1 lists targets, A2 selects one for the A3 capability query, and A4 sets the selected target's
 ///     effect, brightness, speed, RGB and LED mask. There is no current-lighting getter. Values start
-///     unknown and are published only after an explicit complete write. Nothing is sent on stop. The Atlas 7
+///     unknown and are published only after an accepted complete write. The Atlas 8 establishes the initial
+///     Off effect, full brightness and speed-5 values once at start. Nothing is sent on stop. The Atlas 7
 ///     also turns a logo commanded this session off for sleep.
 /// </remarks>
-internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : ProfiledFeatureService("acer-logo-lighting")
+internal sealed class AcerLogoLightingService(bool darkenForSleep = false, bool initializeUnknownValues = false,
+    Func<IAcerLogoLightingTransport?>? open = null)
+    : ProfiledFeatureService("acer-logo-lighting")
 {
     private const string Instance = "logo";
     private readonly ObservedValues _observed = new();
+    private bool _initializationAttempted;
     private IReadOnlyList<CapabilityDescriptor> _controls = [];
-    private SafeFileHandle? _handle;
+    private IAcerLogoLightingTransport? _transport;
     private bool _commanded;
     private bool _darkened;
     private string _effect = "solid";
@@ -36,29 +36,25 @@ internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : Pro
         ProviderControls.Observed(control, _observed, State == DeviceServiceState.Owned, Reason)).ToArray();
     public override bool Suspendable => true;
 
-    public override ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+    public override async ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _observed.Clear();
-        // This is I2C HID (ENEK5130), so USB VID_/PID_ path filtering cannot discover it.
-        var collection = HidDevices.Unique(HidDevices.EnumerateAll(),
-            item => item.VendorId == 0x0CF2 && item.ProductId == 0x5130
-                    && item.UsagePage == 0xFF5A && item.Usage == 1 && item.ReleaseNumber == 1
-                    && item.FeatureLength == 11);
-        if (collection is null)
+        if (!initializeUnknownValues || !_initializationAttempted)
         {
-            _controls = [];
-            return ValueTask.FromResult(Set(DeviceServiceState.Passive,
-                Missing("The Atlas rear-logo lighting interface is unavailable.")));
+            _observed.Clear();
         }
-
         try
         {
-            _handle = HidDevices.Open(collection, overlapped: false);
+            _transport = (open ?? AcerLogoLightingTransport.TryOpen)();
+            if (_transport is null)
+            {
+                _controls = [];
+                return Set(DeviceServiceState.Passive, Missing("The Atlas rear-logo lighting interface is unavailable."));
+            }
             var report = new byte[11];
             report[0] = 0xA1;
-            ReadFeature(report);
+            _transport.Read(report);
             if (report[0] != 0xA1 || report[1] is < 1 or > 9 || !report.AsSpan(2, report[1]).Contains((byte)0x80))
             {
                 throw new IOException("The ENE lighting interface does not list the rear logo.");
@@ -66,13 +62,10 @@ internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : Pro
             Array.Clear(report);
             report[0] = 0xA2;
             report[1] = 0x80;
-            if (!NativeHid.HidD_SetFeature(_handle, report, report.Length))
-            {
-                throw new Win32Exception(Marshal.GetLastPInvokeError(), "The logo capability selection failed.");
-            }
+            _transport.Write(report);
             Array.Clear(report);
             report[0] = 0xA3;
-            ReadFeature(report);
+            _transport.Read(report);
             if (report[0] != 0xA3 || report[1] != 0x80 || report[2] != 1 || report[4] != 1)
             {
                 throw new IOException("The rear-logo capability response is unsupported.");
@@ -99,14 +92,28 @@ internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : Pro
                     CapabilityDescriptors.Label("Rear logo color"), read: false, CapabilityPersistence.Volatile)
             ];
             RelightAfterSleep();
-            return ValueTask.FromResult(Set(DeviceServiceState.Owned));
+            var result = Set(DeviceServiceState.Owned);
+            if (initializeUnknownValues && !_initializationAttempted)
+            {
+                _initializationAttempted = true;
+                _effect = "off";
+                var command = new CapabilityCommand
+                {
+                    CommandId = Guid.NewGuid(), CapabilityId = CapabilityIds.LightingSpeed, InstanceId = Instance,
+                    RequestedValue = CapabilityValue.Integer(_speed), Deadline = cycle.Deadline
+                };
+                var applied = await ExecuteAsync(command, string.Empty, token).ConfigureAwait(false);
+                DeviceTrace.Write(applied.Outcome == CommandOutcome.Applied ? DeviceTraceLevel.Info : DeviceTraceLevel.Warn,
+                    ServiceId, $"Initial rear logo: {applied.Outcome}; requested Off, brightness 100, speed 5. {applied.Reason?.Detail}");
+            }
+            return result;
         }
         catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
         {
-            _handle?.Dispose();
-            _handle = null;
+            _transport?.Dispose();
+            _transport = null;
             _controls = [];
-            return ValueTask.FromResult(Set(DeviceServiceState.Passive, Missing(exception.Message)));
+            return Set(DeviceServiceState.Passive, Missing(exception.Message));
         }
     }
 
@@ -120,9 +127,14 @@ internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : Pro
 
         _darkened = false;
         var report = Packet(_effect, _brightness, _speed, _color);
-        if (!NativeHid.HidD_SetFeature(_handle!, report, report.Length))
+        try
         {
-            DeviceTrace.Warn(ServiceId, "The rear logo could not be relit after sleep.");
+            _transport!.Write(report);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            _observed.Clear();
+            DeviceTrace.Warn(ServiceId, $"The rear logo could not be relit after sleep: {exception.Message}");
         }
     }
 
@@ -131,25 +143,23 @@ internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : Pro
     public override ValueTask<DeviceServiceResult> SuspendAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
         CancellationToken token)
     {
-        if (darkenForSleep && _commanded && _handle is not null && State == DeviceServiceState.Owned)
+        if (darkenForSleep && _commanded && _transport is not null && State == DeviceServiceState.Owned)
         {
             var report = Packet("off", 0, 0, 0);
-            _darkened = NativeHid.HidD_SetFeature(_handle, report, report.Length);
-            if (!_darkened)
+            try
             {
-                DeviceTrace.Warn(ServiceId, "The rear logo could not be blacked out for sleep.");
+                _transport.Write(report);
+                _darkened = true;
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                _darkened = false;
+                _observed.Clear();
+                DeviceTrace.Warn(ServiceId, $"The rear logo could not be blacked out for sleep: {exception.Message}");
             }
         }
 
         return ReleaseAsync(cycle, token);
-    }
-
-    private void ReadFeature(byte[] report)
-    {
-        if (!NativeHid.HidD_GetFeature(_handle!, report, report.Length))
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError(), "The logo capability query failed.");
-        }
     }
 
     /// <summary>Encodes the 11-byte A4 report. The final word is a one-LED mask, not a duration.</summary>
@@ -171,7 +181,7 @@ internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : Pro
     internal override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
         CancellationToken token)
     {
-        if (_handle is null || State != DeviceServiceState.Owned)
+        if (_transport is null || State != DeviceServiceState.Owned)
         {
             return ValueTask.FromResult(CommandResults.Rejected(command, CapabilityReasonCode.PrerequisiteMissing,
                 "The rear-logo lighting interface is unavailable."));
@@ -203,10 +213,7 @@ internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : Pro
             var report = Packet(effect, brightness, speed, color);
             token.ThrowIfCancellationRequested();
             dispatched = true;
-            if (!NativeHid.HidD_SetFeature(_handle, report, report.Length))
-            {
-                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Rear-logo write failed; effect unknown.");
-            }
+            _transport.Write(report);
             _effect = effect;
             _brightness = brightness;
             _speed = speed;
@@ -237,8 +244,8 @@ internal sealed class AcerLogoLightingService(bool darkenForSleep = false) : Pro
 
     internal override ValueTask DisposeAsync()
     {
-        _handle?.Dispose();
-        _handle = null;
+        _transport?.Dispose();
+        _transport = null;
         return ValueTask.CompletedTask;
     }
 }

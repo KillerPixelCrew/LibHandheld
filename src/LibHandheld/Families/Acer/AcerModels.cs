@@ -264,10 +264,11 @@ internal static class AcerModels
             // The mode owner supplies Combination rear reports; it must precede the dependent OEM readers.
             // This mode is lifecycle-owned, not a user-visible remapping option or a permanent ROM setting.
             ServiceFactories = [context => new AcerControllerModeService(context, controller),
-                context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open),
-                context => new AcerFanService(context, ec),
-                context => new AcerBatteryService(context, ec), context => new AcerLightingService(context, controller),
-                _ => new AcerLogoLightingService(),
+                context => new AcerPowerService(context, ec, IntelMsrPowerTransport.Open, initializeUnknownValues: true),
+                context => new AcerFanService(context, ec, initializeUnknownValues: true),
+                context => new AcerBatteryService(context, ec, initializeUnknownValues: true),
+                context => new AcerLightingService(context, controller),
+                _ => new AcerLogoLightingService(initializeUnknownValues: true),
                 context => new IntelPdcPowerButtonService(context)]
         });
     }

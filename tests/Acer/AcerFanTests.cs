@@ -9,6 +9,52 @@ namespace LibHandheld.Tests.Acer;
 public sealed class AcerFanTests
 {
     [Fact]
+    public async Task FirstStartSettlesOnlyUnknownFanModesToFirmwareAndKeepsThemAcrossReacquisition()
+    {
+        using var directory = new TemporaryDirectory();
+        var wmi = new FixtureFanWmi();
+        wmi.Behavior[1] = 0;
+        wmi.Behavior[2] = 2;
+        var context = Context(directory.Root);
+        var service = new AcerFanService(context, new FixtureLease(new FixtureHealthEc()), () => wmi,
+            initializeUnknownValues: true);
+        var cycle = Cycle(context);
+
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        Assert.Equal("automatic", Value(service, "fan.mode", "sys")?.ChoiceValue);
+        Assert.Equal("full-speed", Value(service, "fan.mode", "sys2")?.ChoiceValue);
+        Assert.Equal(["SetGamingFanBehavior:00040002"], wmi.Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        wmi.Behavior[1] = 0;
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal("automatic", Value(service, "fan.mode", "sys")?.ChoiceValue);
+        Assert.Single(wmi.Writes);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task UncertainInitialFanWriteIsNotRetriedByRefreshOrReacquisition()
+    {
+        using var directory = new TemporaryDirectory();
+        var wmi = new FixtureFanWmi { FailBehaviorWrites = true };
+        wmi.Behavior[1] = 0;
+        var context = Context(directory.Root);
+        var service = new AcerFanService(context, new FixtureLease(new FixtureHealthEc()), () => wmi,
+            initializeUnknownValues: true);
+        var cycle = Cycle(context);
+
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Null(Value(service, "fan.mode", "sys"));
+        await service.RefreshAsync(CancellationToken.None);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Single(wmi.Writes);
+        Assert.Null(Value(service, "fan.mode", "sys"));
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
+    [Fact]
     public async Task DutyWritesManualThenTheAbsoluteSpeedAndReArmsOnlyHeldFansEachTick()
     {
         using var directory = new TemporaryDirectory();

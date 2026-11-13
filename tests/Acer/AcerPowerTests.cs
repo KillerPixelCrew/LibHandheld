@@ -9,6 +9,53 @@ namespace LibHandheld.Tests.Acer;
 
 public sealed class AcerPowerTests
 {
+    [Fact]
+    public async Task UnknownInitialPowerModeIsSetToBalancedAndItsRealLimitsArePublished()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc { Mode = 255, ModeReportsUnknown = true };
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec, initializeUnknownValues: true);
+        var cycle = Cycle(context);
+
+        await service.AcquireAsync(cycle, CancellationToken.None);
+
+        Assert.Equal(["mode:0"], ec.Writes);
+        Assert.Equal("balanced", service.States.Single(state => state.CapabilityId == "power.scenario")
+            .ObservedValue?.ChoiceValue);
+        Assert.Equal(35, service.States.Single(state => state.CapabilityId == "power.primary-limit")
+            .ObservedValue?.IntegerValue);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        Assert.Single(ec.Writes);
+    }
+
+    [Fact]
+    public async Task AReadableInitialPowerModeIsKeptAndAnUncertainDefaultIsNeverRetried()
+    {
+        using var directory = new TemporaryDirectory();
+        var ec = new FixtureEc { Mode = 2 };
+        var context = Context(directory.Root);
+        var service = new AcerPowerService(context, () => ec, initializeUnknownValues: true);
+        var cycle = Cycle(context);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Empty(ec.Writes);
+        Assert.Equal("quiet", service.States.Single(state => state.CapabilityId == "power.scenario")
+            .ObservedValue?.ChoiceValue);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+
+        ec.Mode = 255;
+        ec.FailModeWrite = true;
+        service = new AcerPowerService(context, () => ec, initializeUnknownValues: true);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal(1, ec.ModeWriteAttempts);
+        Assert.Null(service.States.Single(state => state.CapabilityId == "power.scenario").ObservedValue);
+        await service.RefreshAsync(CancellationToken.None);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+        await service.AcquireAsync(cycle, CancellationToken.None);
+        Assert.Equal(1, ec.ModeWriteAttempts);
+        await service.ReleaseAsync(cycle, CancellationToken.None);
+    }
+
     [Theory]
     [InlineData("balanced", 0, 35)]
     [InlineData("turbo", 1, 40)]
@@ -872,11 +919,13 @@ public sealed class AcerPowerTests
         public bool FailProfileReply { get; set; }
         public bool IgnoreProfileWrite { get; set; }
         public bool FailModeRead { get; init; }
+        public bool ModeReportsUnknown { get; init; }
         public bool FailProfileRead { get; init; }
         public byte[]? SlotIds { get; init; }
         public int[]? SlotWatts { get; init; }
         public int[]? SlotBoost { get; init; }
         public bool FailModeWrite { get; set; }
+        public int ModeWriteAttempts { get; private set; }
         public List<string> Writes { get; } = [];
         public List<int> ProfileReads { get; } = [];
 
@@ -927,7 +976,7 @@ public sealed class AcerPowerTests
                     throw new IOException("Mode getter unavailable.");
                 }
 
-                reply[4] = checked((byte)Mode);
+                reply[4] = ModeReportsUnknown ? (byte)255 : checked((byte)Mode);
             }
             else if (payload[2] == 2 && payload[4] == 1)
             {
@@ -949,6 +998,7 @@ public sealed class AcerPowerTests
             else if (payload[2] == 1 && payload[4] == 1)
             {
                 dispatched?.Invoke();
+                ModeWriteAttempts++;
                 if (FailModeWrite)
                 {
                     throw new IOException("Lost reply after the mode was sent.");

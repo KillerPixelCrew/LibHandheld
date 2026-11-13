@@ -1,11 +1,8 @@
-using System.Globalization;
-using System.Management;
 using LibHandheld.Contracts;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
 using LibHandheld.Internal.Services;
-using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Acer;
 
@@ -16,7 +13,8 @@ namespace LibHandheld.Families.Acer;
 ///     The native control disables the separate optimized mode while it owns charging. Both originals
 ///     are retained and restored on release; calibration and charging bypass are never requested.
 /// </remarks>
-internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec)
+internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec,
+    bool initializeUnknownValues = false, Func<IAcerBatteryWmi?>? openWmi = null)
     : ProfiledFeatureService("acer-battery")
 {
     private static readonly IReadOnlyList<CapabilityDescriptor> Controls =
@@ -33,7 +31,8 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
             read: true, write: true, CapabilityPersistence.DevicePersistent)
     ];
     private readonly ObservedValues _observed = new();
-    private ManagementObject? _wmi;
+    private bool _initializationAttempted;
+    private IAcerBatteryWmi? _wmi;
     private bool _supported = true;
     private bool _unknownOriginalChanged;
     private bool _visibilityDecided;
@@ -52,8 +51,11 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _observed.Clear();
-        _wmi = WmiProvider.TryOpen("root\\WMI", "SELECT * FROM BatteryControl");
+        if (!initializeUnknownValues || !_initializationAttempted)
+        {
+            _observed.Clear();
+        }
+        _wmi = (openWmi ?? AcerBatteryWmi.TryOpen)();
         if (_wmi is null)
         {
             return Set(DeviceServiceState.Passive, Missing("Acer BatteryControl WMI is unavailable."));
@@ -78,7 +80,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
             RestoreAsync, token).ConfigureAwait(false);
         try
         {
-            var status = Read();
+            var status = _wmi.Read();
             if (!_visibilityDecided)
             {
                 _supported = _boundarySupported || status.Supported;
@@ -99,6 +101,39 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
 
         _visibilityDecided = true;
 
+        if (_supported && initializeUnknownValues && !_initializationAttempted)
+        {
+            _initializationAttempted = true;
+            if (_observed.Value(CapabilityIds.ChargeProtection) is null)
+            {
+                try
+                {
+                    _wmi.Write(enabled: false, token);
+                    _observed.Written(CapabilityIds.ChargeProtection, CapabilityValue.Boolean(false));
+                    DeviceTrace.Write(DeviceTraceLevel.Info, ServiceId, "Initial optimized charging: set to Off.");
+                }
+                catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+                {
+                    DeviceTrace.Warn(ServiceId, $"Initial optimized charging remains unknown; not retried: {exception.Message}");
+                }
+            }
+            if (_boundarySupported && _observed.Value(CapabilityIds.ChargeLimit) is null)
+            {
+                try
+                {
+                    // Initialize the unset native ceiling without changing a readable optimized-charging switch.
+                    var boundary = new AcerChargeBoundary(false, 100, AcerChargeBoundary.ResumePercent);
+                    _ec!.Exchange(boundary.Packet(), token);
+                    _observed.Written(CapabilityIds.ChargeLimit, CapabilityValue.Integer(100));
+                    DeviceTrace.Write(DeviceTraceLevel.Info, ServiceId, "Initial custom charge limit: set to 100 percent (no native ceiling).");
+                }
+                catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+                {
+                    DeviceTrace.Warn(ServiceId, $"Initial custom charge limit remains unknown; not retried: {exception.Message}");
+                }
+            }
+        }
+
         return Set(_supported ? DeviceServiceState.Owned : DeviceServiceState.Passive,
             _supported ? null : Missing("Firmware does not declare battery health control."));
     }
@@ -106,47 +141,6 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
     private AcerChargeBoundary? ReadBoundary(CancellationToken token)
     {
         return AcerChargeBoundary.Read(_ec!.Exchange(AcerChargeBoundary.Query(), token));
-    }
-
-    /// <summary>Queries battery 1/function 1 and decodes the provider's two-byte status plus five function bytes.</summary>
-    /// <remarks>
-    ///     Both uReturn bytes must be zero. uFunctionList bit 0 declares support; uFunctionStatus[0]
-    ///     gives 0/1 disabled/enabled. A supported but non-boolean value remains unknown rather than false.
-    /// </remarks>
-    private (bool Supported, bool? Enabled) Read()
-    {
-        using var input = _wmi!.GetMethodParameters("GetBatteryHealthControlStatus");
-        input["uBatteryNo"] = (byte)1;
-        input["uFunctionQuery"] = (byte)1;
-        input["uReserved"] = new byte[2];
-        using var output = WmiProvider.Invoke(_wmi, "GetBatteryHealthControlStatus", input);
-        if (output?["uReturn"] is not byte[] status || status.Length != 2 || status[0] != 0 || status[1] != 0
-            || output["uFunctionStatus"] is not byte[] functions || functions.Length != 5
-            || output["uFunctionList"] is not byte functionList)
-        {
-            throw new IOException("Acer battery health response is unavailable or rejected.");
-        }
-
-        var supported = (functionList & 1) != 0;
-        return (supported, supported && functions[0] <= 1 ? functions[0] == 1 : null);
-    }
-
-    /// <summary>Sets function-mask bit 0 for battery 1; zero uint16 uReturn is firmware acknowledgement.</summary>
-    /// <remarks>Reserved fields are zero as in the vendor call. No calibration or smart-charge function bits are sent.</remarks>
-    private void Write(bool enabled, CancellationToken token, Action? dispatched = null)
-    {
-        using var input = _wmi!.GetMethodParameters("SetBatteryHealthControl");
-        input["uBatteryNo"] = (byte)1;
-        input["uFunctionMask"] = (byte)1;
-        input["uFunctionStatus"] = enabled ? (byte)1 : (byte)0;
-        input["uReservedIn"] = new byte[5];
-        token.ThrowIfCancellationRequested();
-        dispatched?.Invoke();
-        using var output = WmiProvider.Invoke(_wmi, "SetBatteryHealthControl", input);
-        if (output?["uReturn"] is not { } result || Convert.ToUInt16(result, CultureInfo.InvariantCulture) != 0)
-        {
-            throw new IOException("Acer battery health write was not acknowledged; effect unknown.");
-        }
     }
 
     /// <summary>Retains the original charging policy and publishes each accepted explicit charging change.</summary>
@@ -179,13 +173,13 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
                         "Acer charge-boundary transport is unavailable.");
                 }
                 var original = await context.Journal.BeginAsync<AcerBatteryOriginal>(ServiceId, context.Firmware,
-                    () => Read().Enabled is { } protection ? new AcerBatteryOriginal
+                    () => _wmi.Read().Enabled is { } protection ? new AcerBatteryOriginal
                     {
                         Enabled = protection, UsesBoundary = true, Boundary = ReadBoundary(token)
                     } : null, token).ConfigureAwait(false);
                 _unknownOriginalChanged |= original?.Entry.OriginalState.Boundary is null;
                 // The OEM optimized mode can impose its own ceiling. The explicit percentage owns charging.
-                Write(enabled: false, token, () => dispatched = true);
+                _wmi.Write(enabled: false, token, () => dispatched = true);
                 var boundary = new AcerChargeBoundary(percent < 100, checked((byte)percent),
                     AcerChargeBoundary.ResumePercent);
                 _ec.Exchange(boundary.Packet(), token, () => dispatched = true);
@@ -200,7 +194,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
             }
 
             var recovery = await context.Journal.BeginAsync<AcerBatteryOriginal>(ServiceId, context.Firmware,
-                () => Read().Enabled is { } original ? new AcerBatteryOriginal
+                () => _wmi.Read().Enabled is { } original ? new AcerBatteryOriginal
                 {
                     Enabled = original, UsesBoundary = _boundarySupported,
                     Boundary = _boundarySupported ? ReadBoundary(token) : null
@@ -214,7 +208,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
                     () => dispatched = true);
                 _observed.Written(CapabilityIds.ChargeLimit, CapabilityValue.Integer(100));
             }
-            Write(enabled, token, () => dispatched = true);
+            _wmi.Write(enabled, token, () => dispatched = true);
             _observed.Written(CapabilityIds.ChargeProtection, CapabilityValue.Boolean(enabled));
             return CommandResults.Applied(command);
         }
@@ -237,11 +231,11 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
         {
             _ec!.Exchange(boundary.Packet(), token);
         }
-        Write(original.Enabled, token);
+        _wmi!.Write(original.Enabled, token);
         await context.Journal.CompleteRestoreAsync(ServiceId,
             () =>
             {
-                if (Read().Enabled is not { } enabled)
+                if (_wmi.Read().Enabled is not { } enabled)
                 {
                     return null;
                 }

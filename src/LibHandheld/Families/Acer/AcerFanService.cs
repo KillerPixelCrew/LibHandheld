@@ -28,15 +28,17 @@ namespace LibHandheld.Families.Acer;
 ///     Whether a recorded Full Speed original is handed back as Auto. Measured on the PA07-I51, where the
 ///     takeover leaves nothing running to lower the fans after release (PROVENANCE.md, 2026-11-10).
 /// </param>
+/// <param name="initializeUnknownValues">Settles unreadable modes to firmware Auto on the first acquisition.</param>
 internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<IAcerEcTransport> ec,
     Func<IAcerFanWmi?>? openWmi = null, Func<CancellationToken, ValueTask>? holdTick = null,
-    bool fullSpeedRestoresAuto = false)
+    bool fullSpeedRestoresAuto = false, bool initializeUnknownValues = false)
     : ProfiledFeatureService("acer-fans")
 {
     /// <summary>Re-arm cadence; the firmware adds its automatic level about five seconds after a behavior write.</summary>
     internal static readonly TimeSpan HoldInterval = TimeSpan.FromSeconds(1);
 
     private readonly ObservedValues _observed = new();
+    private bool _initializationAttempted;
     private readonly Lock _wmiGate = new();
     private readonly HashSet<string> _held = [];
     private readonly ConcurrentQueue<string> _lostHolds = new();
@@ -67,7 +69,10 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _observed.Clear();
+        if (!initializeUnknownValues || !_initializationAttempted)
+        {
+            _observed.Clear();
+        }
         _lostHolds.Clear();
         _wmi = (openWmi ?? AcerFanWmi.TryOpen)();
         _ec = ec.Acquire();
@@ -125,8 +130,28 @@ internal sealed class AcerFanService(ProfiledFeatureContext context, IAcerLease<
 
         Observe();
         ObserveRpm(token);
-        return Set(_fans.Count == 0 ? DeviceServiceState.Passive : DeviceServiceState.Owned,
+        var result = Set(_fans.Count == 0 ? DeviceServiceState.Passive : DeviceServiceState.Owned,
             _fans.Count == 0 ? Missing("The firmware did not report a supported fan group.") : null);
+        if (initializeUnknownValues && !_initializationAttempted && _fans.Count > 0)
+        {
+            // Consume the attempt before dispatch: a lost acknowledgement must never be retried on wake.
+            _initializationAttempted = true;
+            foreach (var fan in _fans.Where(fan => _observed.Value(CapabilityIds.FanMode, fan.Id) is null))
+            {
+                try
+                {
+                    // This establishes the baseline, rather than a temporary user override to restore later.
+                    Write("SetGamingFanBehavior", fan.PackBehavior(behavior: 1), token);
+                    _observed.Written(CapabilityIds.FanMode, CapabilityValue.Choice("automatic"), fan.Id);
+                    DeviceTrace.Write(DeviceTraceLevel.Info, ServiceId, $"Initial {fan.Name} fan mode: set to firmware Auto.");
+                }
+                catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+                {
+                    DeviceTrace.Warn(ServiceId, $"Initial {fan.Name} fan mode remains unknown; not retried: {exception.Message}");
+                }
+            }
+        }
+        return result;
     }
 
     internal override ValueTask RefreshTelemetryAsync(CancellationToken token)

@@ -31,7 +31,8 @@ internal sealed class AcerPowerService(
     ProfiledFeatureContext context,
     IAcerLease<IAcerEcTransport> ec,
     Func<ICpuPowerTransport>? openCpu = null,
-    AcerPowerTable? table = null)
+    AcerPowerTable? table = null,
+    bool initializeUnknownValues = false)
     : ProfiledFeatureService("acer-power")
 {
     private readonly AcerPowerTable _table = table ?? AcerPowerTable.Atlas8;
@@ -62,6 +63,7 @@ internal sealed class AcerPowerService(
 
     private readonly Lock _holdGate = new();
     private readonly ObservedValues _observed = new();
+    private bool _initializationAttempted;
     private byte[]? _held;
     private bool _holdRunning;
     private volatile bool _holdLost;
@@ -89,8 +91,8 @@ internal sealed class AcerPowerService(
 
     /// <summary>Creates the service over its own EC lane, for fixtures and standalone use.</summary>
     internal AcerPowerService(ProfiledFeatureContext context, Func<IAcerEcTransport?> open,
-        Func<ICpuPowerTransport>? openCpu = null)
-        : this(context, new AcerLease<IAcerEcTransport>(open), openCpu)
+        Func<ICpuPowerTransport>? openCpu = null, bool initializeUnknownValues = false)
+        : this(context, new AcerLease<IAcerEcTransport>(open), openCpu, initializeUnknownValues: initializeUnknownValues)
     {
     }
 
@@ -115,7 +117,10 @@ internal sealed class AcerPowerService(
         CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _observed.Clear();
+        if (!initializeUnknownValues || !_initializationAttempted)
+        {
+            _observed.Clear();
+        }
         var wake = _standby;
         _standby = false;
         _ec = ec.Acquire();
@@ -144,7 +149,40 @@ internal sealed class AcerPowerService(
             RestoreCpuAsync, token).ConfigureAwait(false);
         await _paths.ResumeAsync(context.Firmware, token).ConfigureAwait(false);
         ReadCurrent(token);
-        return Set(DeviceServiceState.Owned);
+        var result = Set(DeviceServiceState.Owned);
+        if (initializeUnknownValues && !_initializationAttempted)
+        {
+            _initializationAttempted = true;
+            if (_observed.Value(ModeId) is null)
+            {
+                try
+                {
+                    // An unreadable original cannot be restored. Balanced becomes the initial baseline itself.
+                    var balanced = _table.ModeNumber("balanced");
+                    SelectMode(balanced, token);
+                    _mode = balanced;
+                    _observed.Written(ModeId, ModeValue(balanced));
+                    DeviceTrace.Write(DeviceTraceLevel.Info, ServiceId, "Initial firmware power mode: set to Balanced.");
+                    try
+                    {
+                        var profile = ReadProfile(checked((byte)balanced), token);
+                        _observed.Written(CapabilityIds.PowerSustained,
+                            CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(6))));
+                        _observed.Written(CapabilityIds.PowerBoost,
+                            CapabilityValue.Integer(BinaryPrimitives.ReadUInt16LittleEndian(profile.AsSpan(10))));
+                    }
+                    catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+                    {
+                        DeviceTrace.Warn(ServiceId, $"Initial Balanced limits unavailable: {exception.Message}");
+                    }
+                }
+                catch (Exception exception) when (exception is not (OutOfMemoryException or OperationCanceledException))
+                {
+                    DeviceTrace.Warn(ServiceId, $"Initial firmware power mode remains unknown; not retried: {exception.Message}");
+                }
+            }
+        }
+        return result;
     }
 
     /// <summary>Opens the CPU register path; a locked register or missing module keeps the EC path.</summary>
