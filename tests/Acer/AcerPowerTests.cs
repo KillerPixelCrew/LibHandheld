@@ -359,6 +359,7 @@ public sealed class AcerPowerTests
                 (await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None)).Outcome);
             Assert.Same(kept, Assert.Single(sessions));
             Assert.Equal(new[] { (20, 40), (20, 40) }, kept.Writes);
+            Assert.Equal(0, kept.ReadCount);
 
             await service.ReleaseAsync(cycle, CancellationToken.None);
             Assert.True(kept.Disposed);
@@ -396,9 +397,14 @@ public sealed class AcerPowerTests
         internal List<(int, int)> Writes { get; } = [];
         internal bool Disposed { get; private set; }
         internal bool FailNextWrite { get; set; }
+        internal int ReadCount { get; private set; }
         public bool Alive => !Disposed;
 
-        public CpuPowerLimits ReadLimits() => new(20, 40, 40);
+        public CpuPowerLimits ReadLimits()
+        {
+            ReadCount++;
+            return new CpuPowerLimits(20, 40, 40);
+        }
 
         public void WriteLimits(int sustainedWatts, int boostWatts)
         {

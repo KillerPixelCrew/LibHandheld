@@ -830,7 +830,6 @@ internal sealed class AcerPowerService(
                 token.ThrowIfCancellationRequested();
                 dispatched();
                 await _paths.WriteIpfAsync(sustained, boost, token).ConfigureAwait(false);
-                ConfirmLimits("IPF", _paths.ReadIpf, sustained, boost);
                 _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
                 _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
                 DeviceTrace.Change(ServiceId, "cpu-power",
@@ -882,7 +881,7 @@ internal sealed class AcerPowerService(
             token.ThrowIfCancellationRequested();
             dispatched();
             await _paths.WriteIpfAsync(sustained, boost, token).ConfigureAwait(false);
-            ConfirmLimits("IPF", _paths.ReadIpf, sustained, boost);
+            // Publish the accepted pair without two more synchronous IPF primitives for diagnostics.
             _observed.Written(CapabilityIds.PowerSustained, CapabilityValue.Integer(sustained));
             _observed.Written(CapabilityIds.PowerBoost, CapabilityValue.Integer(boost));
             return CommandResults.Applied(command);

@@ -1,5 +1,16 @@
 # Acer Predator Atlas 8
 
+## IPF command-path reduction, 2026-11-15
+
+The maintainer reported device-wide stutter and audio glitches when opening Quick Access or changing
+TDP on the Atlas 8 IPF path. No timing trace establishes the blocking operation. The IPF write path
+previously followed its two enable and two limit primitives with two synchronous diagnostic reads.
+Those readbacks are removed; accepted PL1/PL2 values still publish immediately. Manual selection on
+every Atlas 8 limit write is retained as the measured firmware requirement documented below, as are
+the enable primitives and the existing session, standby and uncertain-write handling. This reduces
+each limit command from six IPF primitives to four. It does not establish a hardware stutter fix; an
+attended game/audio run remains required.
+
 ## PA08-I51 fresh-install Unknown values, 2026-11-13
 
 The maintainer supplied a fresh-install WSGM 3.1.0.2052 log from an Atlas 8 on BIOS V1.04 and

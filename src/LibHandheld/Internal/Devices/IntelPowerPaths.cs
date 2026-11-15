@@ -158,12 +158,6 @@ internal sealed class IntelPowerPaths(
         }
     }
 
-    /// <summary>PL1/PL2 as IPF reports them, for confirming a write in the log.</summary>
-    internal CpuPowerLimits ReadIpf()
-    {
-        return (_ipf ?? throw new InvalidOperationException("The IPF session is not open.")).ReadLimits();
-    }
-
     /// <summary>Opens the IPF session if it is not open or the server has closed it; nothing is written.</summary>
     /// <param name="token">The caller's deadline, which also ends the wait for the server.</param>
     internal async ValueTask EnsureIpfAsync(CancellationToken token)
