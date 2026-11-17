@@ -39,10 +39,43 @@ internal static class Program
         "Rear LEFT button: press and release three times",
         "Rear RIGHT button: press and release three times",
         "Both REAR buttons together: hold one second, release; repeat three times",
+        "Hold REAR LEFT; while holding it press A three times, then release REAR LEFT",
+        "Hold REAR LEFT; while holding it move the LEFT stick fully up and down and squeeze RT, then release everything",
+        "Hold REAR RIGHT; while holding it press D-pad UP three times and LB once, then release REAR RIGHT",
+        "After the REAR holds: press A three times with no rear button held",
         "Left stick: move UP, RIGHT, DOWN, LEFT to full travel, then release",
         "Right stick: move UP, RIGHT, DOWN, LEFT to full travel, then release",
         "Rollover: hold A + B + LB together for one second, then release",
         "Final neutral: release everything and wait three seconds"
+    ];
+
+    /// <summary>What the firmware reports in place of the frozen pad while a rear button is held.</summary>
+    /// <remarks>
+    ///     Each step names its controls in order, so the codes in report 9A and the axes in report 9B can
+    ///     be attributed by sequence. Every step holds REAR LEFT throughout.
+    /// </remarks>
+    private static readonly string[] RearHoldSteps =
+    [
+        "Hold REAR LEFT; while holding it press B, then X, then Y, then RB, one at a time; release REAR LEFT",
+        "Hold REAR LEFT; while holding it press LT fully, then L3 (left stick click), then R3; release REAR LEFT",
+        "Hold REAR LEFT; while holding it press View (left of screen), then Menu (right of screen); release REAR LEFT",
+        "Hold REAR LEFT; while holding it press D-pad RIGHT, then DOWN, then LEFT, then the UP+RIGHT diagonal; release REAR LEFT",
+        "Hold REAR LEFT; while holding it hold A, then also press B, release both; release REAR LEFT",
+        "Hold REAR LEFT; while holding it push the LEFT stick fully UP and back, then fully RIGHT and back; release REAR LEFT",
+        "Hold REAR LEFT; while holding it push the RIGHT stick fully UP and back, then fully RIGHT and back; release REAR LEFT",
+        "Push the LEFT stick fully UP and keep it there; press and hold REAR LEFT one second; release REAR LEFT, then the stick",
+        "Hold REAR LEFT; while holding it press the front LEFT extra, then the front RIGHT extra; release REAR LEFT"
+    ];
+
+    /// <summary>Rear keys in Macro mode, each mapped in RAM to a keyboard key: does a hold still freeze the pad?</summary>
+    private static readonly string[] RearMacroSteps =
+    [
+        "Rear RIGHT button: press and release three times",
+        "Rear LEFT button: press and release three times",
+        "Hold REAR LEFT; while holding it press A three times, move the LEFT stick fully up and down and squeeze RT; release everything",
+        "Hold REAR RIGHT; while holding it press D-pad UP three times and LB once; release REAR RIGHT",
+        "Both REAR buttons together: hold one second, release; repeat twice",
+        "Press A three times with no rear button held"
     ];
 
     private static int Main(string[] args)
@@ -50,9 +83,11 @@ internal static class Program
         Console.OutputEncoding = Encoding.UTF8;
         if (args.Contains("--help"))
         {
-            Console.WriteLine("AtlasButtonTest [--out <directory>] [--rear-test | --front-hold-test | --front-tap-test] [--self-check]");
+            Console.WriteLine("AtlasButtonTest [--out <directory>] [--rear-test | --rear-hold-test | --rear-macro-test | --front-hold-test | --front-tap-test] [--self-check]");
             Console.WriteLine("Interactive read-only Atlas 8 button capture. Enter starts/ends each step; S skips; Q saves and exits.");
-            Console.WriteLine("--rear-test temporarily acquires the native rear-button mode, tests three rear actions, then restores it.");
+            Console.WriteLine("--rear-test temporarily acquires the native rear-button mode, tests the rear buttons alone and held during other input, then restores it.");
+            Console.WriteLine("--rear-hold-test acquires the same mode and records every control used while a rear button is held (nine steps).");
+            Console.WriteLine("--rear-macro-test selects Macro rear-key mode with M1/M2 mapped to F23 / Ctrl+F23 in RAM, tests holds, then restores the originals.");
             Console.WriteLine("--front-hold-test attributes the two OEM holds and volume up/down to Raw Input devices (four steps).");
             Console.WriteLine("--front-tap-test checks the two front OEM taps and volume after disabling the OEM keyboard (four steps).");
             return 0;
@@ -64,11 +99,13 @@ internal static class Program
         }
 
         var outputIndex = Array.IndexOf(args, "--out");
-        var rearTest = args.Contains("--rear-test");
+        var rearHoldTest = args.Contains("--rear-hold-test");
+        var rearMacroTest = args.Contains("--rear-macro-test");
+        var rearTest = args.Contains("--rear-test") || rearHoldTest;
         var frontTapTest = args.Contains("--front-tap-test");
         var frontHoldTest = args.Contains("--front-hold-test") || frontTapTest;
-        if (rearTest && frontHoldTest
-            || args.Any(arg => arg is not ("--out" or "--rear-test" or "--front-hold-test" or "--front-tap-test") && (outputIndex < 0 || arg != args.ElementAtOrDefault(outputIndex + 1)))
+        if (rearTest && frontHoldTest || rearMacroTest && (rearTest || frontHoldTest)
+            || args.Any(arg => arg is not ("--out" or "--rear-test" or "--rear-hold-test" or "--rear-macro-test" or "--front-hold-test" or "--front-tap-test") && (outputIndex < 0 || arg != args.ElementAtOrDefault(outputIndex + 1)))
             || outputIndex >= 0 && outputIndex + 1 >= args.Length)
         {
             Console.Error.WriteLine("Usage: AtlasButtonTest [--out <directory>] [--rear-test]");
@@ -140,9 +177,10 @@ internal static class Program
             RawDeviceObservation? rawInput = null;
             AcerControllerModeService? modeService = null;
             DeviceCycleContext<ProfiledCycleIdentity>? modeCycle = null;
+            RearKeyRemap? remap = null;
             try
             {
-                if (frontHoldTest)
+                if (frontHoldTest || rearMacroTest)
                 {
                     rawInput = new RawDeviceObservation(capture);
                     report.RawInputAvailable = rawInput.StartAsync().AsTask().GetAwaiter().GetResult();
@@ -152,6 +190,12 @@ internal static class Program
                     {
                         capture.Fault("Keyboard shortcut observation could not start; HID capture remains available.");
                     }
+                }
+
+                if (rearMacroTest)
+                {
+                    remap = RearKeyRemap.ApplyAsync(report.Notes).GetAwaiter().GetResult();
+                    report.ModeAcquisition = "Macro remap applied";
                 }
 
                 if (rearTest)
@@ -164,7 +208,7 @@ internal static class Program
                         Journal = DeviceRecoveryJournal.OpenAsync(statePath, CancellationToken.None).AsTask().GetAwaiter().GetResult()
                     };
                     modeCycle = new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never, new(context.Firmware));
-                    modeService = new AcerControllerModeService(context);
+                    modeService = new AcerControllerModeService(context, AcerControllerTransport.Open);
                     var acquired = modeService.AcquireAsync(modeCycle.Value, CancellationToken.None).AsTask().GetAwaiter().GetResult();
                     report.ModeAcquisition = acquired.State.ToString();
                     if (acquired.State != DeviceServiceState.Owned)
@@ -200,9 +244,11 @@ internal static class Program
                 }
 
                 Console.WriteLine("ACER ATLAS 8 BUTTON TEST\n");
-                Console.WriteLine(rearTest
-                    ? "Temporary native rear-button mode acquired. The original mode will be restored when this tool exits."
-                    : "Read-only: no firmware, lighting, rumble, power or controller-mode writes.");
+                Console.WriteLine(rearMacroTest
+                    ? "Temporary Macro rear-key mode with RAM mappings applied (M1 = F23, M2 = Ctrl+F23). The originals are restored when this tool exits."
+                    : rearTest
+                        ? "Temporary native rear-button mode acquired. The original mode will be restored when this tool exits."
+                        : "Read-only: no firmware, lighting, rumble, power or controller-mode writes.");
                 Console.WriteLine("Use the KEYBOARD for Enter/S/Q. Keep the console focused; an OEM button may open Acer's app.");
                 Console.WriteLine("Close any game first. Existing Acer services stay running.");
                 Console.WriteLine("Each step: Enter to start, perform ONLY that action, release everything, Enter to finish.");
@@ -228,7 +274,7 @@ internal static class Program
                     "Front RIGHT Predator / QAM extra: hold THREE seconds, release, wait TWO seconds",
                     "Built-in VOLUME UP button: press once and release",
                     "Built-in VOLUME DOWN button: press once and release"
-                } : rearTest ? Steps.Where(step => step.Contains("REAR", StringComparison.OrdinalIgnoreCase)).ToArray() : Steps;
+                } : rearMacroTest ? RearMacroSteps : rearHoldTest ? RearHoldSteps : rearTest ? Steps.Where(step => step.Contains("REAR", StringComparison.OrdinalIgnoreCase)).ToArray() : Steps;
                 for (var index = 0; index < steps.Length && !cancelled && DateTime.UtcNow < deadline; index++)
                 {
                     Console.WriteLine($"[{index + 1}/{steps.Length}] {steps[index]}");
@@ -251,9 +297,16 @@ internal static class Program
                     var step = capture.End(steps[index], cancelled ? "cancelled" : key is null ? "timeout" : "recorded");
                     report.Steps.Add(step);
                     Console.WriteLine($"Saved {step.Events.Length} changes, {step.ControllerSamples} controller samples, {step.RawReports} HID reports.");
-                    foreach (var entry in step.Events.Where(item => item.Kind == "oem").Take(24))
+                    foreach (var entry in step.Events.Where(item => item.Kind is "oem" or "global-keyboard").Take(24))
                     {
                         Console.WriteLine($"  {entry.Control} {(entry.Down ? "DOWN" : "UP")}");
+                    }
+
+                    if (rearMacroTest)
+                    {
+                        var buttons = step.Events.Count(item => item.Kind == "controller" && item.Buttons != 0);
+                        Console.WriteLine($"  Pad changes with a button down: {buttons}; stick/trigger range: "
+                                          + $"{string.Join(" ", step.MinimumAxes.Zip(step.MaximumAxes, (low, high) => $"{low:0.00}..{high:0.00}"))}");
                     }
 
                     if (frontTapTest)
@@ -321,6 +374,22 @@ internal static class Program
                         }
                         finally
                         {
+                            if (remap is not null)
+                            {
+                                try
+                                {
+                                    remap.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                                    report.ModeRelease = "Originals restored";
+                                }
+                                catch (Exception exception)
+                                {
+                                    report.ModeRelease = "Restore failed";
+                                    report.Faults = [.. report.Faults, exception.Message];
+                                }
+
+                                Console.WriteLine($"Rear-key cleanup: {report.ModeRelease}");
+                            }
+
                             if (modeService is not null)
                             {
                                 var release = modeService.ReleaseAsync(modeCycle!.Value, CancellationToken.None).AsTask().GetAwaiter().GetResult();
@@ -411,6 +480,7 @@ internal sealed class TestReport
     public string[] AxisOrder { get; init; } = ["LeftStickX", "LeftStickY", "RightStickX", "RightStickY", "LeftTrigger", "RightTrigger"];
     public List<StepReport> Steps { get; } = [];
     public string[] Faults { get; set; } = [];
+    public List<string> Notes { get; } = [];
 }
 
 internal sealed record StepReport(string Action, string Status, CapturedEvent[] Events,
@@ -647,7 +717,7 @@ internal sealed class ShortcutObservation(CaptureBuffer capture) : IAsyncDisposa
                 var name = key.VirtualKey switch
                 {
                     0x09 => "Tab", 0x10 => "Shift", 0x11 => "Ctrl", 0x12 => "Alt",
-                    0x47 => "G", 0x5B => "LeftWin", 0x5C => "RightWin", 0x85 => "F22",
+                    0x47 => "G", 0x5B => "LeftWin", 0x5C => "RightWin", 0x85 => "F22", 0x86 => "F23",
                     0xA0 => "LeftShift", 0xA1 => "RightShift", 0xA2 => "LeftCtrl", 0xA3 => "RightCtrl",
                     0xA4 => "LeftAlt", 0xA5 => "RightAlt", _ => "Unknown"
                 };
@@ -659,7 +729,7 @@ internal sealed class ShortcutObservation(CaptureBuffer capture) : IAsyncDisposa
 
     private bool Observe(in KeyboardHookEvent key)
     {
-        if (key.VirtualKey is 0x09 or 0x10 or 0x11 or 0x12 or 0x47 or 0x5B or 0x5C or 0x85 or >= 0xA0 and <= 0xA5)
+        if (key.VirtualKey is 0x09 or 0x10 or 0x11 or 0x12 or 0x47 or 0x5B or 0x5C or 0x85 or 0x86 or >= 0xA0 and <= 0xA5)
         {
             if (!_events.Writer.TryWrite(key))
             {

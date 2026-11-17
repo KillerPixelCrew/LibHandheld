@@ -5,12 +5,14 @@ using LibHandheld.Internal.Windows;
 
 namespace LibHandheld.Families.Acer;
 
-/// <summary>The Atlas controller's dedicated command lane for reversible mode and volatile lighting changes.</summary>
+/// <summary>The Atlas controller's dedicated command lane for reversible mode and volatile profile changes.</summary>
 /// <remarks>
 ///     Measured USB 0502:F901 release 0100 (and 0105 after the 1.05 firmware), FFA0:0001, uses 64-byte input/output reports. The outer
 ///     header is 0F 00 00 3C for requests and 10 00 00 3C for replies. Profile offsets are big endian,
-///     unlike the separate EC transport. Only lighting RAM and immediate gamepad/rear-key modes are
-///     writable here: key mappings, sensor configuration, calibration and command 22 ROM save are excluded.
+///     unlike the separate EC transport. Only the RAM lighting section, the RAM mappings of the two rear
+///     keys and the immediate gamepad/rear-key modes are writable here: other key mappings, sensor
+///     configuration, calibration and command 22 ROM save are excluded. Command 21 writes RAM profile 1,
+///     the copy Predator Sense's own preview writes; nothing here saves it to ROM.
 ///     The owning service serializes this handle's operations; flushing it never flushes an OEM reader.
 /// </remarks>
 internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControllerModeTransport
@@ -22,6 +24,20 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
     internal const int LightingOffset = 586;
     /// <summary>Complete retained section: selected-animation byte, four 220-byte animations and trailing bytes.</summary>
     internal const int LightingLength = 883;
+
+    /// <summary>Byte offset of M1's eight-byte key mapping in the complete vendor profile.</summary>
+    /// <remarks>
+    ///     Predator Sense 1.0.1563's ProfileInfo layout: 58 header bytes and sixteen 8-byte keys, then M1's
+    ///     169-byte function-key block (its 8-byte mapping, then a 161-byte macro) and M2's. The measured
+    ///     lighting offset of 586 is the same layout's sum, after both triggers and sticks.
+    /// </remarks>
+    internal const int RearKeyOffset = 186;
+
+    /// <summary>Distance from M1's mapping to M2's: one function-key block.</summary>
+    internal const int RearKeyStride = 169;
+
+    /// <summary>A key mapping: index, flags, turbo speed and five mapped key indices.</summary>
+    internal const int RearKeyLength = 8;
     private const int DeviceNotConnected = 1167;
     private FileStream _stream;
     private HidCollection _collection;
@@ -214,34 +230,88 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         var lighting = new byte[LightingLength];
         for (var offset = 0; offset < lighting.Length; offset += 55)
         {
-            var count = Math.Min(55, lighting.Length - offset);
-            var address = LightingOffset + offset;
-            var request = Packet(command: 4, address, count);
-            var candidateHeader = new byte[9];
-            byte[] response;
-            try
-            {
-                response = await HidDevices.ExchangeAsync(_stream, request, responseLength: 64,
-                    reply =>
-                    {
-                        if (reply[4] == 5 || candidateHeader[0] == 0)
-                        {
-                            reply.AsSpan(0, 9).CopyTo(candidateHeader);
-                        }
-
-                        return reply[0] == 0x10 && reply[3] == 0x3C && reply[4] == 5 && reply[5] == 1
-                               && BinaryPrimitives.ReadUInt16BigEndian(reply.AsSpan(6)) == address
-                               && reply[8] == count;
-                    }, timeout: TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                throw new IOException($"No correlated Atlas lighting reply at {address}; header {Convert.ToHexString(candidateHeader)}.");
-            }
-            response.AsSpan(9, count).CopyTo(lighting.AsSpan(offset));
+            await ReadProfileAsync(LightingOffset + offset, lighting, offset, Math.Min(55, lighting.Length - offset),
+                token).ConfigureAwait(false);
         }
 
         return lighting;
+    }
+
+    /// <summary>The address of one rear key's mapping.</summary>
+    /// <param name="key">1 for M1 (rear right), 2 for M2 (rear left).</param>
+    internal static int RearKeyAddress(int key)
+    {
+        return key is 1 or 2
+            ? RearKeyOffset + (key - 1) * RearKeyStride
+            : throw new ArgumentOutOfRangeException(nameof(key), "Only M1 and M2 have a rear-key mapping.");
+    }
+
+    /// <summary>Reads one rear key's eight-byte RAM mapping.</summary>
+    /// <param name="key">1 for M1, 2 for M2.</param>
+    /// <param name="token">Cancels the exchange.</param>
+    /// <returns>The mapping, as RAM profile 1 holds it now.</returns>
+    internal async ValueTask<byte[]> ReadRearKeyAsync(int key, CancellationToken token)
+    {
+        var address = RearKeyAddress(key);
+        token.ThrowIfCancellationRequested();
+        await FlushRepliesAsync(token).ConfigureAwait(false);
+        var mapping = new byte[RearKeyLength];
+        await ReadProfileAsync(address, mapping, 0, RearKeyLength, token).ConfigureAwait(false);
+        return mapping;
+    }
+
+    /// <summary>Writes one rear key's eight-byte mapping to RAM profile 1 in a single command 21 chunk.</summary>
+    /// <param name="key">1 for M1, 2 for M2.</param>
+    /// <param name="mapping">The complete mapping.</param>
+    /// <param name="token">Checked before dispatch only.</param>
+    /// <remarks>No acknowledgement or retry; a caller confirms the result by reading the mapping back.</remarks>
+    internal async ValueTask WriteRearKeyAsync(int key, byte[] mapping, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        if (mapping.Length != RearKeyLength)
+        {
+            throw new ArgumentException("A complete eight-byte rear-key mapping is required.", nameof(mapping));
+        }
+
+        var request = Packet(command: 0x21, RearKeyAddress(key), RearKeyLength);
+        mapping.CopyTo(request.AsSpan(9));
+        token.ThrowIfCancellationRequested();
+        await _stream.WriteAsync(request, token).ConfigureAwait(false);
+        await _stream.FlushAsync(token).ConfigureAwait(false);
+    }
+
+    /// <summary>Reads one correlated chunk of RAM profile 1 into a buffer.</summary>
+    /// <remarks>
+    ///     Request 04 selects profile 0, while reply 05 identifies returned RAM profile 1. Offset and count
+    ///     must match the outstanding request; unrelated replies are ignored until the one-second deadline.
+    /// </remarks>
+    private async ValueTask ReadProfileAsync(int address, byte[] destination, int offset, int count,
+        CancellationToken token)
+    {
+        var request = Packet(command: 4, address, count);
+        var candidateHeader = new byte[9];
+        byte[] response;
+        try
+        {
+            response = await HidDevices.ExchangeAsync(_stream, request, responseLength: 64,
+                reply =>
+                {
+                    if (reply[4] == 5 || candidateHeader[0] == 0)
+                    {
+                        reply.AsSpan(0, 9).CopyTo(candidateHeader);
+                    }
+
+                    return reply[0] == 0x10 && reply[3] == 0x3C && reply[4] == 5 && reply[5] == 1
+                           && BinaryPrimitives.ReadUInt16BigEndian(reply.AsSpan(6)) == address
+                           && reply[8] == count;
+                }, timeout: TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            throw new IOException($"No correlated Atlas profile reply at {address}; header {Convert.ToHexString(candidateHeader)}.");
+        }
+
+        response.AsSpan(9, count).CopyTo(destination.AsSpan(offset));
     }
 
     /// <summary>Writes command 21/profile 1 RAM chunks within the retained lighting section only.</summary>
@@ -285,14 +355,16 @@ internal sealed class AcerControllerTransport : IAsyncDisposable, IAcerControlle
         }
     }
 
-    /// <summary>Builds the nine-byte profile header and refuses addresses outside the lighting section.</summary>
+    /// <summary>Builds the nine-byte profile header and refuses addresses outside the lighting section and rear-key mappings.</summary>
     /// <remarks>Bytes 4/5 are command/profile, 6/7 the big-endian absolute offset, 8 the payload count; data starts at 9.</remarks>
     internal static byte[] Packet(byte command, int offset, int count)
     {
-        if (command is not (4 or 0x21) || count is < 1 or > 55
-            || offset < LightingOffset || offset + count > LightingOffset + LightingLength)
+        var lighting = offset >= LightingOffset && offset + count <= LightingOffset + LightingLength;
+        var rearKey = offset is RearKeyOffset or RearKeyOffset + RearKeyStride && count == RearKeyLength;
+        if (command is not (4 or 0x21) || count is < 1 or > 55 || !lighting && !rearKey)
         {
-            throw new ArgumentOutOfRangeException(nameof(offset), "Only the retained lighting section may be addressed.");
+            throw new ArgumentOutOfRangeException(nameof(offset),
+                "Only the retained lighting section and the two rear-key mappings may be addressed.");
         }
 
         var packet = new byte[64];

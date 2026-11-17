@@ -12,10 +12,12 @@ namespace LibHandheld.Families.Acer;
 ///     Guide and rear buttons share one vendor collection, while front-right/QAM uses another.
 ///     Both must belong to the same physical controller location. Ordinary pad input stays in the
 ///     XInput source; volume and firmware keyboard holds have other sources and are not swallowed here.
-///     AcerControllerModeService owns the Combination mode required for native rear notifications.
+///     AcerControllerModeService owns the Combination mode required for native rear notifications. That
+///     mode freezes the XInput report while a rear key is held; this source then supplies the rebuilt pad
+///     to the XInput reader (<see cref="IXInputPadSubstitute" />).
 ///     Callback publication happens on reader/timer threads and must return without blocking.
 /// </remarks>
-internal sealed class AcerButtonSource : IProfiledOemSource, IHidButtonObserver
+internal sealed class AcerButtonSource : IProfiledOemSource, IHidButtonObserver, IXInputPadSubstitute
 {
     private readonly HidReportSource _vendor = new();
     private readonly HidReportSource _qam = new();
@@ -116,6 +118,19 @@ internal sealed class AcerButtonSource : IProfiledOemSource, IHidButtonObserver
     }
 
     /// <inheritdoc />
+    /// <remarks>Only the XInput topology freezes; DInput carries the rear keys in its own report.</remarks>
+    public bool TrySubstitute(uint packet, in StandardXInput.Gamepad polled, out StandardXInput.Gamepad pad)
+    {
+        if (!_dinput && _state is { } state)
+        {
+            return state.TrySubstitute(packet, polled, out pad);
+        }
+
+        pad = default;
+        return false;
+    }
+
+    /// <inheritdoc />
     public void OnHidDisconnected()
     {
         if (_dinput)
@@ -134,17 +149,37 @@ internal sealed class AcerButtonSource : IProfiledOemSource, IHidButtonObserver
 
 /// <summary>Keeps unrelated vendor reports from releasing rear buttons and bounds release-less Guide events.</summary>
 /// <remarks>
-///     One lock serializes vendor input, QAM input, the synthetic Guide-release timer and disposal.
-///     The bitset deduplicates transitions; unknown reports leave existing state alone. Guide is a
-///     short synthetic pulse, not a measured physical hold or a source for the keyboard's long press.
+///     One lock serializes vendor input, QAM input, the synthetic Guide-release timer, the XInput reader's
+///     substitution and disposal. The bitset deduplicates transitions; unknown reports leave existing state
+///     alone. Guide is a short synthetic pulse, not a measured physical hold or a source for the keyboard's
+///     long press.
+///     <para>
+///         While a rear key is held, Combination mode stops the XInput report and sends the pad in
+///         reports 9A (key codes) and 9B (sticks and triggers). The pad is rebuilt from them over the
+///         frozen XInput state: its buttons stay, the named keys join them, and the first 9B replaces its
+///         sticks and triggers. The rebuilt pad stays in place after the release until XInput reports a
+///         new packet, or for <see cref="Handover" /> at most, so the frozen state is never republished.
+///     </para>
 /// </remarks>
 internal sealed class AcerButtonState : IDisposable
 {
+    /// <summary>The longest the rebuilt pad outlives a release while XInput has not reported again.</summary>
+    private static readonly long Handover = Stopwatch.Frequency / 10;
+
     private readonly Lock _gate = new();
     private readonly OemButtonLatch _guidePulse = new();
     private readonly Timer _releaseGuide;
     private Action<string, CanonicalButtons, bool>? _publish;
     private CanonicalButtons _held;
+    private AcerAnalog _analog;
+    private bool _analogSeen;
+    private ushort _combination;
+    private CanonicalButtons _combinationFront;
+    private StandardXInput.Gamepad _frozen;
+    private uint _frozenPacket;
+    private bool _packetKnown;
+    private long _releasedAt;
+    private bool _substituting;
 
     internal AcerButtonState(Action<string, CanonicalButtons, bool> publish)
     {
@@ -185,6 +220,24 @@ internal sealed class AcerButtonState : IDisposable
             {
                 Emit("m1", CanonicalButtons.RearPaddle2, (rear & CanonicalButtons.RearPaddle2) != 0);
                 Emit("m2", CanonicalButtons.RearPaddle1, (rear & CanonicalButtons.RearPaddle1) != 0);
+                if (rear != CanonicalButtons.None)
+                {
+                    _substituting = true;
+                    _releasedAt = 0;
+                    _combination = AcerInputProtocol.DecodeCombinationButtons(report);
+                    EmitCombinationFront(AcerInputProtocol.DecodeCombinationFront(report));
+                }
+                else if (_substituting && _releasedAt == 0)
+                {
+                    _releasedAt = Stopwatch.GetTimestamp();
+                    _combination = 0;
+                    EmitCombinationFront(CanonicalButtons.None);
+                }
+            }
+            else if (AcerInputProtocol.TryDecodeAnalog(report, out var analog))
+            {
+                _analog = analog;
+                _analogSeen = true;
             }
             else if (AcerInputProtocol.IsGuidePress(report))
             {
@@ -219,9 +272,82 @@ internal sealed class AcerButtonState : IDisposable
 
             _guidePulse.Clear();
             _releaseGuide.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            EndSubstitution();
             Emit("guide", CanonicalButtons.Guide, down: false);
             Emit("m1", CanonicalButtons.RearPaddle2, down: false);
             Emit("m2", CanonicalButtons.RearPaddle1, down: false);
+        }
+    }
+
+    /// <summary>Rebuilds the pad Combination mode withholds from XInput, from a rear press until XInput resumes.</summary>
+    /// <param name="packet">XInput's packet number for this poll.</param>
+    /// <param name="polled">What XInput reports: frozen while a rear key is held.</param>
+    /// <param name="pad">The rebuilt pad.</param>
+    /// <returns>Whether <paramref name="pad" /> replaces the polled one.</returns>
+    /// <remarks>Called by the XInput reader every poll; it takes the state lock and allocates nothing.</remarks>
+    internal bool TrySubstitute(uint packet, in StandardXInput.Gamepad polled, out StandardXInput.Gamepad pad)
+    {
+        lock (_gate)
+        {
+            pad = default;
+            if (_publish is null || !_substituting)
+            {
+                return false;
+            }
+
+            if (!_packetKnown)
+            {
+                _packetKnown = true;
+                _frozenPacket = packet;
+                _frozen = polled;
+            }
+            else if (_releasedAt != 0
+                     && (packet != _frozenPacket || Stopwatch.GetTimestamp() - _releasedAt > Handover))
+            {
+                EndSubstitution();
+                return false;
+            }
+
+            pad = _frozen;
+            pad.Buttons |= _combination;
+            if (_analogSeen)
+            {
+                pad.LeftX = _analog.LeftX;
+                pad.LeftY = _analog.LeftY;
+                pad.RightX = _analog.RightX;
+                pad.RightY = _analog.RightY;
+                pad.LeftTrigger = _analog.LeftTrigger;
+                pad.RightTrigger = _analog.RightTrigger;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>Forgets the rebuilt pad, releasing any front key a combination report held; callers hold the state lock.</summary>
+    private void EndSubstitution()
+    {
+        _substituting = false;
+        _packetKnown = false;
+        _releasedAt = 0;
+        _combination = 0;
+        _analogSeen = false;
+        EmitCombinationFront(CanonicalButtons.None);
+    }
+
+    /// <summary>Publishes the front keys a combination report names as real press and release edges; callers hold the state lock.</summary>
+    private void EmitCombinationFront(CanonicalButtons front)
+    {
+        var changed = front ^ _combinationFront;
+        _combinationFront = front;
+        if ((changed & CanonicalButtons.Guide) != 0)
+        {
+            Emit("guide", CanonicalButtons.Guide, (front & CanonicalButtons.Guide) != 0);
+        }
+
+        if ((changed & CanonicalButtons.QuickAccess) != 0)
+        {
+            Emit("qam", CanonicalButtons.QuickAccess, (front & CanonicalButtons.QuickAccess) != 0);
         }
     }
 

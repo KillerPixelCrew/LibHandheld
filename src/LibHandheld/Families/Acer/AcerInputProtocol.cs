@@ -85,6 +85,97 @@ internal static class AcerInputProtocol
         return true;
     }
 
+    /// <summary>The XInput buttons report 9A names in its two key slots while a rear key is held.</summary>
+    /// <param name="report">One complete 15- or 16-byte report 9A.</param>
+    /// <returns>XInput button bits; an empty slot or an unknown code adds nothing.</returns>
+    /// <remarks>
+    ///     Combination mode (rear keys 1) is Predator Sense's System Hotkeys mode: while M1 or M2 is held the
+    ///     firmware stops the XInput report and names each other key pressed in little-endian words 3 and
+    ///     5, the first key and a second one held with it. 2026-11-17 captures, firmware 1.05: A 01, B 02,
+    ///     X 03, Y 04, LB 05, RB 06, View 07, Menu 08, R3 0A and D-pad up/down/left/right 90-93; L3 09
+    ///     follows the order. The triggers send no code; their travel is in report 9B.
+    /// </remarks>
+    internal static ushort DecodeCombinationButtons(ReadOnlySpan<byte> report)
+    {
+        return report.Length is 15 or 16 && report[0] == 0x9A
+            ? (ushort)(CombinationButton(BinaryPrimitives.ReadUInt16LittleEndian(report[3..]))
+                       | CombinationButton(BinaryPrimitives.ReadUInt16LittleEndian(report[5..])))
+            : (ushort)0;
+    }
+
+    /// <summary>The front keys report 9A names while a rear key is held: A1 the left (Guide), A0 the right (Quick Access).</summary>
+    /// <param name="report">One complete 15- or 16-byte report 9A.</param>
+    /// <returns>The front keys held, with a real release unlike their ordinary notifications.</returns>
+    internal static CanonicalButtons DecodeCombinationFront(ReadOnlySpan<byte> report)
+    {
+        if (report.Length is not (15 or 16) || report[0] != 0x9A)
+        {
+            return CanonicalButtons.None;
+        }
+
+        var first = BinaryPrimitives.ReadUInt16LittleEndian(report[3..]);
+        var second = BinaryPrimitives.ReadUInt16LittleEndian(report[5..]);
+        return (first == 0xA1 || second == 0xA1 ? CanonicalButtons.Guide : 0)
+               | (first == 0xA0 || second == 0xA0 ? CanonicalButtons.QuickAccess : 0);
+    }
+
+    private static ushort CombinationButton(ushort code)
+    {
+        return code switch
+        {
+            0x01 => 0x1000,
+            0x02 => 0x2000,
+            0x03 => 0x4000,
+            0x04 => 0x8000,
+            0x05 => 0x0100,
+            0x06 => 0x0200,
+            0x07 => 0x0020,
+            0x08 => 0x0010,
+            0x09 => 0x0040,
+            0x0A => 0x0080,
+            0x90 => 0x0001,
+            0x91 => 0x0002,
+            0x92 => 0x0004,
+            0x93 => 0x0008,
+            _ => 0
+        };
+    }
+
+    /// <summary>Reads report 9B's sticks and triggers, which replace the frozen XInput pad while a rear key is held.</summary>
+    /// <param name="report">One complete 15- or 16-byte report 9B.</param>
+    /// <param name="analog">The sticks and triggers on XInput's scale.</param>
+    /// <returns>False for another report, and for the neutral 9B sent at release with byte 1 zero.</returns>
+    /// <remarks>
+    ///     Byte 1 repeats the held rear keys. Little-endian words 3, 5, 7 and 9 are the left X, left Y, right
+    ///     X and right Y, unsigned with X centred on 8000 and Y on 7FFF; up is low, so Y is inverted for
+    ///     XInput. Words 11 and 13 are the triggers, 0 to 1023. A squeezed RT moved word 13 in the
+    ///     2026-11-17 captures; word 11 follows XInput's left-before-right order. The report arrives about
+    ///     every 4 ms while anything moves, and only while a rear key is held: the one sent at release reads
+    ///     neutral even with a stick still deflected.
+    /// </remarks>
+    internal static bool TryDecodeAnalog(ReadOnlySpan<byte> report, out AcerAnalog analog)
+    {
+        analog = default;
+        if (report.Length is not (15 or 16) || report[0] != 0x9B || (report[1] & 6) == 0)
+        {
+            return false;
+        }
+
+        analog = new AcerAnalog(
+            (short)(BinaryPrimitives.ReadUInt16LittleEndian(report[3..]) - 32768),
+            (short)(32767 - BinaryPrimitives.ReadUInt16LittleEndian(report[5..])),
+            (short)(BinaryPrimitives.ReadUInt16LittleEndian(report[7..]) - 32768),
+            (short)(32767 - BinaryPrimitives.ReadUInt16LittleEndian(report[9..])),
+            Trigger(BinaryPrimitives.ReadUInt16LittleEndian(report[11..])),
+            Trigger(BinaryPrimitives.ReadUInt16LittleEndian(report[13..])));
+        return true;
+    }
+
+    private static byte Trigger(ushort value)
+    {
+        return (byte)((Math.Min(value, (ushort)1023) * 255 + 511) / 1023);
+    }
+
     /// <summary>Recognizes only 9E/0000/0005, the release-less front-left short-press notification.</summary>
     /// <remarks>The two words after report ID 9E are little endian. A timer supplies the synthetic release.</remarks>
     internal static bool IsGuidePress(ReadOnlySpan<byte> report)
@@ -117,3 +208,12 @@ internal static class AcerInputProtocol
         return true;
     }
 }
+
+/// <summary>The sticks and triggers report 9B carries, already on XInput's scale.</summary>
+internal readonly record struct AcerAnalog(
+    short LeftX,
+    short LeftY,
+    short RightX,
+    short RightY,
+    byte LeftTrigger,
+    byte RightTrigger);

@@ -6,6 +6,21 @@ using LibHandheld.Internal.Runtime;
 
 namespace LibHandheld.Internal.Windows;
 
+/// <summary>Supplies a pad's state while its firmware withholds it from XInput.</summary>
+/// <remarks>
+///     The Atlas stops its XInput report while a rear key is held and reports the pad in vendor reports
+///     instead. The XInput reader asks on every poll, so implementations must not block, allocate or log.
+/// </remarks>
+internal interface IXInputPadSubstitute
+{
+    /// <summary>Replaces the polled gamepad while the firmware withholds it.</summary>
+    /// <param name="packet">XInput's packet number for this poll.</param>
+    /// <param name="polled">What XInput reports.</param>
+    /// <param name="pad">The gamepad to publish instead.</param>
+    /// <returns>Whether <paramref name="pad" /> replaces <paramref name="polled" />.</returns>
+    bool TrySubstitute(uint packet, in StandardXInput.Gamepad polled, out StandardXInput.Gamepad pad);
+}
+
 internal sealed record StandardControllerTopology(
     int Slot,
     IReadOnlyList<PhysicalDeviceIdentity> Devices,
@@ -141,7 +156,8 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     internal void Start(StandardControllerTopology topology,
         Func<CanonicalButtons> buttons, Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
-        Func<StandardTouchSample>? touchpad = null, Func<IHidButtonObserver?>? hidButtons = null)
+        Func<StandardTouchSample>? touchpad = null, Func<IHidButtonObserver?>? hidButtons = null,
+        Func<IXInputPadSubstitute?>? padSubstitute = null)
     {
         if (topology.Hid is { } hid)
         {
@@ -184,7 +200,8 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
             _slot = topology.Slot;
             _stop = new CancellationTokenSource();
             var token = _stop.Token;
-            _reader = new Thread(() => Read(topology.Slot, buttons, motion, publish, fault, token, touchpad))
+            _reader = new Thread(() => Read(topology.Slot, buttons, motion, publish, fault, token, touchpad,
+                    padSubstitute))
                 { IsBackground = true, Name = "LibHandheld physical controller" };
             _reader.Start();
         }
@@ -290,7 +307,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
     private static void Read(int slot, Func<CanonicalButtons> buttons, Func<MotionSample?> motion,
         Func<CanonicalControllerSample, CancellationToken, ValueTask> publish, Action<Exception> fault,
         CancellationToken stop,
-        Func<StandardTouchSample>? touchpad)
+        Func<StandardTouchSample>? touchpad, Func<IXInputPadSubstitute?>? padSubstitute)
     {
         ThreadQos.UseHigh();
         try
@@ -313,6 +330,13 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                     return;
                 }
 
+                var gamepad = state.Gamepad;
+                if (padSubstitute?.Invoke() is { } substitute
+                    && substitute.TrySubstitute(state.Packet, state.Gamepad, out var substituted))
+                {
+                    gamepad = substituted;
+                }
+
                 var oem = buttons();
                 var sample = motion();
                 var touch = touchpad?.Invoke() ?? default;
@@ -325,7 +349,7 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                 // own values decide "unchanged", never XInput's packet number alone: a driver that does
                 // not advance it on every change would otherwise hold a short press back until the
                 // heartbeat, and the press would be lost.
-                if (published && state.Packet == lastPacket && SameGamepad(state.Gamepad, lastGamepad)
+                if (published && state.Packet == lastPacket && SameGamepad(gamepad, lastGamepad)
                     && oem == lastOem && touch == lastTouch
                     && Nullable.Equals(sample, lastMotion) && tick - lastPublishedAt < UnchangedHeartbeatMs)
                 {
@@ -333,11 +357,11 @@ internal sealed class StandardControllerSource(StandardControllerProfile profile
                 }
 
                 publish(
-                    StandardControllerCodec.Decode(state.Gamepad, oem, sample, DateTimeOffset.UtcNow, touch), stop)
+                    StandardControllerCodec.Decode(gamepad, oem, sample, DateTimeOffset.UtcNow, touch), stop)
                     .GetAwaiter().GetResult();
                 published = true;
                 lastPacket = state.Packet;
-                lastGamepad = state.Gamepad;
+                lastGamepad = gamepad;
                 lastOem = oem;
                 lastMotion = sample;
                 lastTouch = touch;

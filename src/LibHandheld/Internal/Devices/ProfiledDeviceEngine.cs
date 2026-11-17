@@ -177,7 +177,8 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                         {
                             return _buttons;
                         }
-                    }, () => _motion?.Latest, () => _touchpad?.Latest ?? default, () => _oem?.HidButtons);
+                    }, () => _motion?.Latest, () => _touchpad?.Latest ?? default, () => _oem?.HidButtons,
+                    () => _oem?.PadSubstitute);
                 _services.Add(_controller);
             }
 

@@ -81,6 +81,23 @@ public sealed class AcerLightingTests
     }
 
     [Fact]
+    public void OnlyTheTwoWholeRearKeyMappingsAreAddressableOutsideTheLighting()
+    {
+        // M1's mapping follows 58 header bytes and sixteen 8-byte keys; M2's follows M1's 169-byte block.
+        Assert.Equal(186, AcerControllerTransport.RearKeyAddress(1));
+        Assert.Equal(355, AcerControllerTransport.RearKeyAddress(2));
+        Assert.Equal(Convert.FromHexString("0F00003C210100BA08"),
+            AcerControllerTransport.Packet(command: 0x21, offset: 186, count: 8).AsSpan(0, 9).ToArray());
+        Assert.Equal(Convert.FromHexString("0F00003C0400016308"),
+            AcerControllerTransport.Packet(command: 4, offset: 355, count: 8).AsSpan(0, 9).ToArray());
+        Assert.Throws<ArgumentOutOfRangeException>(() => AcerControllerTransport.Packet(command: 0x21, offset: 186, count: 7));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AcerControllerTransport.Packet(command: 0x21, offset: 187, count: 8));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AcerControllerTransport.Packet(command: 0x21, offset: 178, count: 8));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AcerControllerTransport.Packet(command: 0x22, offset: 186, count: 8));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AcerControllerTransport.RearKeyAddress(3));
+    }
+
+    [Fact]
     public void UnknownProfileShapeCannotBecomeAWrite()
     {
         var retained = Lighting();

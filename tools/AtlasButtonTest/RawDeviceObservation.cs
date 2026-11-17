@@ -113,7 +113,7 @@ internal sealed class RawDeviceObservation(CaptureBuffer capture) : IAsyncDispos
             var scan = BitConverter.ToUInt16(_data, startIndex: 24);
             var flags = BitConverter.ToUInt16(_data, startIndex: 26);
             var key = BitConverter.ToUInt16(_data, startIndex: 30);
-            if (key is 0x09 or 0x10 or 0x11 or 0x12 or 0x47 or 0x5B or 0x5C or 0x85 or 0xAD or 0xAE or 0xAF
+            if (key is 0x09 or 0x10 or 0x11 or 0x12 or 0x47 or 0x5B or 0x5C or 0x85 or 0x86 or 0xAD or 0xAE or 0xAF
                 or >= 0xA0 and <= 0xA5)
             {
                 capture.DeviceKeyboard(source, key, (flags & 1) == 0, scan, flags);

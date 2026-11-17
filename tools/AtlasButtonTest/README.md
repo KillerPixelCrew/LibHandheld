@@ -4,8 +4,9 @@ Interactive, read-only evidence collector for the exact Acer Predator Atlas 8 PA
 only the recognized 0502:F901 vendor and QAM input collections plus the attributed standard
 controller source. It sends no feature/output reports, changes no controller mappings or modes,
 creates no virtual controller and does not start the power, lighting or motion services. Existing
-Acer software can still respond to its own buttons. The optional `--rear-test` runs only the three
-rear-button steps and acquires XInput/Combination mode through the same journaled lifecycle as
+Acer software can still respond to its own buttons. The optional `--rear-test` runs only the rear
+steps: each rear button alone, both together, each held while other buttons, a stick and a trigger
+are used, and A again afterwards. It acquires XInput/Combination mode through the same journaled lifecycle as
 the runtime. This option changes controller mode temporarily and verifies restoration on exit.
 It writes no profile mappings or ROM. Its recovery journal is retained under
 `LocalAppData/LibHandheld/AtlasButtonTest/recovery` if restoration fails.
@@ -22,8 +23,9 @@ release everything, then use Enter to finish. S skips and Q saves a partial run.
 A recording times out after 60 seconds and the session after 30 minutes. Closing the console
 forcibly can lose the current run.
 
-The 27 steps cover neutral input, face buttons, D-pad, shoulders, triggers, stick clicks, View/Menu,
-the physical front and rear extras, simultaneous rear presses, stick travel and button rollover.
+The 31 steps cover neutral input, face buttons, D-pad, shoulders, triggers, stick clicks, View/Menu,
+the physical front and rear extras, simultaneous rear presses, rear holds during other input, stick
+travel and button rollover.
 Left/right mean the user's left/right while holding the device normally, with the screen facing the
 user. OEM steps use physical position rather than assuming a label or a decoded mapping. Hold each
 ordinary press about one second and leave a second between presses.
@@ -35,6 +37,19 @@ numbers and device paths. Each step retains at most 2048 changes and reports ove
 missing lanes remain explicit. A completed session is not an automatic pass. Report counts include
 duplicate input; the stored raw changes filter consecutive duplicate reports. Controller
 stick/trigger samples aggregate extrema without retaining high-rate raw samples.
+
+`--rear-hold-test` acquires the same mode and records, in nine steps with REAR LEFT held throughout,
+every other control: face buttons, shoulders, triggers, stick clicks, View/Menu, each D-pad
+direction, two buttons together, each stick's up and right travel, a stick already deflected when the
+rear button goes down, and the front extras. While a rear button is held the firmware freezes the
+ordinary pad and reports the other controls in vendor reports 9A and 9B instead; the steps name
+their controls in order so those reports can be attributed.
+
+`--rear-macro-test` tries the alternative: XInput with the rear keys in Macro mode, M1 and M2 mapped in
+RAM to F23 and Ctrl+F23 through command 21, then the rear-key steps with the pad. It saves the
+original mode and mappings to `rear-key-remap.json` in the recovery directory before writing,
+restores and reads them back on exit, and restores a session that ended without restoring before
+starting another.
 
 `--help` and `--self-check` run without opening hardware. The self-check exercises bounded capture,
 overflow, per-step reset, duplicate filtering and axis aggregation.

@@ -80,6 +80,9 @@ internal sealed class ProfiledOemService(
 
     /// <summary>The started native source when it derives its edges from the HID gamepad reader.</summary>
     internal IHidButtonObserver? HidButtons => Volatile.Read(ref _native) as IHidButtonObserver;
+
+    /// <summary>The started native source when it reports the pad its firmware withholds from XInput.</summary>
+    internal IXInputPadSubstitute? PadSubstitute => Volatile.Read(ref _native) as IXInputPadSubstitute;
     public override bool Suspendable => true;
 
     internal override async ValueTask DisposeAsync()
@@ -143,7 +146,8 @@ internal sealed partial class ProfiledControllerService(
     Func<CanonicalButtons> buttons,
     Func<MotionSample?> motion,
     Func<StandardTouchSample>? touchpad = null,
-    Func<IHidButtonObserver?>? hidButtons = null)
+    Func<IHidButtonObserver?>? hidButtons = null,
+    Func<IXInputPadSubstitute?>? padSubstitute = null)
     : DeviceService<ProfiledCycleIdentity>("controller")
 {
     private volatile bool _connected;
@@ -195,7 +199,7 @@ internal sealed partial class ProfiledControllerService(
                     _connected = false;
                     _ownershipAt = DateTimeOffset.UtcNow;
                 },
-                touchpad, hidButtons);
+                touchpad, hidButtons, padSubstitute);
         }
         catch
         {

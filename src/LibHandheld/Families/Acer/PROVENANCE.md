@@ -1199,3 +1199,32 @@ Atlas8Tweaks testing on a PA08-I51, not from a new attended WSGM pass.
 `ExtendedVrrPanel` carries these facts on the Atlas definition. `AcerExtendedVrrTests` checks the
 variant arithmetic against hashes the script's own functions produced on a synthetic EDID; the real
 physical EDID is not in the repository, so the real hash match is the attended pass's to confirm.
+
+## Rear-button holds froze the pad (2026-11-17)
+
+The maintainer reported that holding a rear button blocked every other input. Attended captures on
+this unit (BIOS and controller firmware 1.05, WSGM and Steam stopped, `AtlasButtonTest`):
+
+- `--rear-test` with XInput/Combination: while REAR LEFT was held, three A presses, D-pad Up and LB
+  never reached XInput, and a full left-stick sweep and RT squeeze left every XInput axis at rest.
+  The presses arrived as report `9A04000100...`, `9A02009000...` and `9A02000500...`; the analog
+  travel as 782 reports `9B`, a median 4 ms apart. A pressed after the release reached XInput again.
+- `--rear-hold-test` named the remaining codes (B 02, X 03, Y 04, RB 06, View 07, Menu 08, R3 0A,
+  D-pad right 93, down 91, left 92, front-left A1, front-right A0), showed A and B together as
+  `9A0400010002...`, located each stick's X and Y and their directions, and showed a stick held up
+  before the rear press reported in `9B` from the start of the hold. The `9B` sent at every release
+  read neutral even with the stick still up. L3 did not register in its step, and which trigger the
+  maintainer pressed in the LT step is uncertain; word 13 is RT from the first capture.
+- `--rear-macro-test` selected Macro mode with M1/M2 mapped in RAM to F23 and Ctrl+F23. Buttons kept
+  reaching XInput during a hold, but no key reached Windows: the mapping uses the keyboard leaf the
+  takeover disables. Original mode 1/0 and both mappings were restored and read back.
+
+Predator Sense 1.0.1563 (`AcerGamePad.Core`, `Handheld.Desktop`) labels Combination as its System
+Hotkeys mode and Macro as M1/M2 mapping or macros. Its `ProfileInfo` layout puts M1's mapping at
+profile byte 186 and M2's at 355, which agrees with the measured lighting offset of 586; its preview
+writes command 21 to RAM and only Save sends command 22.
+
+Runtime decision: keep XInput/Combination and rebuild the pad from `9A` and `9B` while a rear button
+is held, as `OEM_INPUT_AND_DISABLE.md` describes. Acceptance of the rebuilt pad in WSGM, including
+LT during a hold and L3, remains for the maintainer's normal use.
+

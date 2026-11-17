@@ -25,6 +25,7 @@ process, with no Windows service template, Run entry or scheduled task. See
 | Rear-left                                 | Vendor report `9A04...`, release `9A00...`                                                  | Protocol M2, canonical RearPaddle1 (left, L4). Requires XInput/Combination M-key mode.                                                                                                                        |
 | Rear-right                                | Vendor report `9A02...`, release `9A00...`                                                  | Protocol M1, canonical RearPaddle2 (right, R4). Requires the same mode.                                                                                                                                       |
 | Both rear buttons                         | Vendor `9A06...`; partial release retains the other bit                                     | Independent held states; unrelated `9B...` reports do not release them.                                                                                                                                       |
+| Any input while a rear button is held     | Vendor `9A` key codes in words 3 and 5; vendor `9B` sticks and triggers                     | Combination mode freezes the XInput report for the whole hold. LibHandheld rebuilds the pad from these two reports; see below.                                                                                |
 | Power button                              | Intel HID Event Filter PDC `HID\INTC816`, usage 0001:000D, report `1C01` / `1C00`           | System Power Down 0x81, press and release as they happen. Quick taps sometimes send only `1C00`. Windows sees it later through the Button Converter. See provenance, 2026-11-01.                              |
 | Volume Up / Down                          | I2C HID `HID\1025174B&Col08`, consumer reports `33E900` / `33EA00`, neutral `330000`        | Separate from the USB keyboard. Windows also projects volume-key events with an unnamed Raw Input source. Physical press/release reports survived the exact USB keyboard disable.                             |
 | Ordinary pad buttons, sticks and triggers | Attributed 0502:F901 standard XInput controller                                             | Separate standard controller source; no OEM software required.                                                                                                                                                |
@@ -49,6 +50,34 @@ Alt+Tab blocker was added for Atlas.
 Unlike the Claw's shared firmware PS/2 keyboard case, Atlas volume is on an independent I2C device.
 Do not disable `i8042prt`, `kbdhid` globally, the composite USB controller/interface, or the I2C
 device to suppress the Atlas shortcut.
+
+## While a rear button is held
+
+Combination mode is Predator Sense's System Hotkeys mode. While M1 or M2 is held the firmware stops
+the XInput report altogether, buttons, sticks and triggers, and reports everything else on the vendor
+collection instead (attended captures, 2026-11-17, firmware 1.05):
+
+- Report `9A` keeps the rear bits in byte 1 and names up to two other held keys in little-endian
+  words 3 and 5: A 01, B 02, X 03, Y 04, LB 05, RB 06, View 07, Menu 08, R3 0A, D-pad up/down/left/
+  right 90-93, front-left A1, front-right A0. L3 09 follows the order but did not register in the
+  capture. A diagonal reported one direction. The triggers send no code.
+- Report `9B`, about every 4 ms while anything moves, carries the rear bits in byte 1, the left X,
+  left Y, right X and right Y as unsigned words 3, 5, 7 and 9 (X centred on 8000, Y on 7FFF with up
+  low), and the two triggers 0 to 1023 in words 11 and 13. A squeezed RT moved word 13; word 11 as
+  LT follows XInput's order and was not separately captured. The `9B` sent at release reads neutral
+  even with a stick still deflected.
+
+`AcerButtonState` rebuilds the pad from these over the frozen XInput state: its buttons stay, the
+named keys join them, and the first `9B` of a hold replaces its sticks and triggers. The XInput
+reader polls that substitute (`IXInputPadSubstitute`) every 8 ms and keeps it after the release
+until XInput reports a new packet, at most 100 ms, so the frozen state is never republished. Front
+keys named during a hold become real Guide and Quick Access press and release edges.
+
+Macro mode (0) was tried as the alternative on the same day. With M1 and M2 mapped in RAM to F23
+and Ctrl+F23 (command 21, read back, then restored and verified) the pad kept reporting buttons
+during a hold, but the mapped keys go to the controller keyboard leaf that the takeover disables, so
+nothing reached Windows. The factory mappings read back were M1 `01040C1100000000` and M2
+`01040C1200000000`: index 1, map enabled, turbo 12, mapped to FL1 and FR1.
 
 ## What makes rear presses arrive
 
