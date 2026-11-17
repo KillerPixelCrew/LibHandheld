@@ -14,6 +14,14 @@ public sealed class IntelMsrPowerTransportTests
     }
 
     [Fact]
+    public void PackagePowerInfoNamesTheThermalDesignMinimumAndMaximum()
+    {
+        // At 1/8 W units: 25 W thermal design (200), 8 W minimum (64), 65 W maximum (520).
+        Assert.Equal("MSR 0x614 package power info: thermal design 25 W, minimum 8 W, maximum 65 W.",
+            IntelMsrPowerTransport.DescribePackagePowerInfo(0x208_0040_00C8UL, 0.125));
+    }
+
+    [Fact]
     public void ReadDecodesPl1AndReportsPl2AsSlowAndBoost()
     {
         using var transport = new IntelMsrPowerTransport(new Module(0x00438168_00DD8078UL));

@@ -12,6 +12,7 @@ internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
 {
     internal const long PowerUnitMsr = 0x606;
     internal const long PackagePowerLimitMsr = 0x610;
+    internal const long PackagePowerInfoMsr = 0x614;
     internal const long PackageThermalStatusMsr = 0x1B1;
     private const ulong Pl1Power = 0x7FFFUL;
     private const ulong Pl2Power = 0x7FFFUL << 32;
@@ -42,6 +43,36 @@ internal sealed class IntelMsrPowerTransport : ICpuPowerTransport
             ObjectDisposedException.ThrowIf(_disposed, this);
             return Decode(ReadMsr(_module, PackagePowerLimitMsr), _unitWatts);
         }
+    }
+
+    /// <summary>MSR_PKG_POWER_INFO, the package's own thermal design, minimum and maximum power, for the log.</summary>
+    /// <returns>The decoded fields, or why the register could not be read; a zero field is one the part leaves unset.</returns>
+    internal string DescribePackagePowerInfo()
+    {
+        ulong info;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            try
+            {
+                info = ReadMsr(_module, PackagePowerInfoMsr);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                return $"MSR 0x614 package power info unavailable: {exception.Message}";
+            }
+        }
+
+        return DescribePackagePowerInfo(info, _unitWatts);
+    }
+
+    internal static string DescribePackagePowerInfo(ulong info, double unitWatts)
+    {
+        var thermal = (info & 0x7FFF) * unitWatts;
+        var minimum = ((info >> 16) & 0x7FFF) * unitWatts;
+        var maximum = ((info >> 32) & 0x7FFF) * unitWatts;
+        return $"MSR 0x614 package power info: thermal design {thermal:0.###} W, minimum {minimum:0.###} W, "
+               + $"maximum {maximum:0.###} W.";
     }
 
     /// <summary>IA32_PACKAGE_THERM_STATUS bit 0: the package's thermal monitor is active now.</summary>

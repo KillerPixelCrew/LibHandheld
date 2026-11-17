@@ -16,7 +16,7 @@ namespace LibHandheld.Families.Acer;
 ///     profile 3 and its limits. PL1/PL2 are unsigned little-endian integer watts at payload offsets
 ///     6/10. The other fields in the 25-byte profile snapshot are opaque and must survive edits.
 ///     Maxima come from firmware selectors 2/4. The PL1 floor is the lower of selector 1 and the
-///     attended 8 W. The manual profile and active mode have separate firmware-bound recovery records.
+///     table's own floor (<see cref="AcerPowerTable.MinimumWatts" />). The manual profile and active mode have separate firmware-bound recovery records.
 ///     The user picks the power-limit path (<see cref="IntelPowerPaths" />). Firmware writes PL1/PL2 into
 ///     the Manual profile and re-applies that profile and mode every three seconds while Manual is held.
 ///     PawnIO opens Manual once to the firmware maxima and writes MSR 0x610; Predator Sense lags in game
@@ -50,10 +50,6 @@ internal sealed class AcerPowerService(
 
     /// <summary>The Atlas 7 choice that lets the sustained limit decide the firmware mode.</summary>
     private const string AutoChoice = "auto";
-
-    // Selector 1 advertises 10 W, but Manual stores 8 W and the maintainer confirmed it runs on the
-    // PA08-I51. Intel's Arc G3 configurable TDP also starts at 8 W.
-    private const int AttendedMinimumWatts = 8;
 
     // The sustained maximum is firmware selector 2's 40 W on every path. IPF held 45 W (2026-11-01), but that
     // keeps the APU at its temperature limit, so the maintainer set the ceiling back to 40 W.
@@ -200,6 +196,11 @@ internal sealed class AcerPowerService(
             var limits = cpu.ReadLimits();
             DeviceTrace.Change(ServiceId, "cpu-power",
                 $"CPU-direct power limits active: MSR 0x610 reads PL1 {limits.SustainedWatts:0.###} W, PL2 {limits.BoostWatts:0.###} W.");
+            if (cpu is IntelMsrPowerTransport msr)
+            {
+                DeviceTrace.Change(ServiceId, "cpu-power-info", msr.DescribePackagePowerInfo());
+            }
+
             return cpu;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException && exception is not OperationCanceledException)
@@ -363,7 +364,7 @@ internal sealed class AcerPowerService(
         // Maxima are firmware capabilities, not desktop fallback values or guessed CPU limits.
         try
         {
-            var minimum = Math.Min(ReadLimit(selector: 1, token), AttendedMinimumWatts);
+            var minimum = Math.Min(ReadLimit(selector: 1, token), _table.MinimumWatts);
             var maximum = ReadLimit(selector: 2, token);
             var boostMaximum = ReadLimit(selector: 4, token);
             if (minimum > 0 && maximum >= minimum && boostMaximum >= maximum && boostMaximum <= 200)
@@ -1257,13 +1258,22 @@ internal sealed class AcerPowerService(
 ///     The selector always addresses the slot: Acer's writer sends its caller's selector at offset 5 and
 ///     never the identifier it read. Only the readback identifier and the name order differ by model.
 /// </remarks>
-internal sealed record AcerPowerTable(IReadOnlyList<string> ModeNames, IReadOnlyList<byte> ProfileIds)
+/// <param name="MinimumWatts">The lowest sustained and boost limit offered, when selector 1 advertises more.</param>
+internal sealed record AcerPowerTable(IReadOnlyList<string> ModeNames, IReadOnlyList<byte> ProfileIds, int MinimumWatts)
 {
     /// <summary>PA08-I51 V1.03: Balanced, Turbo, Quiet, Manual, with identifiers equal to selectors.</summary>
-    internal static AcerPowerTable Atlas8 { get; } = new(["balanced", "turbo", "quiet", "manual"], [0, 1, 2, 3]);
+    /// <remarks>
+    ///     Selector 1 advertises 10 W. Manual stored 8 W and the maintainer confirmed 8 W on the PA08-I51
+    ///     (2026-10-29); the floor went to 4 W at the maintainer's request on 2026-11-17, pending an attended
+    ///     package-power check below 8 W (PROVENANCE.md).
+    /// </remarks>
+    internal static AcerPowerTable Atlas8 { get; } =
+        new(["balanced", "turbo", "quiet", "manual"], [0, 1, 2, 3], MinimumWatts: 4);
 
     /// <summary>PA07-I51 V1.03, from the attended correlation in PROVENANCE.md: Turbo and Balanced swap.</summary>
-    internal static AcerPowerTable Atlas7 { get; } = new(["turbo", "balanced", "quiet", "manual"], [4, 0, 2, 5]);
+    /// <remarks>Its floor stays at the 8 W the Atlas 8 confirmed first; nothing lower was tried on this model.</remarks>
+    internal static AcerPowerTable Atlas7 { get; } =
+        new(["turbo", "balanced", "quiet", "manual"], [4, 0, 2, 5], MinimumWatts: 8);
 
     /// <summary>The EC mode number for a scenario name.</summary>
     /// <param name="name">The requested scenario.</param>

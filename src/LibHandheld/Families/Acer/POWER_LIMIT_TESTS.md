@@ -80,7 +80,9 @@ controlled low/high load sweep remains unperformed; 1..80 W is not verified. The
 already implements this policy, so no production power-code change was required for these findings.
 
 On 2026-10-29 the floor of both limits moved to 8 W after the maintainer confirmed 8 W on the device;
-see the [provenance](PROVENANCE.md#lower-power-tiers-2026-10-29). The maxima are unchanged.
+see the [provenance](PROVENANCE.md#lower-power-tiers-2026-10-29). The maxima are unchanged. On
+2026-11-17 the Atlas 8's floor moved to 4 W at the maintainer's request, pending a package-power
+check below 8 W ([provenance](PROVENANCE.md#a-4-w-floor-requested-2026-11-17)); the Atlas 7 keeps 8 W.
 
 OCCT was obtained from its [official download page](https://www.ocbase.com/download-personal). The
 executable matched the published SHA256

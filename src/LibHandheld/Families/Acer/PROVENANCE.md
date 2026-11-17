@@ -1228,3 +1228,12 @@ Runtime decision: keep XInput/Combination and rebuild the pad from `9A` and `9B`
 is held, as `OEM_INPUT_AND_DISABLE.md` describes. Acceptance of the rebuilt pad in WSGM, including
 LT during a hold and L3, remains for the maintainer's normal use.
 
+## A 4 W floor requested (2026-11-17)
+
+The maintainer asked for 4 W. Both Atlas 8 limits now accept the lower of selector 1 (10 W) and the
+table's own floor, 4 W on the PA08-I51 and still 8 W on the PA07-I51, which nothing lower was tried
+on. The presets keep their values; Battery Saver stays 8/8 W. When the PawnIO path opens, the log
+records MSR 0x614 (thermal design, minimum and maximum package power) so the part's own minimum is
+known. Whether the firmware, PawnIO and IPF paths each hold a limit below 8 W, and what package power
+and frame rate follow, is not yet measured; acceptance below 8 W remains open.
+

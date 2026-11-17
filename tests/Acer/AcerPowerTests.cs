@@ -177,10 +177,10 @@ public sealed class AcerPowerTests
         var service = new AcerPowerService(context, () => ec);
         var cycle = Cycle(context);
         await service.AcquireAsync(cycle, CancellationToken.None);
-        // Selector 1 advertises 10 W; the attended 8 W floor is lower.
-        Assert.Equal(8, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Minimum);
+        // Selector 1 advertises 10 W; the Atlas 8's own 4 W floor is lower.
+        Assert.Equal(4, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Minimum);
         Assert.Equal(40, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Maximum);
-        Assert.Equal(8, service.Descriptors.Single(item => item.CapabilityId == "power.boost-limit").Minimum);
+        Assert.Equal(4, service.Descriptors.Single(item => item.CapabilityId == "power.boost-limit").Minimum);
         Assert.Equal(65, service.Descriptors.Single(item => item.CapabilityId == "power.boost-limit").Maximum);
         Assert.True(DevicePowerPreset.TryValidate(service.Descriptors, out _));
         var presets = service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").PowerPresets;
@@ -439,6 +439,8 @@ public sealed class AcerPowerTests
         var service = Atlas7Service(context, ec);
         var cycle = Cycle(context);
         await service.AcquireAsync(cycle, CancellationToken.None);
+        // The Atlas 8's lower floor is its own; the Atlas 7 keeps 8 W.
+        Assert.Equal(8, service.Descriptors.Single(item => item.CapabilityId == "power.primary-limit").Minimum);
 
         // With no limit of WSGM's in force, the mode is selected as it stands, with its own limits.
         var result = await service.ExecuteAsync(FanMode(name), context.Firmware, CancellationToken.None);
