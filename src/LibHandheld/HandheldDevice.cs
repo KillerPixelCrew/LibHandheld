@@ -334,6 +334,28 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
         return _engine.ExecuteCommandAsync(command, token);
     }
 
+    /// <summary>Hands power-limit services back for display sleep without releasing input or other services.</summary>
+    /// <param name="suspended">True to suspend power control; false to reacquire it.</param>
+    /// <param name="deadline">The operation's deadline.</param>
+    /// <param name="cancellationToken">Cancels waiting or native work.</param>
+    /// <returns>True when supported and completed; false when unsupported or the full device is inactive.</returns>
+    /// <remarks>Failures remain visible; an uncertain operation is not retried by this method.</remarks>
+    public async ValueTask<bool> SetPowerControlSuspendedAsync(bool suspended, Deadline deadline,
+        CancellationToken cancellationToken = default)
+    {
+        await _owner.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _active && await _engine.SetPowerControlSuspendedAsync(suspended, deadline, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _owner.Release();
+        }
+    }
+
     /// <summary>Changes physical input ownership while other hardware services continue.</summary>
     public async ValueTask SetControllerManagementAsync(bool enabled, Deadline deadline,
         CancellationToken cancellationToken = default)

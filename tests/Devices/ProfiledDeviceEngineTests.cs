@@ -3,6 +3,7 @@ using LibHandheld.Families.Gpd;
 using LibHandheld.Internal.Capabilities;
 using LibHandheld.Internal.Devices;
 using LibHandheld.Internal.Runtime;
+using LibHandheld.Internal.Services;
 using LibHandheld.Internal.Transports;
 using LibHandheld.Testing;
 
@@ -10,6 +11,67 @@ namespace LibHandheld.Tests.Devices;
 
 public sealed class ProfiledDeviceEngineTests
 {
+    [Fact]
+    public async Task DisplayPowerHandoffNeverReleasesOtherServicesAndDoesNotDoubleAcquireAfterFullResume()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = new FakeOemSource();
+        var power = new OwnershipService("power", CapabilityRole.PowerSustainedLimit);
+        var input = new OwnershipService("input", CapabilityRole.FanMode);
+        var profile = GpdModels.All.Single(model => model.Definition.Id == "gpd-win4-8840u") with
+        {
+            UseStandardServices = false, Fan = null, Controller = null, Motion = null, Touchpad = null,
+            KeyboardChords = [], CreateOemSource = () => source, NativeOemRequiresController = false,
+            ServiceFactories = [_ => power, _ => input]
+        };
+        await using var engine = new ProfiledDeviceEngine(profile);
+        var host = await Start(engine, directory.Root);
+        source.Press();
+        Assert.True(await engine.SetPowerControlSuspendedAsync(true, Deadline.Never, CancellationToken.None));
+        Assert.True(await engine.SetPowerControlSuspendedAsync(true, Deadline.Never, CancellationToken.None));
+        Assert.Equal(1, power.Releases);
+        Assert.Equal(0, input.Releases);
+        Assert.Equal(DeviceServiceState.Owned, input.State);
+        Assert.True(await engine.SetPowerControlSuspendedAsync(false, Deadline.Never, CancellationToken.None));
+        Assert.Equal(2, power.Acquires);
+        Assert.Equal(1, input.Acquires);
+        Assert.Equal(OemControlEdge.Pressed, Assert.Single(host.OemEvents).Edge);
+
+        await engine.SetPowerControlSuspendedAsync(true, Deadline.Never, CancellationToken.None);
+        await engine.SuspendAsync(new EngineQuiesceContext(Deadline.Never), CancellationToken.None);
+        Assert.Equal(2, power.Releases);
+        await engine.ResumeAsync(new EngineResumeContext(Deadline.Never), CancellationToken.None);
+        await engine.SetPowerControlSuspendedAsync(true, Deadline.Never, CancellationToken.None);
+        Assert.Equal(3, power.Releases);
+    }
+
+    private sealed class OwnershipService(string id, CapabilityRole role) : ProfiledFeatureService(id)
+    {
+        internal int Acquires { get; private set; }
+        internal int Releases { get; private set; }
+        public override bool Suspendable => true;
+        internal override bool SupportsDisplayPowerHandoff => role == CapabilityRole.PowerSustainedLimit;
+        internal override IReadOnlyList<CapabilityDescriptor> Descriptors =>
+            [new CapabilityDescriptor { CapabilityId = ServiceId, Role = role, ValueKind = CapabilityValueKind.Integer,
+                Display = CapabilityDescriptors.Label(ServiceId), Persistence = CapabilityPersistence.Volatile,
+                Minimum = 1, Maximum = 100, Step = 1, SupportsRead = true, SupportsWrite = true }];
+        internal override IReadOnlyList<CapabilityState> States => [];
+        public override ValueTask<DeviceServiceResult> AcquireAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+            CancellationToken token)
+        {
+            Acquires++;
+            return ValueTask.FromResult(Set(DeviceServiceState.Owned));
+        }
+        public override ValueTask<DeviceServiceResult> ReleaseAsync(DeviceCycleContext<ProfiledCycleIdentity> cycle,
+            CancellationToken token)
+        {
+            Releases++;
+            return ValueTask.FromResult(Set(DeviceServiceState.Idle));
+        }
+        internal override ValueTask<CapabilityCommandResult> ExecuteAsync(CapabilityCommand command, string firmware,
+            CancellationToken token) => ValueTask.FromResult(CommandResults.Applied(command));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

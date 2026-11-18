@@ -38,6 +38,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     private Task _oemPublication = Task.CompletedTask;
     private long _oemSequence;
     private ProfiledPowerService? _power;
+    private readonly HashSet<DeviceService<ProfiledCycleIdentity>> _sleepingPower = [];
     private volatile bool _motionWanted = true;
     private volatile bool _quiescing = true;
     private IDeviceSink? _sink;
@@ -74,6 +75,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
 
             _sink = context.Host;
             _services.Clear();
+            _sleepingPower.Clear();
 
             _manageController = context.ControllerManagementEnabled;
             lock (_inputGate)
@@ -223,6 +225,12 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                     "The device command was cancelled before dispatch.", true);
             }
 
+            if (_sleepingPower.Contains(owner.Service))
+            {
+                return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
+                    "Firmware owns the power limits during display sleep.");
+            }
+
             if (CommandAdmission.Validate(command, owner.Descriptor, _surface.Descriptors) is { } invalid)
             {
                 return CommandResults.Rejected(command, invalid);
@@ -239,7 +247,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
         _commands.StopObservation();
         return _commands.RunAsync(async () =>
         {
-            await DeviceServiceLifecycle.SuspendAllAsync(_services, Context(context.Deadline), token)
+            await DeviceServiceLifecycle.SuspendAllAsync(_services.Where(service => !_sleepingPower.Contains(service)).ToArray(), Context(context.Deadline), token)
                 .ConfigureAwait(false);
             lock (_inputGate)
             {
@@ -256,6 +264,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             await _journal!.BeginCycleAsync(token).ConfigureAwait(false);
             await DeviceServiceLifecycle.AcquireAllAsync(WantedServices(), Context(context.Deadline), token)
                 .ConfigureAwait(false);
+            _sleepingPower.Clear();
             _quiescing = false;
             BuildSurface();
             await _sink!.PublishDescriptorsAsync(_surface!, token).ConfigureAwait(false);
@@ -263,6 +272,54 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             await PublishAsync(token).ConfigureAwait(false);
             _commands.StartObservation();
             return Result();
+        }, token);
+    }
+
+    public ValueTask<bool> SetPowerControlSuspendedAsync(bool suspended, Deadline deadline, CancellationToken token)
+    {
+        return _commands.RunAsync(async () =>
+        {
+            if (_quiescing)
+            {
+                return false;
+            }
+
+            var services = WantedServices().Where(service => service.SupportsDisplayPowerHandoff).ToArray();
+            if (services.Length == 0)
+            {
+                return false;
+            }
+
+            foreach (var service in suspended ? services.Reverse() : services)
+            {
+                if (suspended)
+                {
+                    // Record before dispatch: overlapping notifications must not retry an uncertain handoff.
+                    if (!_sleepingPower.Add(service))
+                    {
+                        continue;
+                    }
+
+                    await DeviceServiceLifecycle.SuspendAsync(service, Context(deadline), token).ConfigureAwait(false);
+                }
+                else if (_sleepingPower.Contains(service))
+                {
+                    if (service.State != DeviceServiceState.Owned)
+                    {
+                        await DeviceServiceLifecycle.AcquireAsync(service, Context(deadline), token).ConfigureAwait(false);
+                    }
+
+                    _sleepingPower.Remove(service);
+                }
+
+                await PublishAsync(token).ConfigureAwait(false);
+                if (service.State is DeviceServiceState.Faulted or DeviceServiceState.ReleasedUnverified)
+                {
+                    throw new IOException(service.Reason?.Detail ?? "Power ownership transition could not be verified.");
+                }
+            }
+
+            return true;
         }, token);
     }
 
@@ -584,6 +641,11 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             : _controlOwners.Where(pair => pair.Key.Id == id).Select(pair => pair.Value.Service).Distinct().ToArray();
         foreach (var service in targets)
         {
+            if (_sleepingPower.Contains(service))
+            {
+                continue;
+            }
+
             if (service is ProfiledFeatureService feature)
             {
                 await feature.RefreshAsync(id, token).ConfigureAwait(false);

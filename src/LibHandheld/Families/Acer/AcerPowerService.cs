@@ -102,6 +102,7 @@ internal sealed class AcerPowerService(
             : ProviderControls.State(item.CapabilityId, State == DeviceServiceState.Owned,
                 _observed.Value(item.CapabilityId), _observed.Time(item.CapabilityId), Reason)).ToArray();
     public override bool Suspendable => true;
+    internal override bool SupportsDisplayPowerHandoff => initializeUnknownValues;
 
     /// <summary>Opens EC access, fixes advertised visibility on first acquisition, then reconciles prior originals.</summary>
     /// <remarks>

@@ -37,6 +37,12 @@ internal interface NativeEngine : IAsyncDisposable
         EngineStopContext context,
         CancellationToken cancellationToken);
 
+    /// <summary>Suspends or reacquires power services without cycling physical input; false when unsupported.</summary>
+    ValueTask<bool> SetPowerControlSuspendedAsync(bool suspended, Deadline deadline, CancellationToken token)
+    {
+        return ValueTask.FromResult(false);
+    }
+
     /// <summary>Opens or closes motion sensors to match whether the host reads motion; kept across restarts.</summary>
     /// <param name="wanted">Whether anything reads motion.</param>
     void SetMotionDemand(bool wanted)

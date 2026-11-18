@@ -26,10 +26,10 @@ redetect or switch hardware. The host owns virtual-target selection and OEM acti
 that a dispatched native write did nothing. TimedOut and Indeterminate require resolution or an
 explicit fresh action; never automatically replay them.
 
-Call Stop in finally, then dispose. Clean means every restore write was accepted (a readback afterwards
-is logged and gates nothing); Unverified means an original was unknown or a recovery entry is still outstanding;
-Failed means a restore failed. Record the stop reason
-separately from command outcomes.
+Call Stop in finally, then dispose. Clean means every restore write was accepted (a readback
+afterwards is logged and gates nothing); Unverified means an original was unknown or a recovery
+entry is still outstanding; Failed means a restore failed. Record the stop reason separately from
+command outcomes.
 
 The caller supplies persistent storage. One `recovery.json` holds service identities and captured
 originals. It preserves the first known original until restoration or retirement. Storage failures
@@ -37,3 +37,15 @@ are diagnosed without locking otherwise writable controls. Old family files are 
 the shared journal. Keep the directory stable and protect it from concurrent writers; do not erase
 recovery evidence to hide a failed restore. The native family distinguishes temporary state from
 durable user settings.
+
+## Display-only power handoff
+
+`HandheldDevice.SetPowerControlSuspendedAsync(suspended, deadline, cancellationToken)` hands back
+only the services owning processor power-limit roles, without releasing controller, OEM-input,
+motion, lighting or battery services. It leaves the device active and publishes the changed power
+availability. Profiled engines reuse each power service's normal suspend/acquire path and recovery
+journal; the Atlas keeps its IPF connection across this handoff. False means unsupported or
+inactive, not a completed handoff. Failures propagate and uncertain suspend operations are not
+repeated on duplicate notifications. The host drains automatic writes before requesting the handoff
+and restores its desired power path and limits after reacquisition. A full suspend can still follow
+the scoped handoff without releasing a power service twice.

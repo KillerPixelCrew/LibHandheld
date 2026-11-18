@@ -1,5 +1,21 @@
 # Acer Predator Atlas 8
 
+## Display-only standby wake regression, 2026-11-18
+
+The PA08-I51 maintainer reports immediate wakes with no controller or screen interaction after WSGM
+began running the full native suspend at display-off. System Kernel-Power events 506/507 at
+10:37:00/01, 10:37:04 and 10:37:08/09 label the exits `Input Mouse`. This is Windows' event
+category, not evidence of a physical mouse or of user input. WSGM's matching log restores
+`acer-controller-mode` during each display-off handoff, then opens the controller and Intel PDC
+reader again after the display lights. The events do not identify the exact emitting input device.
+
+Display-only standby now suspends only the power-limit service. AcerPowerService keeps its existing
+journal restoration and IPF-session retention; controller mode and PDC input lifetime are untouched.
+The separate host software-fan handoff is retained. Fixtures cover unchanged OEM input and unrelated
+services, duplicate notifications and a later full suspend/resume. This corrects the overly broad
+lifecycle change; the intermittent wake and fan behavior still need an attended acceptance cycle. No
+model verification flag is changed by this source and log evidence.
+
 ## IPF command-path reduction, 2026-11-15
 
 The maintainer reported device-wide stutter and audio glitches when opening Quick Access or changing
@@ -1234,6 +1250,5 @@ The maintainer asked for 4 W. Both Atlas 8 limits now accept the lower of select
 table's own floor, 4 W on the PA08-I51 and still 8 W on the PA07-I51, which nothing lower was tried
 on. The presets keep their values; Battery Saver stays 8/8 W. When the PawnIO path opens, the log
 records MSR 0x614 (thermal design, minimum and maximum package power) so the part's own minimum is
-known. Whether the firmware, PawnIO and IPF paths each hold a limit below 8 W, and what package power
-and frame rate follow, is not yet measured; acceptance below 8 W remains open.
-
+known. Whether the firmware, PawnIO and IPF paths each hold a limit below 8 W, and what package
+power and frame rate follow, is not yet measured; acceptance below 8 W remains open.

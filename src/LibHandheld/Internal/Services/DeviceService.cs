@@ -124,6 +124,7 @@ internal abstract class DeviceServiceStatus(string serviceId)
 /// </remarks>
 internal abstract class DeviceService<TIdentity>(string serviceId) : DeviceServiceStatus(serviceId)
 {
+    internal virtual bool SupportsDisplayPowerHandoff => false;
     internal virtual bool RequiresControllerOwnership => false;
     internal virtual IReadOnlyList<CapabilityDescriptor> Descriptors => [];
     internal virtual IReadOnlyList<CapabilityState> States => [];
