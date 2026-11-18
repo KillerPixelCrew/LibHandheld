@@ -1,3 +1,4 @@
+using LibHandheld.Internal.Services;
 using System.Buffers.Binary;
 using LibHandheld.Families.Acer;
 using LibHandheld.Internal.Devices;
@@ -324,8 +325,10 @@ public sealed class AcerPowerTests
         Assert.Equal(new[] { "profile", "mode:3", "profile", "mode:0" }, ec.Writes);
     }
 
-    [Fact]
-    public async Task AStandbyKeepsTheIpfSessionAndAWakeWritesThroughItAgain()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Atlas8StandbySelectsQuietAndRestoresFirmwareModeOnWakeOrStop(bool wake)
     {
         var policy = IntelPowerPaths.PolicyControl;
         var present = IntelPowerPaths.IpfPresent;
@@ -343,25 +346,33 @@ public sealed class AcerPowerTests
         {
             using var directory = new TemporaryDirectory();
             var context = Context(directory.Root);
-            var service = new AcerPowerService(context, () => new FixtureEc());
+            var ec = new FixtureEc { Mode = 1 };
+            var service = new AcerPowerService(context, () => ec, initializeUnknownValues: true);
             var cycle = Cycle(context);
             await service.AcquireAsync(cycle, CancellationToken.None);
             Assert.Empty(sessions);
             Assert.Equal(CommandOutcome.Applied,
                 (await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None)).Outcome);
 
-            await service.SuspendAsync(cycle, CancellationToken.None);
+            Assert.Equal(DeviceServiceState.Idle, (await service.SuspendAsync(cycle, CancellationToken.None)).State);
+            Assert.Equal(2, ec.Mode);
             var kept = Assert.Single(sessions);
             Assert.False(kept.Disposed);
 
-            await service.AcquireAsync(cycle, CancellationToken.None);
-            Assert.Equal(CommandOutcome.Applied,
-                (await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None)).Outcome);
-            Assert.Same(kept, Assert.Single(sessions));
-            Assert.Equal(new[] { (20, 40), (20, 40) }, kept.Writes);
-            Assert.Equal(0, kept.ReadCount);
+            if (wake)
+            {
+                await service.AcquireAsync(cycle, CancellationToken.None);
+                Assert.Equal(1, ec.Mode);
+                Assert.Equal(CommandOutcome.Applied,
+                    (await service.ExecuteAsync(Command(), context.Firmware, CancellationToken.None)).Outcome);
+                Assert.Same(kept, Assert.Single(sessions));
+                Assert.Equal(new[] { (20, 40), (20, 40) }, kept.Writes);
+                Assert.Equal(0, kept.ReadCount);
+            }
 
             await service.ReleaseAsync(cycle, CancellationToken.None);
+            Assert.Equal(1, ec.Mode);
+            Assert.Empty(context.Journal.OutstandingEntries);
             Assert.True(kept.Disposed);
         }
         finally

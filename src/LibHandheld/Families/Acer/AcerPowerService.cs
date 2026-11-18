@@ -76,6 +76,7 @@ internal sealed class AcerPowerService(
     // The pair WSGM last asked for, kept apart from a stock mode's own values so only it is ever re-applied.
     private (int Sustained, int Boost)? _ownedLimits;
     private bool _standby;
+    private bool _standbyQuietDispatched;
     private bool _thermalStatus;
     private bool _unknownOriginalChanged;
     private ICpuPowerTransport? _cpu;
@@ -140,6 +141,7 @@ internal sealed class AcerPowerService(
         {
             await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
                 RestoreModeAsync, token).ConfigureAwait(false);
+            _standbyQuietDispatched = context.Journal.HasUnrestoredMutation(ModeRecoveryId);
         }
 
         await context.Journal.ReconcileAsync<AcerCpuPowerOriginal>(CpuRecoveryId, context.Firmware,
@@ -1161,7 +1163,7 @@ internal sealed class AcerPowerService(
         return ReleaseCoreAsync(keepIpf: false, token);
     }
 
-    /// <summary>As a release, except the IPF session stays open across the standby.</summary>
+    /// <summary>Releases temporary limits and selects the Atlas 8's Quiet firmware mode for standby.</summary>
     /// <remarks>
     ///     IPF tells a connected client about a standby itself (AppSuspend, AppResume). A client that
     ///     disconnects and reconnects around it found the server not creating its session for over ten
@@ -1188,20 +1190,35 @@ internal sealed class AcerPowerService(
             await (keepIpf ? _paths.RestoreAsync(context.Firmware, token) : _paths.ReleaseAsync(context.Firmware, token))
                 .ConfigureAwait(false);
 
+            var quietForStandby = keepIpf && SupportsDisplayPowerHandoff;
+            if (!keepIpf && _standbyQuietDispatched && _ec is null)
+            {
+                _ec = ec.Acquire();
+            }
+
             if (_ec is not null)
             {
                 await context.Journal.ReconcileAsync<AcerProfileOriginal>(ProfileRecoveryId, context.Firmware,
                     RestoreProfileAsync, token).ConfigureAwait(false);
-                // The Atlas 7's mode stays across a standby; its Balanced target waits for the full release.
-                if (!(keepIpf && LimitsKeepFirmwareMode))
+                if (quietForStandby)
                 {
+                    // Keep the original pending for wake, normal stop, or crash recovery.
+                    await CaptureModeAsync(token).ConfigureAwait(false);
+                    SelectMode(_table.ModeNumber("quiet"), token, () => _standbyQuietDispatched = true);
+                    _observed.Written(ModeId, CapabilityValue.Choice("quiet"));
+                    DeviceTrace.Info(ServiceId, "Standby firmware mode set to Quiet.");
+                }
+                else if (!(keepIpf && LimitsKeepFirmwareMode))
+                {
+                    // The Atlas 7 keeps its mode during standby and restores Balanced on full release.
                     await context.Journal.ReconcileAsync<AcerModeOriginal>(ModeRecoveryId, context.Firmware,
                         RestoreModeAsync, token).ConfigureAwait(false);
+                    _standbyQuietDispatched = context.Journal.HasUnrestoredMutation(ModeRecoveryId);
                 }
             }
 
             return Set(_unknownOriginalChanged || context.Journal.HasUnrestoredMutation(ProfileRecoveryId)
-                                              || context.Journal.HasUnrestoredMutation(ModeRecoveryId)
+                                              || (!quietForStandby && context.Journal.HasUnrestoredMutation(ModeRecoveryId))
                                               || context.Journal.HasUnrestoredMutation(CpuRecoveryId)
                                               || _paths.HasUnrestored
                 ? DeviceServiceState.ReleasedUnverified : DeviceServiceState.Idle);

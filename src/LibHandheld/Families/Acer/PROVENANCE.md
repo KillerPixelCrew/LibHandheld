@@ -1,5 +1,16 @@
 # Acer Predator Atlas 8
 
+## Quiet firmware mode in standby, 2026-11-18
+
+The PA08-I51 maintainer reported louder fans in standby after the scoped power handoff. WSGM's 11:04
+log records both fans accepting firmware Auto before the power service restored its original
+operating mode. Kernel-Power records standby from 11:04:45 to the power-button wake at 11:14:58. The
+log does not contain standby RPM or a raw mode observation.
+
+Atlas 8 now selects the existing firmware Quiet mode after releasing temporary power limits. The
+prior mode stays in the recovery journal for wake or shutdown. A fixture checks Quiet, IPF
+continuity, and firmware mode restoration on wake or shutdown. Acoustic acceptance is pending.
+
 ## Display-only standby wake regression, 2026-11-18
 
 The PA08-I51 maintainer reports immediate wakes with no controller or screen interaction after WSGM
