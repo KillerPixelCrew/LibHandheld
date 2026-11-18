@@ -11,8 +11,10 @@ namespace LibHandheld.Tests.Devices;
 
 public sealed class ProfiledDeviceEngineTests
 {
-    [Fact]
-    public async Task DisplayPowerHandoffNeverReleasesOtherServicesAndDoesNotDoubleAcquireAfterFullResume()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DisplayHandoffFollowsReaderPolicyAndDoesNotDoubleAcquireAfterFullResume(bool suspendReaders)
     {
         using var directory = new TemporaryDirectory();
         var source = new FakeOemSource();
@@ -22,7 +24,7 @@ public sealed class ProfiledDeviceEngineTests
         {
             UseStandardServices = false, Fan = null, Controller = null, Motion = null, Touchpad = null,
             KeyboardChords = [], CreateOemSource = () => source, NativeOemRequiresController = false,
-            ServiceFactories = [_ => power, _ => input]
+            ServiceFactories = [_ => power, _ => input], SuspendGamepadReadersOnDisplaySleep = suspendReaders
         };
         await using var engine = new ProfiledDeviceEngine(profile);
         var host = await Start(engine, directory.Root);
@@ -35,7 +37,8 @@ public sealed class ProfiledDeviceEngineTests
         Assert.True(await engine.SetPowerControlSuspendedAsync(false, Deadline.Never, CancellationToken.None));
         Assert.Equal(2, power.Acquires);
         Assert.Equal(1, input.Acquires);
-        Assert.Equal(OemControlEdge.Pressed, Assert.Single(host.OemEvents).Edge);
+        Assert.Equal(suspendReaders ? new[] { OemControlEdge.Pressed, OemControlEdge.Released } : [OemControlEdge.Pressed],
+            host.OemEvents.Select(inputEvent => inputEvent.Edge));
 
         await engine.SetPowerControlSuspendedAsync(true, Deadline.Never, CancellationToken.None);
         await engine.SuspendAsync(new EngineQuiesceContext(Deadline.Never), CancellationToken.None);

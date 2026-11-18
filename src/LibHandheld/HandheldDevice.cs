@@ -334,7 +334,7 @@ public sealed partial class HandheldDevice : IAsyncDisposable, IDeviceSink
         return _engine.ExecuteCommandAsync(command, token);
     }
 
-    /// <summary>Hands power-limit services back for display sleep without releasing input or other services.</summary>
+    /// <summary>Hands back power control and suspends model-selected gamepad readers for display sleep.</summary>
     /// <param name="suspended">True to suspend power control; false to reacquire it.</param>
     /// <param name="deadline">The operation's deadline.</param>
     /// <param name="cancellationToken">Cancels waiting or native work.</param>

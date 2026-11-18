@@ -100,6 +100,7 @@ internal static class AcerModels
         Products = ["Predator PA08-I51"],
         Cpu = CpuPowerKind.Intel,
         UseStandardServices = false,
+        SuspendGamepadReadersOnDisplaySleep = true,
         NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
             CapabilityRole.PowerBackend,
             CapabilityRole.FanMode, CapabilityRole.FanDuty, CapabilityRole.FanMeasuredRpm,

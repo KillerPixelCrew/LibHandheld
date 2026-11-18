@@ -228,7 +228,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             if (_sleepingPower.Contains(owner.Service))
             {
                 return CommandResults.Rejected(command, CapabilityReasonCode.Quiescing,
-                    "Firmware owns the power limits during display sleep.");
+                    "The service is suspended during display sleep.");
             }
 
             if (CommandAdmission.Validate(command, owner.Descriptor, _surface.Descriptors) is { } invalid)
@@ -284,7 +284,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                 return false;
             }
 
-            var services = WantedServices().Where(service => service.SupportsDisplayPowerHandoff).ToArray();
+            var services = WantedServices().Where(service => service.SupportsDisplayPowerHandoff || IsDisplaySleepReader(service)).ToArray();
             if (services.Length == 0)
             {
                 return false;
@@ -300,7 +300,8 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                 _commands.StartObservation();
             }
 
-            foreach (var service in suspended ? services.Reverse() : services)
+            // Return power to firmware even if closing a controller reader subsequently times out.
+            foreach (var service in suspended ? services.Reverse().OrderBy(IsDisplaySleepReader) : services.AsEnumerable())
             {
                 if (suspended)
                 {
@@ -379,7 +380,7 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                     }
 
                     foreach (var service in WantedServices().Where(service =>
-                                 service.RequiresControllerOwnership && service.State != DeviceServiceState.Owned))
+                                 service.RequiresControllerOwnership && !_sleepingPower.Contains(service) && service.State != DeviceServiceState.Owned))
                     {
                         await DeviceServiceLifecycle.ReleaseAsync(service, Context(context.Deadline), token)
                             .ConfigureAwait(false);
@@ -411,6 +412,8 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                     "Physical input ownership has not been released; a second reader cannot be acquired.");
             }
 
+            var displaySleeping = _sleepingPower.Count > 0;
+            _sleepingPower.RemoveWhere(IsDisplaySleepReader);
             _manageController = context.Enabled;
             lock (_inputGate)
             {
@@ -425,6 +428,12 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
 
             foreach (var service in WantedServices().Where(IsInputReader))
             {
+                if (displaySleeping && IsDisplaySleepReader(service))
+                {
+                    _sleepingPower.Add(service);
+                    continue;
+                }
+
                 await DeviceServiceLifecycle.AcquireAsync(service, Context(context.Deadline), token)
                     .ConfigureAwait(false);
             }
@@ -537,6 +546,11 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
     private static bool IsInputReader(DeviceService<ProfiledCycleIdentity> service)
     {
         return service.RequiresControllerOwnership || service is ProfiledOemService;
+    }
+
+    private bool IsDisplaySleepReader(DeviceService<ProfiledCycleIdentity> service)
+    {
+        return _profile.SuspendGamepadReadersOnDisplaySleep && service is ProfiledControllerService or ProfiledOemService;
     }
 
     private bool IsWanted(DeviceServiceStatus service)

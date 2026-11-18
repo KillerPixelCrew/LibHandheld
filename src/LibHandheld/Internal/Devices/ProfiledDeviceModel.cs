@@ -14,6 +14,7 @@ internal sealed record ProfiledDeviceModel
     internal bool UseStandardServices { get; init; } = true;
     internal IReadOnlyList<Func<ProfiledFeatureContext, ProfiledFeatureService>> ServiceFactories { get; init; } = [];
     internal Func<ProfiledFeatureContext, ICpuPowerTransport>? OpenPower { get; init; }
+    internal bool SuspendGamepadReadersOnDisplaySleep { get; init; }
     internal bool IndependentPowerLimits => UseStandardServices && Cpu == CpuPowerKind.Amd && OpenPower is null;
     internal IReadOnlyList<DevicePowerPreset> PowerPresets { get; init; } = [];
 
