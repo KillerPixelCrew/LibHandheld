@@ -290,6 +290,16 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
                 return false;
             }
 
+            if (suspended)
+            {
+                _commands.StopObservation();
+            }
+            else if (_sleepingPower.Count > 0)
+            {
+                // The observer shares this command lane, so its first read follows the wake handoff.
+                _commands.StartObservation();
+            }
+
             foreach (var service in suspended ? services.Reverse() : services)
             {
                 if (suspended)
