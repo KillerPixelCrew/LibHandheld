@@ -13,7 +13,8 @@ internal sealed class ProfiledProcessorService(
     int minimumGpuClock = 100,
     int maximumGpuClock = 3000,
     Func<AmdSmuTransport>? openAmd = null,
-    Func<IntelMsrSettings>? openIntel = null) : ProfiledFeatureService("processor-settings")
+    Func<IntelMsrSettings>? openIntel = null,
+    Func<CancellationToken, bool>? reportsUndervoltProtection = null) : ProfiledFeatureService("processor-settings")
 {
     private readonly Dictionary<string, ProcessorSetting> _settings = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (int Value, DateTimeOffset At)> _observed = new(StringComparer.Ordinal);
@@ -21,6 +22,7 @@ internal sealed class ProfiledProcessorService(
     private IReadOnlyList<CapabilityDescriptor> _descriptors = [];
     private AmdSmuTransport? _amd;
     private IntelMsrSettings? _intelMsr;
+    private bool? _undervoltProtected;
     private CapabilityDescriptor? _automaticGpu;
     private bool _descriptorsChanged;
     private CapabilityReason? _resetReason;
@@ -65,8 +67,16 @@ internal sealed class ProfiledProcessorService(
             }
             else
             {
-                _intelMsr = openIntel?.Invoke() ?? IntelMsrSettings.Open();
-                DescribeIntel();
+                _undervoltProtected ??= (reportsUndervoltProtection ?? IntelIpfTransport.ReportsUndervoltProtection)(token);
+                if (!_undervoltProtected.Value)
+                {
+                    _intelMsr = openIntel?.Invoke() ?? IntelMsrSettings.Open();
+                    DescribeIntel();
+                }
+                else if (_withheld is null)
+                {
+                    DeviceTrace.Info("processor", "Intel reports undervolt protection enabled; voltage controls are hidden.");
+                }
             }
 
             // Visibility is decided by this instance's first start only. A setting this firmware refused

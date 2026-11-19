@@ -46,6 +46,7 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
     // ESIF_E_INVALID_HANDLE: IPF no longer knows the app, participant or domain the request names.
     private const int EsifInvalidHandle = 1004;
     private const int GetRaplPowerLimit = 38;
+    private const int GetUndervoltProtectionStatus = 1032;
     private const int SetRaplPowerLimit = 130;
     private const int SetRaplPowerLimitEnable = 222;
     private const uint EsifDataUint32 = 3;
@@ -105,6 +106,30 @@ internal sealed unsafe class IntelIpfTransport : IIntelIpfSession
     }
 
     public bool Alive => _pump is { IsAlive: true } && !_destroyed;
+
+    internal static bool ReportsUndervoltProtection(CancellationToken token)
+    {
+        try
+        {
+            if (!Present())
+            {
+                return false;
+            }
+
+            using var session = Open(token);
+            var value = uint.MaxValue;
+            var response = new EsifData { Type = EsifDataUint32, Buf = (IntPtr)(&value), BufLen = sizeof(uint) };
+            var request = default(EsifData);
+            Check(session.Primitive(&request, &response, GetUndervoltProtectionStatus, byte.MaxValue),
+                "GET_UNDERVOLT_PROTECTION_STATUS");
+            return response.DataLen == sizeof(uint) && value == 1;
+        }
+        catch (Exception exception) when (exception is not (OperationCanceledException or OutOfMemoryException))
+        {
+            DeviceTrace.Info("ipf", $"Undervolt protection status unavailable: {exception.Message}");
+            return false;
+        }
+    }
 
     /// <summary>Opens the elevated IPF session and waits for the CPU participant; ipfsvc must be running.</summary>
     /// <param name="token">Ends the wait for the server's callbacks, so a caller's deadline holds.</param>

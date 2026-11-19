@@ -490,14 +490,27 @@ public sealed class ProcessorSettingsTests
         return new DeviceCycleContext<ProfiledCycleIdentity>(Deadline.Never, new ProfiledCycleIdentity("bios"));
     }
 
+    [Fact]
+    public async Task ProtectedIntelProcessorOmitsVoltageControlsAndSkipsMailboxWrites()
+    {
+        using var directory = new TemporaryDirectory();
+        using var module = new MailboxModule();
+        var service = IntelProcessor(directory, module, "bios", protectedProcessor: true);
+        await Acquire(service);
+        Assert.Empty(service.Descriptors);
+        Assert.Empty(module.Commands);
+        await service.DisposeAsync();
+    }
+
     private static ProfiledProcessorService IntelProcessor(TemporaryDirectory directory, MailboxModule module,
-        string firmware)
+        string firmware, bool protectedProcessor = false)
     {
         return new ProfiledProcessorService(
             new ProfiledFeatureContext(directory.Root, firmware, new TestPluginHostAdapter(1))
             {
                 Journal = TestRecovery.Open(directory.Root)
-            }, CpuPowerKind.Intel, openIntel: () => new IntelMsrSettings(module));
+            }, CpuPowerKind.Intel, openIntel: () => new IntelMsrSettings(module),
+            reportsUndervoltProtection: _ => protectedProcessor);
     }
 
     private static ProfiledProcessorService Processor(TemporaryDirectory directory, SettingsModule module,

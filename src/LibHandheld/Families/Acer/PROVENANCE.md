@@ -1268,4 +1268,6 @@ power and frame rate follow, is not yet measured; acceptance below 8 W remains o
 
 On the attended Atlas 8, KX echoed the requested -5 mV Core and Cache writes. Subsequent offset
 queries returned 0 mV for both rails. This run did not measure physical voltage or test the GPU and
-System Agent rails. At the maintainer's request the PA08-I51 omits all three voltage controls.
+System Agent rails. At the maintainer's request the PA08-I51 omits all three voltage controls. The
+shared LibHandheld protection check also returned enabled on this unit through the Intel IPF package
+getter (primitive 1032, instance 255) in a separate elevated read-only session.
