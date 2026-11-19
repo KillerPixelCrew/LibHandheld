@@ -122,9 +122,10 @@ internal sealed partial class ProfiledDeviceEngine : NativeEngine
             }
 
             _nativeServices.Clear();
-            var processorClocks = ProcessorClockLimits.For(context.DeviceDefinitionId, context.Identity.ProcessorName);
-            if (_profile.UseStandardServices || !string.IsNullOrWhiteSpace(context.Identity.ProcessorName))
+            if (_profile.UseProcessorSettings
+                && (_profile.UseStandardServices || !string.IsNullOrWhiteSpace(context.Identity.ProcessorName)))
             {
+                var processorClocks = ProcessorClockLimits.For(context.DeviceDefinitionId, context.Identity.ProcessorName);
                 var processor = new ProfiledProcessorService(featureContext, _profile.Cpu,
                     processorClocks.Minimum, processorClocks.Maximum);
                 _nativeServices.Add(processor);

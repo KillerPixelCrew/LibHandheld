@@ -1263,3 +1263,9 @@ on. The presets keep their values; Battery Saver stays 8/8 W. When the PawnIO pa
 records MSR 0x614 (thermal design, minimum and maximum package power) so the part's own minimum is
 known. Whether the firmware, PawnIO and IPF paths each hold a limit below 8 W, and what package
 power and frame rate follow, is not yet measured; acceptance below 8 W remains open.
+
+## PA08-I51 voltage offsets (2026-11-19)
+
+On the attended Atlas 8, KX echoed the requested -5 mV Core and Cache writes. Subsequent offset
+queries returned 0 mV for both rails. This run did not measure physical voltage or test the GPU and
+System Agent rails. At the maintainer's request the PA08-I51 omits all three voltage controls.

@@ -100,6 +100,8 @@ internal static class AcerModels
         Products = ["Predator PA08-I51"],
         Cpu = CpuPowerKind.Intel,
         UseStandardServices = false,
+        // The Intel processor settings are voltage offsets. See the PA08-I51 offset test in PROVENANCE.md.
+        UseProcessorSettings = false,
         SuspendGamepadReadersOnDisplaySleep = true,
         NativeRoles = [CapabilityRole.PowerSustainedLimit, CapabilityRole.PowerSlowLimit, CapabilityRole.ScenarioMode,
             CapabilityRole.PowerBackend,
