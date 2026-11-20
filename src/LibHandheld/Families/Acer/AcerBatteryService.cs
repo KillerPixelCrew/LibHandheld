@@ -9,7 +9,7 @@ namespace LibHandheld.Families.Acer;
 /// <summary>Acer native charge thresholds, with the OEM optimized-charging switch on older firmware.</summary>
 /// <remarks>
 ///     The root\WMI BatteryControl provider exposes one optimized-charging boolean for battery 1,
-///     function bit 0. Native EC command 0B03 supplies a percentage ceiling and a 50% resume threshold.
+///     function bit 0. Native EC command 0B03 supplies a percentage ceiling and a separate resume threshold.
 ///     The native control disables the separate optimized mode while it owns charging. Both originals
 ///     are retained and restored on release; calibration and charging bypass are never requested.
 /// </remarks>
@@ -122,7 +122,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
                 try
                 {
                     // Initialize the unset native ceiling without changing a readable optimized-charging switch.
-                    var boundary = new AcerChargeBoundary(false, 100, AcerChargeBoundary.ResumePercent);
+                    var boundary = AcerChargeBoundary.ForLimit(100);
                     _ec!.Exchange(boundary.Packet(), token);
                     _observed.Written(CapabilityIds.ChargeLimit, CapabilityValue.Integer(100));
                     DeviceTrace.Write(DeviceTraceLevel.Info, ServiceId, "Initial custom charge limit: set to 100 percent (no native ceiling).");
@@ -165,7 +165,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
                 if (command.RequestedValue?.IntegerValue is not { } percent || percent is < 51 or > 100)
                 {
                     return CommandResults.Rejected(command, CapabilityReasonCode.ValueOutOfRange,
-                        "Charge limit must be 51 through 100 percent; charging resumes at 50 percent.");
+                        "Charge limit must be 51 through 100 percent.");
                 }
                 if (_ec is null)
                 {
@@ -180,8 +180,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
                 _unknownOriginalChanged |= original?.Entry.OriginalState.Boundary is null;
                 // The OEM optimized mode can impose its own ceiling. The explicit percentage owns charging.
                 _wmi.Write(enabled: false, token, () => dispatched = true);
-                var boundary = new AcerChargeBoundary(percent < 100, checked((byte)percent),
-                    AcerChargeBoundary.ResumePercent);
+                var boundary = AcerChargeBoundary.ForLimit(percent);
                 _ec.Exchange(boundary.Packet(), token, () => dispatched = true);
                 _observed.Written(CapabilityIds.ChargeProtection, CapabilityValue.Boolean(false));
                 _observed.Written(CapabilityIds.ChargeLimit, CapabilityValue.Integer(percent));
@@ -204,7 +203,7 @@ internal sealed class AcerBatteryService(ProfiledFeatureContext context, IAcerLe
             if (_boundarySupported && enabled)
             {
                 _unknownOriginalChanged |= recovery?.Entry.OriginalState.Boundary is null;
-                _ec!.Exchange(new AcerChargeBoundary(false, 100, AcerChargeBoundary.ResumePercent).Packet(), token,
+                _ec!.Exchange(AcerChargeBoundary.ForLimit(100).Packet(), token,
                     () => dispatched = true);
                 _observed.Written(CapabilityIds.ChargeLimit, CapabilityValue.Integer(100));
             }

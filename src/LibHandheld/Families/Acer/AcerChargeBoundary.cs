@@ -5,7 +5,13 @@ namespace LibHandheld.Families.Acer;
 /// <summary>The Atlas EC's native charge stop/resume thresholds, separate from WMI optimized charging.</summary>
 internal sealed record AcerChargeBoundary(bool Enabled, byte Upper, byte Lower)
 {
-    internal const byte ResumePercent = 50;
+    internal static AcerChargeBoundary ForLimit(int percent)
+    {
+        // Disabled firmware clears both thresholds. Keep the representation used by existing recovery journals.
+        return percent == 100
+            ? new AcerChargeBoundary(false, 100, 50)
+            : new AcerChargeBoundary(true, checked((byte)percent), checked((byte)Math.Max(50, percent - 5)));
+    }
 
     /// <summary>Queries battery selector 3 through EC command 0B03.</summary>
     internal static byte[] Query()
@@ -53,7 +59,7 @@ internal sealed record AcerChargeBoundary(bool Enabled, byte Upper, byte Lower)
         if (payload[6] == 0)
         {
             // Disabled firmware returns FF for both thresholds; 100 means no active charge ceiling.
-            return new AcerChargeBoundary(false, 100, ResumePercent);
+            return ForLimit(100);
         }
         if (payload[7] > 100 || payload[8] >= payload[7])
         {

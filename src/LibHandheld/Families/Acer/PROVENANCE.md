@@ -1271,3 +1271,14 @@ queries returned 0 mV for both rails. This run did not measure physical voltage 
 System Agent rails. At the maintainer's request the PA08-I51 omits all three voltage controls. The
 shared LibHandheld protection check also returned enabled on this unit through the Intel IPF package
 getter (primitive 1032, instance 255) in a separate elevated read-only session.
+
+## PA08-I51 custom charge restart threshold (2026-11-20)
+
+Winhanced 1.0.0.8 installer SHA-256:
+`F299A636D34033DA7277503EBCADB2DDE13EDA155958A6023A1FE372322AB7F2`. Offline calls to the signed
+HardwareControl.dll's threshold calculator returned `max(50, ceiling - 5)` for every supported whole
+percentage from 51 through 100. Its packet builder produced the same 0B03 write layout as
+LibHandheld, including 80/75 for an 80% ceiling. The earlier fixed 50% threshold is superseded for
+new commands. Restoration preserves the captured active thresholds. The maintainer reported
+battery-only hibernate wake failure with a red LED. Neither the offline comparison nor the charging
+fix establishes its cause.
